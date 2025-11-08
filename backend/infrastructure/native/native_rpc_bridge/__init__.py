@@ -36,21 +36,22 @@ try:
     from .native_rpc_bridge import (
         create_request_header,
         serialize_request,
+        batch_decode_requests,
+        batch_encode_responses,
         RPC_BRIDGE_AVAILABLE,
         VERSION,
     )
-    
+
     _AVAILABLE = True
     _ERROR = None
-    
+
 except ImportError as e:
     _AVAILABLE = False
     _ERROR = str(e)
     RPC_BRIDGE_AVAILABLE = False
-    
+
     # 提供降级函数
     def create_request_header(method_id: int, payload_size: int) -> dict:
-        # 模拟实现
         return {
             "method_id": method_id,
             "payload_size": payload_size,
@@ -60,6 +61,15 @@ except ImportError as e:
 
     def serialize_request(method_id: int, payload: object) -> dict:
         return {"method_id": method_id, "payload": payload}
+
+    def batch_decode_requests(buffer_sequence, method_resolver=None):
+        results = []
+        for raw in buffer_sequence:
+            results.append((0, 0, 0, None, raw, None))
+        return results
+
+    def batch_encode_responses(response_sequence):
+        return [bytes(item) if isinstance(item, (bytearray, memoryview)) else item for item in response_sequence]
 
     VERSION = "0.0.0 (fallback)"
 
@@ -75,6 +85,8 @@ __all__ = [
     "get_method_name",
     "create_request_header",
     "serialize_request",
+    "batch_decode_requests",
+    "batch_encode_responses",
     "RPC_BRIDGE_AVAILABLE",
     "VERSION",
     "RPCMethod",

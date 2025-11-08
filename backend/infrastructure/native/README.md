@@ -3,7 +3,7 @@
 
 ## 概述
 
-本目录汇总了 21 个 Windows 优化的 C/C++ 扩展包，覆盖无锁容器、异步 IO、数据转换、指标采集等关键路径；所有模块均可通过 `compile_all.bat` 一键重建，并在失败时回退到纯 Python 方案，确保业务不中断。
+本目录汇总了 22 个 Windows 优化的 C/C++ 扩展包，覆盖无锁容器、异步 IO、数据转换、指标采集等关键路径；所有模块均可通过 `compile_all.bat` 一键重建，并在失败时回退到纯 Python 方案，确保业务不中断。
 
 ## 模块一览
 
@@ -24,12 +24,14 @@
 | 13 | `native_netprobe` | IOCP ConnectEx 网络探测 | [native_netprobe/README.md](./native_netprobe/README.md) |
 | 14 | `native_socket_metrics` | TCP 连接、带宽利用率采集 | [native_socket_metrics/README.md](./native_socket_metrics/README.md) |
 | 15 | `native_process_metrics` | 系统/进程 CPU、内存、IO 统计 | [native_process_metrics/README.md](./native_process_metrics/README.md) |
-| 16 | `native_smart_monitor` | SMART 温度/健康采集 | [native_smart_monitor/README.md](./native_smart_monitor/README.md) |
-| 17 | `native_log_pipeline` | 日志批量缓冲、SQLite 落盘 | [native_log_pipeline/README.md](./native_log_pipeline/README.md) |
-| 18 | `native_async` | 异步任务归约、进度切片 | [native_async/README.md](./native_async/README.md) |
-| 19 | `native_symbol_index` | LockFree 品种索引、查询加速 | [native_symbol_index/README.md](./native_symbol_index/README.md) |
-| 20 | `native_indicator` | 技术指标计算（MACD/RSI 等） | [native_indicator/README.md](./native_indicator/README.md) |
-| 21 | `native_rpc_bridge` | 多语言 RPC 桥接、数据通道 | [native_rpc_bridge/README.md](./native_rpc_bridge/README.md) |
+| 16 | `native_load_balancer` | 负载均衡配置计算原生化 | [native_load_balancer/README.md](./native_load_balancer/README.md) |
+| 17 | `native_smart_monitor` | SMART 温度/健康采集 | [native_smart_monitor/README.md](./native_smart_monitor/README.md) |
+| 18 | `native_log_pipeline` | 日志批量缓冲、SQLite 落盘 | [native_log_pipeline/README.md](./native_log_pipeline/README.md) |
+| 19 | `native_async` | 异步任务归约、进度切片 | [native_async/README.md](./native_async/README.md) |
+| 20 | `native_symbol_index` | LockFree 品种索引、查询加速 | [native_symbol_index/README.md](./native_symbol_index/README.md) |
+| 21 | `native_indicator` | 技术指标计算（MACD/RSI 等） | [native_indicator/README.md](./native_indicator/README.md) |
+| 22 | `native_rpc_bridge` | 多语言 RPC 桥接、数据通道 | [native_rpc_bridge/README.md](./native_rpc_bridge/README.md) |
+| 23 | `native_calendar` | 高性能交易日历查询 | [native_calendar/README.md](./native_calendar/README.md) |
 
 > UI 侧的 `native_qhighlighter` 位于 `ui/native_extensions`，由脚本末尾额外构建。
 
@@ -39,7 +41,7 @@
 - **锁粒度最小化**：核心路径使用 `LockFreeHashMap` / `LockFreeQueue`，跨进程通信配合环形缓冲。
 - **降级机制**：模块通过 `*_AVAILABLE` 常量告知状态；不可用时自动回退 Python 实现。
 - **测试矩阵**：`backend/infrastructure/native/tests` 覆盖核心模块的单元/集成/性能基准（部分扩展待补充专用用例）。
-- **一键构建**：`compile_all.bat` 顺序编译 20 个扩展（含 UI 高亮），遇到错误立即中止并打印日志。
+- **一键构建**：`compile_all.bat` 顺序编译 24 个扩展（含 UI 高亮），遇到错误立即中止并打印日志。
 
 ## 编译要求
 
@@ -61,7 +63,7 @@ cd backend/infrastructure/native
 compile_all.bat
 ```
 
-脚本共 22 步：前 21 步依次构建当前目录内全部扩展，第 22 步进入 `ui/native_extensions/native_qhighlighter` 完成 UI 原生高亮编译。若任一步失败，脚本会打印错误并暂停，便于定位。
+脚本共 23 步：前 22 步依次构建当前目录内全部扩展，第 23 步进入 `ui/native_extensions/native_qhighlighter` 完成 UI 原生高亮编译。若任一步失败，脚本会打印错误并暂停，便于定位。
 
 ### 编译单个包
 
@@ -186,6 +188,7 @@ native/
 ├── native_serialization/        # 序列化
 ├── native_iocp/                 # 异步文件I/O
 ├── native_fs/                   # 目录变更监控
+├── native_load_balancer/        # 负载均衡优化
 ├── native_ipc/                  # 异步跨进程通信
 ├── native_conversion/           # 类型转换
 ├── native_collections/          # 高性能容器

@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Protocol, cast, Tuple
+from typing import Any, Deque, Dict, List, Optional, Protocol, TYPE_CHECKING, cast, Tuple
 from urllib.parse import urlparse
 
 # 添加项目根目录到Python路径（用于独立运行）
@@ -148,12 +148,16 @@ try:
     native_get_socket_metrics = getattr(
         _native_socket_metrics, "get_socket_metrics", None
     )
+    native_get_tcp_buffer_snapshot = getattr(
+        _native_socket_metrics, "get_tcp_buffer_snapshot", None
+    )
     native_get_socket_metrics_detailed = getattr(
         _native_socket_metrics, "get_socket_metrics_detailed", None
     )
 except ImportError:
     SOCKET_METRICS_AVAILABLE = False
     native_get_socket_metrics = None  # type: ignore
+    native_get_tcp_buffer_snapshot = None  # type: ignore
     native_get_socket_metrics_detailed = None  # type: ignore
 
 # 尝试导入原生统计扩展
@@ -1184,9 +1188,16 @@ class AdaptiveThresholdManager:
         self._current_thresholds: Dict[str, ThresholdResult] = {}
         self._last_update_time: Dict[str, float] = {}
         self._update_interval = 3600
-        self._statistics_handles: Dict[str, "StreamingMetricHandle"] = {}
+        self._statistics_handles: Dict[str, Any] = {}
         self._fallback_history: Dict[str, Deque[float]] = {}
         logger.info("自适应阈值管理器初始化完成")
+
+    @staticmethod
+    def _coerce_float(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def register_metric(self, config: ThresholdConfig):
         self._configs[config.metric_name] = config
@@ -1339,11 +1350,15 @@ class AdaptiveThresholdManager:
             return
 
         if snapshot is None:
+            history_values = list(history) if history is not None else []
+            if not history_values:
+                logger.debug("阈值学习: 缺少历史数据 metric=%s", metric_name)
+                return
             try:
-                mean = float(np.mean(history))
-                stddev = float(np.std(history))
-                p95 = float(np.percentile(history, 95))
-                p99 = float(np.percentile(history, 99))
+                mean = float(np.mean(history_values))
+                stddev = float(np.std(history_values))
+                p95 = float(np.percentile(history_values, 95))
+                p99 = float(np.percentile(history_values, 99))
             except Exception as error:
                 logger.exception("计算统计量失败 (%s): %s", metric_name, error)
                 return
@@ -1360,18 +1375,43 @@ class AdaptiveThresholdManager:
                 history_queue = self._fallback_history.setdefault(
                     metric_name, deque(maxlen=config.window_size)
                 )
-                history = list(history_queue)
+                history_values = list(history_queue)
+                if not history_values:
+                    logger.debug("阈值学习: 回退历史为空 metric=%s", metric_name)
+                    return
                 try:
-                    mean = float(np.mean(history))
-                    stddev = float(np.std(history))
-                    p95 = float(np.percentile(history, 95))
-                    p99 = float(np.percentile(history, 99))
+                    mean = float(np.mean(history_values))
+                    stddev = float(np.std(history_values))
+                    p95 = float(np.percentile(history_values, 95))
+                    p99 = float(np.percentile(history_values, 99))
                 except Exception as error:
                     logger.exception("计算统计量失败 (%s): %s", metric_name, error)
                     return
 
-        warning_learned = self._calculate_threshold(p95, p99, stddev, config.warning_formula)
-        critical_learned = self._calculate_threshold(p95, p99, stddev, config.critical_formula)
+        mean_value = self._coerce_float(mean)
+        stddev_value = self._coerce_float(stddev)
+        p95_value = self._coerce_float(p95)
+        p99_value = self._coerce_float(p99)
+        if (
+            mean_value is None
+            or stddev_value is None
+            or p95_value is None
+            or p99_value is None
+        ):
+            logger.debug("阈值学习: 统计量非数值 metric=%s", metric_name)
+            return
+
+        mean_float = mean_value
+        stddev_float = stddev_value
+        p95_float = p95_value
+        p99_float = p99_value
+
+        warning_learned = self._calculate_threshold(
+            p95_float, p99_float, stddev_float, config.warning_formula
+        )
+        critical_learned = self._calculate_threshold(
+            p95_float, p99_float, stddev_float, config.critical_formula
+        )
 
         warning_threshold = self._blend_threshold(
             config.default_warning, warning_learned, config.default_weight, config.learned_weight
@@ -1385,10 +1425,10 @@ class AdaptiveThresholdManager:
             warning_threshold=warning_threshold,
             critical_threshold=critical_threshold,
             sample_count=sample_count,
-            mean=mean,
-            stddev=stddev,
-            p95=p95,
-            p99=p99,
+            mean=mean_float,
+            stddev=stddev_float,
+            p95=p95_float,
+            p99=p99_float,
             using_default=False,
             last_updated=datetime.now(),
         )
@@ -2352,7 +2392,7 @@ class MonitoringProcessV2:
         # native_ipc通信管道
         self.query_pipe = None  # 服务端：响应查询
         self.status_pipe = None  # 服务端：接收状态
-        self.alerts_pipe = None  # 客户端：推送告警
+        self.alerts_pipe: Optional["_AsyncPipeProto"] = None  # 客户端：推送告警
 
         # 数据缓存
         self.monitoring_data = {
@@ -2370,8 +2410,8 @@ class MonitoringProcessV2:
         # 创建监控组件
         logger.debug("开始创建监控组件")
 
-        self.system_monitor = SystemMonitor()
-        self.process_monitor = ProcessMonitor()
+        self.system_monitor: "SystemMonitor" = SystemMonitor()
+        self.process_monitor: "ProcessMonitor" = ProcessMonitor()
         self.process_bottleneck_analyzer = ProcessBottleneckAnalyzer()  # 进程级瓶颈分析器
         self.system_bottleneck_analyzer = SystemBottleneckAnalyzer()  # 系统级瓶颈分析器（本地）
         self.business_metrics_collector = get_business_metrics_collector()  # 业务指标采集器
@@ -2514,8 +2554,6 @@ class MonitoringProcessV2:
             self.coroutine_ready_events = {
                 "ipc_handler": asyncio.Event(),
                 "fast_metrics": asyncio.Event(),
-                "db_writer": asyncio.Event(),
-                "alert_eval": asyncio.Event(),
                 "parent_watcher": asyncio.Event(),
             }
 
@@ -2525,8 +2563,6 @@ class MonitoringProcessV2:
             tasks = [
                 asyncio.create_task(self.ipc_handler(), name="ipc_handler"),
                 asyncio.create_task(self.fast_metrics_collector(), name="fast_metrics"),
-                asyncio.create_task(self.db_writer_loop(), name="db_writer"),
-                asyncio.create_task(self.alert_evaluator_loop(), name="alert_eval"),
                 asyncio.create_task(self.parent_process_watcher(), name="parent_watcher"),
             ]
 
@@ -2656,6 +2692,7 @@ class MonitoringProcessV2:
 
         # 初始化native_ipc管道
         try:
+            ipc_cls = cast(_AsyncIPCPipeFactory, AsyncIPCPipe)
             # ✅ 提前创建初始信号文件（标记监控进程已启动，正在初始化管道）
             # 这样即使管道创建失败，主进程也能知道监控进程已启动
             try:
@@ -2695,7 +2732,7 @@ class MonitoringProcessV2:
             logger.info("[INIT] ℹ️ 开始创建查询服务端管道: monitor_query")
             pipe_start_time = time.time()
             try:
-                self.query_pipe = await AsyncIPCPipe.server(
+                self.query_pipe = await ipc_cls.server(
                     "monitor_query", wait_for_client=False
                 )
                 pipe_elapsed = (time.time() - pipe_start_time) * 1000
@@ -2717,7 +2754,7 @@ class MonitoringProcessV2:
             logger.info("[INIT] ℹ️ 开始创建状态服务端管道: monitor_status")
             pipe_start_time = time.time()
             try:
-                self.status_pipe = await AsyncIPCPipe.server(
+                self.status_pipe = await ipc_cls.server(
                     "monitor_status", wait_for_client=False
                 )
                 pipe_elapsed = (time.time() - pipe_start_time) * 1000
@@ -3480,29 +3517,30 @@ class MonitoringProcessV2:
         try:
             # 在executor中执行阻塞psutil调用
             loop = asyncio.get_event_loop()
+            system_monitor = cast(Any, self.system_monitor)
             resource_usage = await loop.run_in_executor(
-                self.executor, self.system_monitor.get_resource_usage
+                self.executor, system_monitor.get_resource_usage
             )
 
             # 并发执行IO速度采集（都是async方法）
             disk_io_speed, network_speed = await asyncio.gather(
-                self.system_monitor.get_disk_io_speed_async(),
-                self.system_monitor.get_network_speed_async(),
+                system_monitor.get_disk_io_speed_async(),
+                system_monitor.get_network_speed_async(),
             )
 
             # 在executor中采集新增子系统指标（避免阻塞事件循环）
             cpu_os_detailed, cpu_info, memory_subsystem, storage_subsystem, network_subsystem = (
                 await asyncio.gather(
-                    loop.run_in_executor(self.executor, self.system_monitor.get_cpu_os_detailed),
-                    loop.run_in_executor(self.executor, self.system_monitor.get_cpu_info),
+                    loop.run_in_executor(self.executor, system_monitor.get_cpu_os_detailed),
+                    loop.run_in_executor(self.executor, system_monitor.get_cpu_info),
                     loop.run_in_executor(
-                        self.executor, self.system_monitor.get_memory_subsystem_metrics
+                        self.executor, system_monitor.get_memory_subsystem_metrics
                     ),
                     loop.run_in_executor(
-                        self.executor, self.system_monitor.get_storage_subsystem_metrics
+                        self.executor, system_monitor.get_storage_subsystem_metrics
                     ),
                     loop.run_in_executor(
-                        self.executor, self.system_monitor.get_network_subsystem_metrics
+                        self.executor, system_monitor.get_network_subsystem_metrics
                     ),
                 )
             )
@@ -4017,6 +4055,13 @@ class MonitoringProcessV2:
         """推送告警到主进程（native_ipc客户端，懒加载连接）."""
         # 🔧 优化：懒加载连接，避免启动时握手失败
         if not self.alerts_pipe:
+            if AsyncIPCPipe is None:
+                logger.debug(
+                    "[ALERT] native_ipc 不可用，降级为本地文件告警",
+                    extra={"log_type": "SYSTEM"},
+                )
+                await self._write_alert_to_file(alert)
+                return
             # 检查是否应该重试（避免频繁重试）
             current_time = time.time()
             if self._alerts_pipe_retry_count >= self._alerts_pipe_max_retries:
@@ -4040,7 +4085,8 @@ class MonitoringProcessV2:
             # 尝试建立连接
             try:
                 logger.info("[IPC] 尝试建立告警客户端管道连接...")
-                self.alerts_pipe = await AsyncIPCPipe.client("monitor_alerts")
+                ipc_cls = cast(_AsyncIPCPipeFactory, AsyncIPCPipe)
+                self.alerts_pipe = await ipc_cls.client("monitor_alerts")
                 logger.info("[IPC] ✅ 告警客户端管道已连接: monitor_alerts")
                 self._alerts_pipe_retry_count = 0  # 重置重试计数
             except FileNotFoundError:
@@ -4070,13 +4116,19 @@ class MonitoringProcessV2:
         # 推送告警到管道
         try:
             alert_data = json.dumps(alert).encode()
-            await self.alerts_pipe.write(alert_data)
+            alerts_pipe = self.alerts_pipe
+            if alerts_pipe is None:
+                await self._write_alert_to_file(alert)
+                return
+            await alerts_pipe.write(alert_data)
             logger.info("[ALERT] 推送告警: %s", alert["message"])
         except Exception as e:
             logger.exception("[ALERT] 推送失败: %s，降级为本地文件告警", e)
             # 推送失败，关闭管道并降级
             try:
-                await self.alerts_pipe.close()
+                alerts_pipe = self.alerts_pipe
+                if alerts_pipe is not None:
+                    await alerts_pipe.close()
             except Exception:
                 pass
             self.alerts_pipe = None
@@ -4123,11 +4175,14 @@ class MonitoringProcessV2:
             except Exception as e:
                 logger.debug("关闭status_pipe异常: %s", e)
 
-        if self.alerts_pipe:
+        alerts_pipe = self.alerts_pipe
+        if alerts_pipe is not None:
             try:
-                await self.alerts_pipe.close()
+                await alerts_pipe.close()
             except Exception as e:
                 logger.debug("关闭alerts_pipe异常: %s", e)
+            finally:
+                self.alerts_pipe = None
 
         # 等待线程池关闭
         try:
@@ -4257,6 +4312,24 @@ class BottleneckResult:
 
 
 # Protocol定义（用于类型检查）
+if TYPE_CHECKING:
+
+    class _AsyncPipeProto(Protocol):
+        async def write(self, data: bytes) -> Any: ...
+        async def close(self) -> Any: ...
+
+    class _AsyncIPCPipeFactory(Protocol):
+        @staticmethod
+        async def client(name: str) -> _AsyncPipeProto: ...
+
+        @staticmethod
+        async def server(
+            name: str,
+            *,
+            wait_for_client: bool = ...,
+            connect_timeout: Optional[float] = ...,
+        ) -> Any: ...
+
 if HAS_PSUTIL:
 
     class DiskIOCounters(Protocol):
@@ -5343,6 +5416,21 @@ class SystemMonitor:
 
         # 写入缓存
         try:
+            # 过滤无效设备项：size=0 且 partitions为空 且 interface_type=Unknown
+            try:
+                filtered: Dict[str, Dict[str, Any]] = {}
+                for name, info in physical_disks.items():
+                    size = int(info.get("size_bytes", 0) or 0)
+                    partitions = info.get("partitions") or []
+                    interface_type = info.get("interface_type") or "Unknown"
+                    # 保留至少满足以下任一条件的设备：
+                    # 1) 具有分区映射；2) 具有非零容量；3) 接口类型为已识别类型
+                    if size > 0 or partitions or interface_type != "Unknown":
+                        filtered[name] = info
+                physical_disks = filtered
+            except Exception:
+                pass
+
             setattr(self, "_physical_disks_cache", physical_disks)
             setattr(self, "_physical_disks_cache_ts", time.time())
         except Exception:
@@ -6632,11 +6720,26 @@ def _windows_physical_disks_native() -> Dict[str, Dict[str, Any]]:
                 "send_buffer_usage_ratio": float, # 发送缓冲区使用率（百分比，估算）
                 "total_connections": int,         # 总连接数
                 "tcp_connections": int,           # TCP连接数
-                "established_connections": int    # ESTABLISHED状态连接数
+                "established_connections": int,   # ESTABLISHED状态连接数
+                "state_counts": Dict[str, int],   # 各连接状态数量
+                "per_pid_top": List[Dict[str, int]], # 连接数Top进程
+                ...
             }
         """
         try:
             if SOCKET_METRICS_AVAILABLE:
+                if callable(native_get_tcp_buffer_snapshot):
+                    try:
+                        snapshot = native_get_tcp_buffer_snapshot()  # type: ignore[arg-type]
+                        if snapshot:
+                            return snapshot
+                    except Exception:
+                        logger.debug(
+                            "[SOCKET-BUFFER] 原生TCP缓冲区快照失败，尝试降级函数",
+                            exc_info=True,
+                            extra={"log_type": "SYSTEM"},
+                        )
+
                 native_socket_func = None
                 if callable(native_get_socket_metrics_detailed):
                     native_socket_func = native_get_socket_metrics_detailed  # type: ignore[assignment]
@@ -7837,13 +7940,15 @@ class ProcessBottleneckAnalyzer:
 def get_system_info() -> SystemInfo:
     """获取系统信息."""
     monitor = SystemMonitor()
-    return monitor.get_system_info()
+    get_info = getattr(monitor, "get_system_info")
+    return cast(Any, get_info)()
 
 
 def get_resource_usage() -> ResourceUsage:
     """获取资源使用情况."""
     monitor = SystemMonitor()
-    return monitor.get_resource_usage()
+    get_usage = getattr(monitor, "get_resource_usage")
+    return cast(Any, get_usage)()
 
 
 # =============================================================================

@@ -1754,7 +1754,7 @@ class DataFileWatcher:
         # 监控状态
         self._watching = False
         self._watch_thread: Optional[threading.Thread] = None
-        self._native_watcher = None
+        self._native_watcher: Optional[Any] = None
         self._use_native = False
 
         # 文件状态缓存
@@ -1775,6 +1775,8 @@ class DataFileWatcher:
 
         if _NATIVE_FS_ENABLED:
             try:
+                if native_watch_directory is None:
+                    raise RuntimeError("native_fs watch_directory is unavailable")
                 self._native_watcher = native_watch_directory(
                     str(self.watch_dir),
                     self._handle_native_event,

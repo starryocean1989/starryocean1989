@@ -4,6 +4,20 @@
 #include <Python.h>
 #include <stdint.h>
 
+// 原生协议常量
+enum {
+    RPC_BRIDGE_MAGIC = 0x4E525031u,  // 'NRP1'
+    RPC_BRIDGE_VERSION = 1u,
+    RPC_BRIDGE_HEADER_SIZE = 32u,
+};
+
+enum {
+    RPC_FLAG_NATIVE = 0x0001,
+    RPC_FLAG_BATCH = 0x0002,
+    RPC_FLAG_BINARY_PAYLOAD = 0x0004,
+    RPC_FLAG_ERROR = 0x0008,
+};
+
 // RPC消息头结构
 typedef struct {
     uint32_t method_id;      // 方法ID
@@ -30,6 +44,10 @@ int serialize_rpc_request(RPCMessageHeader* header, const char* payload, char** 
 
 // 反序列化RPC响应
 RPCResponse* deserialize_rpc_response(const char* data, size_t size);
+
+// 批量解析与编码
+PyObject* batch_decode_requests(PyObject* buffer_sequence, PyObject* method_resolver);
+PyObject* batch_encode_responses(PyObject* response_sequence);
 
 // 清理函数
 void free_rpc_header(RPCMessageHeader* header);

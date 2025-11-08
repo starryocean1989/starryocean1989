@@ -3,15 +3,15 @@
 #include <structmember.h>
 
 typedef struct {
-    PyObject *queue;
     PyObject *threadpool;
+    PyThread_type_lock pending_lock;
+    Py_ssize_t pending;
     Py_ssize_t max_workers;
 } CategoryContext;
 
 typedef struct {
     PyObject_HEAD
     PyObject *categories;      /* dict: name -> capsule */
-    PyObject *queue_type;      /* NativeQueue type */
     PyObject *threadpool_type; /* NativeThreadPool type */
 } NativeSchedulerObject;
 
@@ -19,17 +19,22 @@ static PyTypeObject NativeSchedulerType;
 static PyObject *EXECUTE_TASK_FUNC = NULL;
 
 static CategoryContext *
-category_context_new(PyObject *queue, PyObject *threadpool, Py_ssize_t max_workers)
+category_context_new(PyObject *threadpool, Py_ssize_t max_workers)
 {
     CategoryContext *ctx = PyMem_Calloc(1, sizeof(CategoryContext));
     if (ctx == NULL) {
         PyErr_NoMemory();
         return NULL;
     }
-    ctx->queue = queue;
     ctx->threadpool = threadpool;
+    ctx->pending_lock = PyThread_allocate_lock();
+    if (ctx->pending_lock == NULL) {
+        PyMem_Free(ctx);
+        PyErr_SetString(PyExc_RuntimeError, "failed to allocate scheduler lock");
+        return NULL;
+    }
+    ctx->pending = 0;
     ctx->max_workers = max_workers;
-    Py_INCREF(queue);
     Py_INCREF(threadpool);
     return ctx;
 }
@@ -40,8 +45,11 @@ category_context_free(CategoryContext *ctx)
     if (ctx == NULL) {
         return;
     }
-    Py_XDECREF(ctx->queue);
     Py_XDECREF(ctx->threadpool);
+    if (ctx->pending_lock != NULL) {
+        PyThread_free_lock(ctx->pending_lock);
+        ctx->pending_lock = NULL;
+    }
     PyMem_Free(ctx);
 }
 
@@ -68,7 +76,6 @@ get_category(NativeSchedulerObject *self, PyObject *name)
 static int
 NativeScheduler_init(NativeSchedulerObject *self, PyObject *args, PyObject *kwargs)
 {
-    PyObject *queue_module = NULL;
     PyObject *threadpool_module = NULL;
 
     self->categories = PyDict_New();
@@ -76,27 +83,17 @@ NativeScheduler_init(NativeSchedulerObject *self, PyObject *args, PyObject *kwar
         return -1;
     }
 
-    queue_module = PyImport_ImportModule("backend.infrastructure.native.native_queue");
-    if (queue_module == NULL) {
-        Py_DECREF(self->categories);
-        self->categories = NULL;
-        return -1;
-    }
     threadpool_module = PyImport_ImportModule("backend.infrastructure.native.native_threadpool");
     if (threadpool_module == NULL) {
-        Py_DECREF(queue_module);
         Py_DECREF(self->categories);
         self->categories = NULL;
         return -1;
     }
 
-    self->queue_type = PyObject_GetAttrString(queue_module, "NativeQueue");
     self->threadpool_type = PyObject_GetAttrString(threadpool_module, "NativeThreadPool");
-    Py_DECREF(queue_module);
     Py_DECREF(threadpool_module);
 
-    if (self->queue_type == NULL || self->threadpool_type == NULL) {
-        Py_XDECREF(self->queue_type);
+    if (self->threadpool_type == NULL) {
         Py_XDECREF(self->threadpool_type);
         Py_DECREF(self->categories);
         self->categories = NULL;
@@ -128,7 +125,6 @@ NativeScheduler_dealloc(NativeSchedulerObject *self)
         self->categories = NULL;
     }
 
-    Py_XDECREF(self->queue_type);
     Py_XDECREF(self->threadpool_type);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
@@ -160,18 +156,12 @@ NativeScheduler_register_category(NativeSchedulerObject *self, PyObject *args, P
         return NULL;
     }
 
-    PyObject *queue = PyObject_CallFunction(self->queue_type, "n", queue_capacity);
-    if (queue == NULL) {
-        return NULL;
-    }
     PyObject *threadpool = PyObject_CallFunction(self->threadpool_type, "n", max_workers);
     if (threadpool == NULL) {
-        Py_DECREF(queue);
         return NULL;
     }
 
-    CategoryContext *ctx = category_context_new(queue, threadpool, max_workers);
-    Py_DECREF(queue);
+    CategoryContext *ctx = category_context_new(threadpool, max_workers);
     Py_DECREF(threadpool);
     if (ctx == NULL) {
         return NULL;
@@ -239,23 +229,32 @@ NativeScheduler_submit(NativeSchedulerObject *self, PyObject *args, PyObject *kw
         return NULL;
     }
 
-    PyObject *push_result = PyObject_CallMethod(ctx->queue, "push", "O", Py_None);
-    if (push_result == NULL) {
+    PyThread_acquire_lock(ctx->pending_lock, 1);
+    ctx->pending += 1;
+    PyThread_release_lock(ctx->pending_lock);
+
+    PyObject *ctx_capsule = PyCapsule_New(ctx, "native_scheduler.CategoryContext", NULL);
+    if (ctx_capsule == NULL) {
         Py_DECREF(call_args);
         Py_DECREF(call_kwargs);
+        PyThread_acquire_lock(ctx->pending_lock, 1);
+        ctx->pending -= 1;
+        PyThread_release_lock(ctx->pending_lock);
         return NULL;
     }
-    Py_DECREF(push_result);
 
     PyObject *worker_args = PyTuple_New(4);
     if (worker_args == NULL) {
+        Py_DECREF(ctx_capsule);
         Py_DECREF(call_args);
         Py_DECREF(call_kwargs);
+        PyThread_acquire_lock(ctx->pending_lock, 1);
+        ctx->pending -= 1;
+        PyThread_release_lock(ctx->pending_lock);
         return NULL;
     }
 
-    Py_INCREF(ctx->queue);
-    PyTuple_SET_ITEM(worker_args, 0, ctx->queue);
+    PyTuple_SET_ITEM(worker_args, 0, ctx_capsule);
 
     Py_INCREF(callable);
     PyTuple_SET_ITEM(worker_args, 1, callable);
@@ -270,6 +269,9 @@ NativeScheduler_submit(NativeSchedulerObject *self, PyObject *args, PyObject *kw
     Py_DECREF(call_kwargs);
 
     if (future == NULL) {
+        PyThread_acquire_lock(ctx->pending_lock, 1);
+        ctx->pending -= 1;
+        PyThread_release_lock(ctx->pending_lock);
         return NULL;
     }
     return future;
@@ -300,15 +302,19 @@ NativeScheduler_stats(NativeSchedulerObject *self, PyObject *Py_UNUSED(ignored))
             return NULL;
         }
 
-        PyObject *queue_size_obj = PyObject_CallMethod(ctx->queue, "size", NULL);
-        if (queue_size_obj == NULL) {
+        PyThread_acquire_lock(ctx->pending_lock, 1);
+        Py_ssize_t pending = ctx->pending;
+        PyThread_release_lock(ctx->pending_lock);
+
+        PyObject *pending_obj = PyLong_FromSsize_t(pending);
+        if (pending_obj == NULL) {
             Py_DECREF(items);
             Py_DECREF(result);
             return NULL;
         }
 
-        PyObject *entry = Py_BuildValue("{sO,sn}", "queue_size", queue_size_obj, "max_workers", ctx->max_workers);
-        Py_DECREF(queue_size_obj);
+        PyObject *entry = Py_BuildValue("{sO,sn}", "queue_size", pending_obj, "max_workers", ctx->max_workers);
+        Py_DECREF(pending_obj);
         if (entry == NULL) {
             Py_DECREF(items);
             Py_DECREF(result);
@@ -365,20 +371,25 @@ NativeScheduler_shutdown(NativeSchedulerObject *self, PyObject *args, PyObject *
 static PyObject *
 execute_task(PyObject *Py_UNUSED(module), PyObject *args)
 {
-    PyObject *queue;
+    PyObject *ctx_capsule;
     PyObject *callable;
     PyObject *call_args;
     PyObject *call_kwargs;
 
-    if (!PyArg_ParseTuple(args, "OOOO", &queue, &callable, &call_args, &call_kwargs)) {
+    if (!PyArg_ParseTuple(args, "OOOO", &ctx_capsule, &callable, &call_args, &call_kwargs)) {
         return NULL;
     }
 
-    PyObject *pop_obj = PyObject_CallMethod(queue, "pop", NULL);
-    if (pop_obj == NULL) {
+    CategoryContext *ctx = (CategoryContext *)PyCapsule_GetPointer(ctx_capsule, "native_scheduler.CategoryContext");
+    if (ctx == NULL) {
         return NULL;
     }
-    Py_DECREF(pop_obj);
+
+    PyThread_acquire_lock(ctx->pending_lock, 1);
+    if (ctx->pending > 0) {
+        ctx->pending -= 1;
+    }
+    PyThread_release_lock(ctx->pending_lock);
 
     if (!PyTuple_Check(call_args)) {
         PyErr_SetString(PyExc_TypeError, "call_args must be tuple");

@@ -26,7 +26,7 @@ native_rpc_bridge_module = Extension(
 
 setup(
     name='native_rpc_bridge',
-    version='1.0.0',
+    version='1.1.0',
     description='Native RPC bridge for zero-copy IPC communication (Windows)',
     author='Terminal Project',
     ext_modules=[native_rpc_bridge_module],

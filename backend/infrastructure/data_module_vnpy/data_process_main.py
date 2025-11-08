@@ -50,9 +50,12 @@ from backend.infrastructure.system_vnpy.logging_system import (
 )
 from backend.infrastructure.native.native_serialization import build_dataframe_payload
 from backend.infrastructure.data_module_vnpy.rpc_protocol import (
+    FLAG_BINARY_PAYLOAD,
+    FLAG_ERROR,
+    FLAG_NATIVE,
     RPCRequest,
-    encode_native_response,
     decode_request,
+    encode_native_response,
     prepare_json_payload,
 )
 # 原生RPC桥接（用于方法ID映射）
@@ -497,26 +500,68 @@ class DataProcess:
 
         responses: List[bytes] = []
 
-        method_resolver = get_method_name if RPC_BRIDGE_AVAILABLE else (lambda _: "")
-
-        for request_data in batch_requests:
+        if RPC_BRIDGE_AVAILABLE:
             try:
-                try:
-                    rpc_request: RPCRequest = decode_request(
-                        request_data,
-                        method_resolver=method_resolver,
-                    )
-                    logger.debug(f"收到RPC请求: {rpc_request.method}", extra={"log_type": "SYSTEM", "request_id": rpc_request.request_id})
-                except Exception as exc:
-                    logger.warning(
-                        "⚠️ 批量处理: 无法解析RPC请求: %s", exc, extra={"log_type": "SYSTEM"}
-                    )
-                    continue
+                native_decoded = batch_decode_requests(
+                    batch_requests,
+                    method_resolver=get_method_name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ 原生批量解码失败，回退逐条解析: %s",
+                    exc,
+                    extra={"log_type": "SYSTEM"},
+                )
+                native_decoded = None
+        else:
+            native_decoded = None
 
-                method = rpc_request.method
-                params = rpc_request.params or {}
-                is_native = rpc_request.is_native
-                binary_payload = None
+        decoded_iterable: Iterable[Any]
+        if native_decoded:
+            decoded_iterable = native_decoded
+        else:
+            decoded_iterable = batch_requests
+
+        for request_entry in decoded_iterable:
+            try:
+                if native_decoded:
+                    (
+                        method_id,
+                        request_id,
+                        flags,
+                        method_name,
+                        metadata,
+                        payload_view,
+                    ) = request_entry
+                    request_id = int(request_id)
+                    flags = int(flags)
+                    metadata_dict = metadata if isinstance(metadata, dict) else {}
+                    params = metadata_dict.get("params", {})
+                    method = (method_name or metadata_dict.get("method") or "").strip()
+                    if not method:
+                        method = get_method_name(method_id) or ""
+                    is_native = True
+                    binary_payload = payload_view if payload_view not in (None, Py_None) else None  # type: ignore[name-defined]
+                    request_id = request_id
+                else:
+                    rpc_request: RPCRequest = decode_request(
+                        request_entry,
+                        method_resolver=get_method_name if RPC_BRIDGE_AVAILABLE else (lambda _: ""),
+                    )
+                    method = rpc_request.method
+                    params = rpc_request.params or {}
+                    is_native = rpc_request.is_native
+                    method_id = rpc_request.method_id or 0
+                    request_id = rpc_request.request_id
+                    flags = rpc_request.flags
+                    binary_payload = rpc_request.payload
+
+                logger.debug(
+                    "收到RPC请求: %s",
+                    method,
+                    extra={"log_type": "SYSTEM", "request_id": request_id},
+                )
+
                 response_payload: Any = None
                 error_message: Optional[str] = None
 
@@ -538,38 +583,69 @@ class DataProcess:
                     error_message = str(exc)
 
                 if is_native:
+                    target_request_id = request_id
+                    target_method_id = method_id
+
                     if error_message:
                         response_bytes = encode_native_response(
-                            request_id=rpc_request.request_id,
-                            method_id=rpc_request.method_id,
+                            request_id=target_request_id,
+                            method_id=target_method_id,
                             result=None,
                             error=error_message,
+                            flags=flags,
                         )
                     else:
+                        native_metadata: Dict[str, Any] | None = None
+                        binary_path: Optional[Sequence[str]] = None
+                        if isinstance(response_payload, dict):
+                            native_metadata = {"result": response_payload}
+                            if binary_payload is not None:
+                                binary_path = ("result", "data")
                         response_bytes = encode_native_response(
-                            request_id=rpc_request.request_id,
-                            method_id=rpc_request.method_id,
+                            request_id=target_request_id,
+                            method_id=target_method_id,
                             result=response_payload,
+                            flags=flags,
                             binary_payload=binary_payload,
-                            binary_field_path=("result", "data") if binary_payload is not None else None,
+                            metadata=native_metadata,
+                            binary_field_path=binary_path,
                         )
                     responses.append(response_bytes)
-                    logger.debug(f"发送本地响应: {rpc_request.method}", extra={"log_type": "SYSTEM", "request_id": rpc_request.request_id})
+                    logger.debug(
+                        "发送本地响应: %s",
+                        method,
+                        extra={"log_type": "SYSTEM", "request_id": target_request_id},
+                    )
                     continue
 
+                if native_decoded:
+                    response_request_id = request_id
+                else:
+                    response_request_id = rpc_request.request_id
+
                 if error_message:
-                    response_dict = {"id": rpc_request.request_id, "error": error_message}
+                    response_dict = {"id": response_request_id, "error": error_message}
                 else:
                     result_payload = response_payload
                     if binary_payload is not None and isinstance(response_payload, dict):
                         result_payload = prepare_json_payload(response_payload, binary_payload)
-                    response_dict = {"id": rpc_request.request_id, "result": result_payload}
+                    elif binary_payload is not None:
+                        result_payload = {
+                            "transport": "buffer",
+                            "data": binary_payload,
+                            "metadata": {"encoding": "raw-buffer"},
+                        }
+                    response_dict = {"id": response_request_id, "result": result_payload}
 
                 if HAS_ORJSON:
                     responses.append(orjson.dumps(response_dict))
                 else:
                     responses.append(json.dumps(response_dict, ensure_ascii=False).encode("utf-8"))
-                logger.debug(f"发送JSON响应: {rpc_request.method}", extra={"log_type": "SYSTEM", "request_id": rpc_request.request_id})
+                logger.debug(
+                    "发送JSON响应: %s",
+                    method,
+                    extra={"log_type": "SYSTEM", "request_id": response_request_id},
+                )
 
             except Exception as exc:
                 logger.error(

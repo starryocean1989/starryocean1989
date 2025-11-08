@@ -5,27 +5,133 @@ from __future__ import annotations
 
 import heapq
 import logging
+import os
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional, Tuple
 
 
-try:
+try:  # pragma: no cover - 原生扩展可选
     from ._native_scheduler import (  # type: ignore[attr-defined]
-        NativeScheduler,
-        SCHEDULER_AVAILABLE,
+        NativeScheduler as _NativeSchedulerCore,
+        SCHEDULER_AVAILABLE as _CORE_AVAILABLE,
         __version__,
     )
 except ImportError:  # pragma: no cover
+    _NativeSchedulerCore = None
+    _CORE_AVAILABLE = False
     __version__ = "0.0.0"
-    SCHEDULER_AVAILABLE = False
 
-    class NativeScheduler:  # type: ignore[override]
-        def __init__(self, *args, **kwargs):
-            raise RuntimeError("native_scheduler extension is not available")
+
+def _env_enabled(name: str, default: str = "0") -> bool:
+    value = os.getenv(name, default)
+    if value is None:
+        return False
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+_FORCE_NATIVE = _env_enabled("NATIVE_SCHEDULER_FORCE_NATIVE")
+_FORCE_PY = _env_enabled("NATIVE_SCHEDULER_FORCE_PY")
+_USE_CORE = bool(_NativeSchedulerCore and _CORE_AVAILABLE and not _FORCE_PY)
+
+
+class _CategoryContext:
+    __slots__ = ("executor", "max_workers", "pending", "lock")
+
+    def __init__(self, *, max_workers: int) -> None:
+        self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="py-native-scheduler")
+        self.max_workers = max_workers
+        self.pending = 0
+        self.lock = threading.Lock()
+
+    def submit(self, func: Callable[..., Any], args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Future:
+        with self.lock:
+            self.pending += 1
+
+        future = self.executor.submit(func, *args, **kwargs)
+
+        def _cleanup(_future: Future) -> None:
+            with self.lock:
+                self.pending -= 1
+
+        future.add_done_callback(_cleanup)
+        return future
+
+    def stats(self) -> Dict[str, Any]:
+        with self.lock:
+            pending = self.pending
+        return {"queue_size": pending, "max_workers": self.max_workers}
+
+    def shutdown(self, wait: bool) -> None:
+        self.executor.shutdown(wait=wait)
+
+
+class _PyNativeScheduler:
+    """纯 Python 调度器，用于无法可靠加载原生扩展时的兼容实现."""
+
+    def __init__(self) -> None:
+        self._categories: Dict[str, _CategoryContext] = {}
+        self._lock = threading.RLock()
+        self._shutdown = False
+
+    def register_category(self, name: str, *, queue_capacity: int = 1024, max_workers: int = 4) -> None:
+        if max_workers <= 0:
+            raise ValueError("max_workers must be positive")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("scheduler already shutdown")
+            if name in self._categories:
+                raise ValueError(f"category {name!r} already registered")
+            self._categories[name] = _CategoryContext(max_workers=max_workers)
+
+    def submit(
+        self,
+        category: str,
+        func: Callable[..., Any],
+        call_args: Optional[Tuple[Any, ...]] = None,
+        call_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Future:
+        if not callable(func):
+            raise TypeError("callable must be callable")
+
+        args = tuple(call_args or ())
+        kwargs = dict(call_kwargs or {})
+
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("scheduler already shutdown")
+            try:
+                ctx = self._categories[category]
+            except KeyError as exc:
+                raise KeyError("category not registered") from exc
+        return ctx.submit(func, args, kwargs)
+
+    def stats(self) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            return {name: ctx.stats() for name, ctx in self._categories.items()}
+
+    def shutdown(self, wait: bool = True) -> None:
+        with self._lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
+            categories = list(self._categories.items())
+        for _, ctx in categories:
+            ctx.shutdown(wait)
+
+
+if _USE_CORE:
+    NativeScheduler = _NativeSchedulerCore  # type: ignore[assignment]
+    USING_NATIVE_CORE = True
+else:
+    NativeScheduler = _PyNativeScheduler  # type: ignore[assignment]
+    USING_NATIVE_CORE = False
+
+SCHEDULER_AVAILABLE = True
 
 
 LOGGER = logging.getLogger(__name__)

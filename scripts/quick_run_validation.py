@@ -14,7 +14,7 @@ import os
 import sys
 import argparse
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 import pandas as pd
 
@@ -93,7 +93,39 @@ def demo_zero_copy_channel() -> None:
         pass
 
 
-def demo_tdx_batch_read(tdx_root: str | None = None) -> None:
+def _discover_symbols_from_tdx_root(tdx_root: Path, limit_per_market: int = 5) -> List[str]:
+    """从TDX目录自动发现可用的日线品种代码（按市场限量采样）。
+
+    Args:
+        tdx_root: 通达信根目录
+        limit_per_market: 每个市场最多采样数量
+
+    Returns:
+        发现的品种代码列表（不保证完整）
+    """
+    symbols: List[str] = []
+    markets = ["sh", "sz", "bj"]
+    for m in markets:
+        lday_dir = tdx_root / "vipdoc" / m / "lday"
+        if not lday_dir.exists():
+            continue
+        try:
+            files = sorted([p for p in lday_dir.glob("*.day") if p.is_file()])
+        except Exception:
+            files = []
+        # 采样前limit_per_market个文件，取文件名（不带后缀）作为品种代码
+        count = 0
+        for f in files:
+            sym = f.stem
+            if sym and sym not in symbols:
+                symbols.append(sym)
+                count += 1
+                if count >= limit_per_market:
+                    break
+    return symbols
+
+
+def demo_tdx_batch_read(tdx_root: str | None = None, auto_symbols: bool = False) -> None:
     print("\n=== TDX批量读取演示（包含零拷贝通道） ===")
     # 允许通过命令行参数覆盖TDX根目录
     if tdx_root:
@@ -104,6 +136,17 @@ def demo_tdx_batch_read(tdx_root: str | None = None) -> None:
     print(f"TDX根目录: {reader.tdx_root}")
     if not os.path.exists(str(reader.tdx_root)):
         print("⚠️ 默认TDX目录不存在，读取将返回空DataFrame（验证管道与日志）")
+    else:
+        if auto_symbols:
+            try:
+                discovered = _discover_symbols_from_tdx_root(reader.tdx_root, limit_per_market=5)
+                if discovered:
+                    symbols = discovered
+                    print(f"🔎 自动发现品种: {len(symbols)} 个，示例: {symbols[:min(5, len(symbols))]}")
+                else:
+                    print("ℹ️ 未在TDX目录中发现日线文件，使用默认演示品种。")
+            except Exception as e:
+                print(f"⚠️ 自动发现品种失败: {e}，使用默认演示品种。")
 
     def progress_cb(done: int, total: int, msg: str):
         print(f"进度: {done}/{total} - {msg}")
@@ -150,9 +193,15 @@ if __name__ == "__main__":
         default=None,
         help="通达信根目录路径，例如 C:/new_tdx",
     )
+    parser.add_argument(
+        "--auto-symbols",
+        dest="auto_symbols",
+        action="store_true",
+        help="自动扫描TDX目录并生成品种列表（按市场限量采样）",
+    )
     args = parser.parse_args()
 
     setup_logging()
     demo_zero_copy_channel()
-    demo_tdx_batch_read(args.tdx_root)
+    demo_tdx_batch_read(args.tdx_root, auto_symbols=args.auto_symbols)
     demo_physical_disks_info()

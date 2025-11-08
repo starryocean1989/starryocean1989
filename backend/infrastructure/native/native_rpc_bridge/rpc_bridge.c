@@ -8,88 +8,88 @@
 #include <string.h>
 #include <time.h>
 
-// 静态请求ID计数器
 static uint32_t g_request_id_counter = 0;
 
-// 创建RPC消息头
+static uint32_t generate_request_id(void) {
+    uint32_t next_id = ++g_request_id_counter;
+    if (next_id == 0) {
+        next_id = 1;
+        g_request_id_counter = next_id;
+    }
+    return next_id;
+}
+
 RPCMessageHeader* create_rpc_header(uint32_t method_id, uint32_t payload_size) {
     RPCMessageHeader* header = (RPCMessageHeader*)malloc(sizeof(RPCMessageHeader));
-    if (!header) return NULL;
-    
+    if (header == NULL) {
+        return NULL;
+    }
+
     header->method_id = method_id;
     header->payload_size = payload_size;
-    header->request_id = ++g_request_id_counter;
-    header->flags = 0;
-    
+    header->request_id = generate_request_id();
+    header->flags = RPC_FLAG_NATIVE;
     return header;
 }
 
-// 序列化RPC请求（简化版：header + payload）
-int serialize_rpc_request(RPCMessageHeader* header, const char* payload, 
+int serialize_rpc_request(RPCMessageHeader* header, const char* payload,
                          char** output, size_t* output_size) {
-    if (!header || !payload || !output || !output_size) {
+    if (header == NULL || payload == NULL || output == NULL || output_size == NULL) {
         return -1;
     }
-    
+
     size_t total_size = sizeof(RPCMessageHeader) + header->payload_size;
     char* buffer = (char*)malloc(total_size);
-    if (!buffer) return -1;
-    
-    // 拷贝消息头
+    if (buffer == NULL) {
+        return -1;
+    }
+
     memcpy(buffer, header, sizeof(RPCMessageHeader));
-    
-    // 拷贝负载
     memcpy(buffer + sizeof(RPCMessageHeader), payload, header->payload_size);
-    
+
     *output = buffer;
     *output_size = total_size;
-    
     return 0;
 }
 
-// 反序列化RPC响应
 RPCResponse* deserialize_rpc_response(const char* data, size_t size) {
-    if (!data || size < sizeof(int)) {
+    if (data == NULL || size < sizeof(int)) {
         return NULL;
     }
-    
+
     RPCResponse* response = (RPCResponse*)malloc(sizeof(RPCResponse));
-    if (!response) return NULL;
-    
-    // 简化实现：假设响应格式为 status_code + data
+    if (response == NULL) {
+        return NULL;
+    }
+
+    memset(response, 0, sizeof(RPCResponse));
     memcpy(&response->status_code, data, sizeof(int));
-    
+
     if (response->status_code == 0 && size > sizeof(int)) {
-        // 成功响应，复制数据
         response->data_size = size - sizeof(int);
         response->data = malloc(response->data_size);
-        if (response->data) {
+        if (response->data != NULL) {
             memcpy(response->data, data + sizeof(int), response->data_size);
         }
-        response->error_message = NULL;
     } else {
-        // 错误响应
-        response->data = NULL;
-        response->data_size = 0;
-        response->error_message = strdup("RPC call failed");
+        response->error_message = _strdup("RPC call failed");
     }
-    
+
     return response;
 }
 
-// 清理函数
 void free_rpc_header(RPCMessageHeader* header) {
-    if (header) {
+    if (header != NULL) {
         free(header);
     }
 }
 
 void free_rpc_response(RPCResponse* response) {
-    if (response) {
-        if (response->data) {
+    if (response != NULL) {
+        if (response->data != NULL) {
             free(response->data);
         }
-        if (response->error_message) {
+        if (response->error_message != NULL) {
             free(response->error_message);
         }
         free(response);

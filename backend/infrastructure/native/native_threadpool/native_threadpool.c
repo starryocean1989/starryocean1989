@@ -21,6 +21,7 @@ typedef struct {
     HANDLE queue_event;
     Py_ssize_t worker_count;
     int shutting_down;
+    HANDLE *worker_handles;
 } NativeThreadPoolObject;
 
 static PyTypeObject NativeFutureType;
@@ -347,6 +348,17 @@ NativeThreadPool_init(NativeThreadPoolObject *self, PyObject *args, PyObject *kw
 
     self->worker_count = max_workers;
     self->shutting_down = 0;
+    self->worker_handles = PyMem_Calloc((size_t)self->worker_count, sizeof(HANDLE));
+    if (self->worker_handles == NULL) {
+        Py_DECREF(self->task_queue);
+        self->task_queue = NULL;
+        CloseHandle(self->queue_event);
+        self->queue_event = NULL;
+        PyThread_free_lock(self->queue_lock);
+        self->queue_lock = NULL;
+        PyErr_NoMemory();
+        return -1;
+    }
 
     for (Py_ssize_t i = 0; i < self->worker_count; ++i) {
         Py_INCREF(self);
@@ -355,9 +367,17 @@ NativeThreadPool_init(NativeThreadPoolObject *self, PyObject *args, PyObject *kw
         if (handle == 0) {
             Py_DECREF(self);
             PyErr_SetFromWindowsErr(0);
+            for (Py_ssize_t j = 0; j < i; ++j) {
+                if (self->worker_handles[j] != NULL) {
+                    CloseHandle(self->worker_handles[j]);
+                    self->worker_handles[j] = NULL;
+                }
+            }
+            PyMem_Free(self->worker_handles);
+            self->worker_handles = NULL;
             return -1;
         }
-        CloseHandle((HANDLE)handle);
+        self->worker_handles[i] = (HANDLE)handle;
     }
 
     return 0;
@@ -366,6 +386,16 @@ NativeThreadPool_init(NativeThreadPoolObject *self, PyObject *args, PyObject *kw
 static void
 NativeThreadPool_dealloc(NativeThreadPoolObject *self)
 {
+    if (self->worker_handles != NULL) {
+        for (Py_ssize_t i = 0; i < self->worker_count; ++i) {
+            if (self->worker_handles[i] != NULL) {
+                CloseHandle(self->worker_handles[i]);
+                self->worker_handles[i] = NULL;
+            }
+        }
+        PyMem_Free(self->worker_handles);
+        self->worker_handles = NULL;
+    }
     if (self->queue_lock != NULL) {
         PyThread_free_lock(self->queue_lock);
         self->queue_lock = NULL;
@@ -429,11 +459,30 @@ NativeThreadPool_shutdown(NativeThreadPoolObject *self, PyObject *args, PyObject
     PyThread_release_lock(self->queue_lock);
 
     SetEvent(self->queue_event);
-    if (wait) {
-        Py_BEGIN_ALLOW_THREADS
-        Sleep(10);
-        Py_END_ALLOW_THREADS
+
+    if (wait && self->worker_handles != NULL) {
+        for (Py_ssize_t i = 0; i < self->worker_count; ++i) {
+            HANDLE handle = self->worker_handles[i];
+            if (handle != NULL) {
+                WaitForSingleObject(handle, INFINITE);
+                CloseHandle(handle);
+                self->worker_handles[i] = NULL;
+            }
+        }
+    } else if (self->worker_handles != NULL) {
+        for (Py_ssize_t i = 0; i < self->worker_count; ++i) {
+            if (self->worker_handles[i] != NULL) {
+                CloseHandle(self->worker_handles[i]);
+                self->worker_handles[i] = NULL;
+            }
+        }
     }
+
+    if (self->worker_handles != NULL) {
+        PyMem_Free(self->worker_handles);
+        self->worker_handles = NULL;
+    }
+
     Py_RETURN_NONE;
 }
 

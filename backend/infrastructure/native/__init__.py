@@ -11,6 +11,7 @@ Native扩展模块统一导入
 - native_conversion: 数据转换（批量类型转换、批量字符串操作）
 - native_collections: 高性能容器（LRU缓存、优先级队列）
 - native_compute: 数值计算（批量数值运算、批量哈希计算）
+- native_calendar: 高性能交易日历查询
 """
 
 import importlib
@@ -107,6 +108,20 @@ try:
 except ImportError:
     pass
 
+# 负载均衡优化 - native_load_balancer
+try:
+    from .native_load_balancer import (
+        LOAD_BALANCER_AVAILABLE as NATIVE_LOAD_BALANCER_AVAILABLE,
+        optimize as native_load_balancer_optimize,
+    )
+    __all__.extend([
+        'NATIVE_LOAD_BALANCER_AVAILABLE',
+        'native_load_balancer_optimize',
+    ])
+except ImportError:
+    NATIVE_LOAD_BALANCER_AVAILABLE = False  # type: ignore
+    native_load_balancer_optimize = None  # type: ignore
+
 # 内存操作 - native_memory
 try:
     from .native_memory import (
@@ -152,6 +167,20 @@ try:
 except ImportError:
     SOCKET_METRICS_AVAILABLE = False  # type: ignore
     get_socket_metrics = None  # type: ignore
+
+# 交易日历 - native_calendar
+try:
+    from .native_calendar import (
+        NativeCalendar,
+        NATIVE_CALENDAR_AVAILABLE,
+    )
+    __all__.extend([
+        'NativeCalendar',
+        'NATIVE_CALENDAR_AVAILABLE',
+    ])
+except ImportError:
+    NATIVE_CALENDAR_AVAILABLE = False  # type: ignore
+    NativeCalendar = None  # type: ignore
 
 # SMART 监控 - native_smart_monitor
 try:
@@ -206,21 +235,25 @@ except ImportError:
     dataframe_quality_counters = None  # type: ignore
 
 # 流式统计 - native_statistics
+STATISTICS_AVAILABLE: bool = False
+create_streaming_metric = None
+StreamingMetricHandle = None
 try:
     from .native_statistics import (
-        STATISTICS_AVAILABLE,
-        create_streaming_metric,
-        StreamingMetricHandle,
+        STATISTICS_AVAILABLE as _STATISTICS_AVAILABLE,
+        create_streaming_metric as _create_streaming_metric,
+        StreamingMetricHandle as _StreamingMetricHandle,
     )
-    __all__.extend([
-        'STATISTICS_AVAILABLE',
-        'create_streaming_metric',
-        'StreamingMetricHandle',
-    ])
+    STATISTICS_AVAILABLE = bool(_STATISTICS_AVAILABLE)
+    create_streaming_metric = _create_streaming_metric
+    StreamingMetricHandle = _StreamingMetricHandle
 except ImportError:
-    STATISTICS_AVAILABLE = False  # type: ignore
-    create_streaming_metric = None  # type: ignore
-    StreamingMetricHandle = None  # type: ignore
+    pass
+__all__.extend([
+    'STATISTICS_AVAILABLE',
+    'create_streaming_metric',
+    'StreamingMetricHandle',
+])
 
 # 高性能容器 - native_collections
 try:

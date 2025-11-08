@@ -6,6 +6,7 @@
 ## 功能概述
 
 - `get_socket_metrics()`：返回当前活跃连接数、监听端口以及收发字节累计值。
+- `get_tcp_buffer_snapshot()`：提供 TCP 连接状态、按进程连接数 Top10、默认缓冲区配置等速查指标，避免 `psutil` 大量句柄遍历。
 - `SOCKET_METRICS_AVAILABLE`：指示扩展是否可用，便于调用方降级。
 - 内部缓存了上次采样结果，可实现环比统计。
 

@@ -41,6 +41,15 @@ from backend.infrastructure.tdx_asyncio import ServerTester
 # 导入核心模块
 from .core_engine import ConfigManager
 
+try:
+    from backend.infrastructure.native.native_load_balancer import (
+        LOAD_BALANCER_AVAILABLE as NATIVE_LOAD_BALANCER_AVAILABLE,
+        optimize as native_load_balancer_optimize,
+    )
+except Exception:  # pragma: no cover - 扩展缺失时降级
+    NATIVE_LOAD_BALANCER_AVAILABLE = False  # type: ignore
+    native_load_balancer_optimize = None  # type: ignore
+
 # ==================== 日志配置 ====================
 logger = logging.getLogger("backend.data_module.loadbalancer")
 
@@ -1763,7 +1772,6 @@ class LoadBalancer:
             resource_metrics, f"{resource_metrics.bottleneck.lower()}_percent", 50.0
         )
 
-        # 瓶颈资源使用率越高，缩放因子越小
         if bottleneck_value > 80:
             resource_scale = 0.3
         elif bottleneck_value > 60:
@@ -1773,79 +1781,122 @@ class LoadBalancer:
         else:
             resource_scale = 1.6
 
-        # 5. 应用资源缩放
-        processes = max(1, int(strategy["base_processes"] * resource_scale))
-        coroutines_per_process = max(
-            10, int(strategy["base_coroutines_per_process"] * resource_scale)
-        )
-
-        # 6. 应用队列压力调整
-        processes = max(1, int(processes * queue_pressure_factor))
-        coroutines_per_process = max(10, int(coroutines_per_process * queue_pressure_factor))
-
-        # 7. 🎯 应用服务器连接数约束（直接累加所有活跃服务器的max_connections）
-        server_constrained = False
-        original_coroutines = coroutines_per_process
-
         # 直接累加所有活跃服务器的max_connections
         max_total_coroutines = self.server_pool.calculate_total_max_connections()
-
-        # 获取服务器数量用于日志
         stats = self.server_pool.get_stats()
         num_available_servers = stats.get("available", 0)
 
-        if num_available_servers > 0 and max_total_coroutines > 0:
-            # 总并发数 = 进程数 × 每进程协程数
-            total_concurrency = processes * coroutines_per_process
+        processes = 0
+        coroutines_per_process = 0
+        server_constrained = False
+        task_constrained = False
+        queue_factor_used = queue_pressure_factor
+        native_used = False
 
-            # 如果总并发数超过最大协程限制，进行约束
-            if total_concurrency > max_total_coroutines:
-                server_constrained = True
-                # 优先调整协程数，保持进程数不变（避免进程创建开销）
-                coroutines_per_process = max(1, max_total_coroutines // processes)
+        if (
+            NATIVE_LOAD_BALANCER_AVAILABLE
+            and callable(native_load_balancer_optimize)
+        ):
+            try:
+                native_result = native_load_balancer_optimize(
+                    bottleneck_value,
+                    queue_pressure_factor,
+                    strategy["base_processes"],
+                    strategy["base_coroutines_per_process"],
+                    strategy["max_processes"],
+                    strategy["max_coroutines_per_process"],
+                    10,
+                    max_total_coroutines,
+                    task.total_count,
+                )
+                processes = int(native_result.get("processes", 0))
+                coroutines_per_process = int(native_result.get("coroutines_per_process", 0))
+                if processes > 0 and coroutines_per_process > 0:
+                    resource_scale = float(native_result.get("resource_scale", resource_scale))
+                    queue_factor_used = float(native_result.get("queue_factor", queue_pressure_factor))
+                    server_constrained = bool(native_result.get("server_constrained", False))
+                    task_constrained = bool(native_result.get("task_constrained", False))
+                    native_used = True
+            except Exception as exc:
+                logger.debug(
+                    "[LOADBALANCER] native_load_balancer.optimize 失败，回退到 Python 实现: %s",
+                    exc,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
+                )
 
-                # 如果调整后的协程数太小（<3），则减少进程数
-                if coroutines_per_process < 3 and processes > 1:
-                    processes = max(1, max_total_coroutines // 3)
+        if not native_used:
+            processes = max(1, int(strategy["base_processes"] * resource_scale))
+            coroutines_per_process = max(
+                10, int(strategy["base_coroutines_per_process"] * resource_scale)
+            )
+
+            processes = max(1, int(processes * queue_pressure_factor))
+            coroutines_per_process = max(
+                10, int(coroutines_per_process * queue_pressure_factor)
+            )
+
+            original_coroutines = coroutines_per_process
+
+            if num_available_servers > 0 and max_total_coroutines > 0:
+                total_concurrency = processes * coroutines_per_process
+                if total_concurrency > max_total_coroutines:
+                    server_constrained = True
                     coroutines_per_process = max(1, max_total_coroutines // processes)
 
-                logger.debug(
-                    f"[LOADBALANCER] 服务器连接数约束生效: "
-                    f"可用服务器={num_available_servers}, "
-                    f"最大总协程数={max_total_coroutines}（所有服务器max_connections累加）, "
-                    f"原始并发={processes}×{original_coroutines}={processes*original_coroutines}, "
-                    f"约束后并发={processes}×{coroutines_per_process}={processes*coroutines_per_process}"
-                )
-            else:
-                logger.debug(
-                    f"[LOADBALANCER] 服务器连接数约束未生效: "
-                    f"可用服务器={num_available_servers}, "
-                    f"最大总协程数={max_total_coroutines}（所有服务器max_connections累加）, "
-                    f"当前总并发={total_concurrency}（未超过限制）"
-                )
+                    if coroutines_per_process < 3 and processes > 1:
+                        processes = max(1, max_total_coroutines // 3)
+                        coroutines_per_process = max(1, max_total_coroutines // processes)
 
-        # 8. 🎯 应用任务数量约束（总协程数 ≤ 任务数）
-        task_constrained = False
-        original_total_coroutines = processes * coroutines_per_process
-        if task.total_count > 0:
-            total_coroutines = processes * coroutines_per_process
+                    logger.debug(
+                        f"[LOADBALANCER] 服务器连接数约束生效: "
+                        f"可用服务器={num_available_servers}, "
+                        f"最大总协程数={max_total_coroutines}（所有服务器max_connections累加）, "
+                        f"原始并发={processes}×{original_coroutines}={processes*original_coroutines}, "
+                        f"约束后并发={processes}×{coroutines_per_process}={processes*coroutines_per_process}"
+                    )
+                else:
+                    logger.debug(
+                        f"[LOADBALANCER] 服务器连接数约束未生效: "
+                        f"可用服务器={num_available_servers}, "
+                        f"最大总协程数={max_total_coroutines}（所有服务器max_connections累加）, "
+                        f"当前总并发={total_concurrency}（未超过限制）"
+                    )
 
-            # 如果总协程数超过任务数，进行约束
-            if total_coroutines > task.total_count:
-                task_constrained = True
-                # 优先调整协程数，保持进程数不变（避免进程创建开销）
-                coroutines_per_process = max(1, task.total_count // processes)
-
-                # 如果调整后的协程数太小（<3），则减少进程数
-                if coroutines_per_process < 3 and processes > 1:
-                    processes = max(1, task.total_count // 3)
+            original_total_coroutines = processes * coroutines_per_process
+            if task.total_count > 0:
+                total_coroutines = processes * coroutines_per_process
+                if total_coroutines > task.total_count:
+                    task_constrained = True
                     coroutines_per_process = max(1, task.total_count // processes)
 
+                    if coroutines_per_process < 3 and processes > 1:
+                        processes = max(1, task.total_count // 3)
+                        coroutines_per_process = max(1, task.total_count // processes)
+
+                    logger.debug(
+                        f"[LOADBALANCER] 任务数量约束生效: 任务数={task.total_count}, "
+                        f"原始总协程数={original_total_coroutines}, "
+                        f"约束后总协程数={processes * coroutines_per_process}, "
+                        f"进程={processes}, 每进程协程={coroutines_per_process}"
+                    )
+        else:
+            queue_pressure_factor = queue_factor_used
+            if server_constrained:
                 logger.debug(
-                    f"[LOADBALANCER] 任务数量约束生效: 任务数={task.total_count}, "
-                    f"原始总协程数={original_total_coroutines}, "
-                    f"约束后总协程数={processes * coroutines_per_process}, "
-                    f"进程={processes}, 每进程协程={coroutines_per_process}"
+                    "[LOADBALANCER] native 优化器应用服务器约束: 可用服务器=%s, "
+                    "最大总协程数=%s, 最终并发=%s×%s=%s",
+                    num_available_servers,
+                    max_total_coroutines,
+                    processes,
+                    coroutines_per_process,
+                    processes * coroutines_per_process,
+                )
+            if task_constrained:
+                logger.debug(
+                    "[LOADBALANCER] native 优化器应用任务约束: 任务数=%s, 最终并发=%s",
+                    task.total_count,
+                    processes * coroutines_per_process,
                 )
 
         # 9. 构建配置
@@ -1870,10 +1921,13 @@ class LoadBalancer:
             "server_constrained": server_constrained,
             "task_constrained": task_constrained,
             "task_count": task.total_count,
+            "native_optimizer": native_used,
         }
 
+        optimizer_mode = "native" if native_used else "python"
         logger.debug(
-            f"[LOADBALANCER] 动态配置 [{task.name}]: 进程={config['processes']}, "
+            f"[LOADBALANCER] 动态配置[{task.name}][{optimizer_mode}]: "
+            f"进程={config['processes']}, "
             f"协程={config['coroutines_per_process']}, 总并发={config['processes']*config['coroutines_per_process']}, "
             f"任务数={task.total_count}, "
             f"可用服务器={num_available_servers}, "

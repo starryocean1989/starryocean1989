@@ -232,40 +232,6 @@ collect_smart_attributes(const BYTE *buffer, DWORD buffer_size, SMART_SUMMARY *s
         }
         Py_DECREF(attr_dict);
 
-        switch (attribute_id) {
-            case 0x05:  /* Reallocated Sectors Count */
-                summary->reallocated = raw_value;
-                break;
-            case 0x09:  /* Power-On Hours */
-                summary->power_on_hours = raw_value;
-                break;
-            case 0xC0:  /* Unsafe Shutdown / Power-off retract */
-            case 0xC3:  /* Hardware ECC Recovered */
-            case 0xC5:  /* Current Pending Sector Count */
-                summary->pending = raw_value;
-                break;
-            case 0xC6:  /* Uncorrectable Sector Count */
-            case 0xBB:  /* Reported Uncorrectable Errors */
-            case 0xBC:  /* Command Timeout */
-            case 0xBD:  /* High Fly Writes */
-            case 0xBE:  /* Airflow Temperature */
-            case 0xBF:  /* G-sense Error Rate */
-                summary->uncorrectable = raw_value;
-                break;
-            case 0xC2:  /* Temperature (some drives) */
-            case 0xBE:  /* Temperature Alternate */
-            case 0xB0:
-            case 0xB1:
-            case 0xB8:
-            case 0xC7:
-            case 0xC8:
-                /* fallthrough to allow parsing attr 194 explicitly */
-                break;
-            case 0xC7:  /* CRC Error Count */
-            default:
-                break;
-        }
-
         if (attribute_id == 0xC5) {
             summary->pending = raw_value;
         } else if (attribute_id == 0xC6 || attribute_id == 0xBB || attribute_id == 0xBC) {

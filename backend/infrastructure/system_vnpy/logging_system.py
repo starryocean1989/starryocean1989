@@ -4,7 +4,7 @@
 
 设计目标：
 1. 大幅简化路由规则（硬编码，不使用配置文件）
-2. 合并文件输出（统一到logs/目录，不再区分logs/和logs/ai/）
+2. 合并文件输出（统一到 logs/ 目录）
 3. 压缩文件数量（所有代码合并到一个文件）
 4. 确保多进程多线程日志都能被拦截和有序输出
 
@@ -1020,8 +1020,8 @@ class ProgressThrottler:
 class EventLogFileHandler(logging.Handler):
     """事件日志文件Handler - 为每个事件创建独立的日志文件
 
-    新架构：统一输出到logs/目录，不再区分logs/和logs/ai/
-    事件日志文件：logs/{event_name}_YYYYMMDD_HHMMSS.log
+    事件日志输出统一位于 logs/ 目录，文件命名格式：
+    logs/{event_name}_YYYYMMDD_HHMMSS.log
     """
 
     def __init__(self, base_dir: str = "logs", encoding: str = "utf-8"):
