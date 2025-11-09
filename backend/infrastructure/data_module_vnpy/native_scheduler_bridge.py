@@ -7,8 +7,13 @@ Native 调度器桥接层
 
 from __future__ import annotations
 
-import importlib
+import logging
 from typing import Any, Dict, Optional, Tuple
+
+from backend.infrastructure.native.native_scheduler import USING_NATIVE_CORE
+from backend.infrastructure.scheduling.native_scheduler_adapter import SchedulerAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class NativeSchedulerBridge:
@@ -26,55 +31,40 @@ class NativeSchedulerBridge:
         *,
         auto_shutdown: bool = True,
     ):
-        module = importlib.import_module("backend.infrastructure.native.native_scheduler")
-        scheduler_available = getattr(module, "SCHEDULER_AVAILABLE", False)
-        if not scheduler_available:
-            raise RuntimeError("native_scheduler extension unavailable")
-
-        self._native_scheduler_cls = getattr(module, "NativeScheduler")
+        self._adapter = SchedulerAdapter(
+            categories=categories or self.DEFAULT_CATEGORIES,
+            auto_shutdown=auto_shutdown,
+        )
         self._auto_shutdown = auto_shutdown
-        self._scheduler = None
-        self._categories: Dict[str, Dict[str, int]] = {}
-        self._initialise(categories or self.DEFAULT_CATEGORIES)
-
-    def _initialise(self, categories: Dict[str, Dict[str, int]]) -> None:
-        if self._scheduler is not None:
-            try:
-                self._scheduler.shutdown(wait=True)
-            except Exception:  # pragma: no cover - 安全兜底
-                pass
-
-        self._scheduler = self._native_scheduler_cls()
-        self._categories = {}
-        for name, cfg in categories.items():
-            queue_capacity = max(1, int(cfg.get("queue_capacity", 1024)))
-            max_workers = max(1, int(cfg.get("max_workers", 4)))
-            self._scheduler.register_category(
-                name,
-                queue_capacity=queue_capacity,
-                max_workers=max_workers,
+        try:
+            logger.info(
+                "NativeSchedulerBridge initialised: using_native=%s, categories=%s",
+                USING_NATIVE_CORE,
+                list(self._adapter.get_categories().keys()),
             )
-            self._categories[name] = {"queue_capacity": queue_capacity, "max_workers": max_workers}
+        except Exception:  # pragma: no cover - 安全兜底
+            logger.debug("bridge init logging failed", exc_info=True)
 
     @property
     def available(self) -> bool:
-        return self._scheduler is not None
+        return True
 
     @property
     def categories(self) -> Dict[str, Dict[str, int]]:
-        return dict(self._categories)
+        return self._adapter.get_categories()
 
-    def ensure_category(self, name: str, *, queue_capacity: Optional[int] = None, max_workers: Optional[int] = None) -> None:
-        queue_capacity = max(1, int(queue_capacity or self._categories.get(name, {}).get("queue_capacity", 1024)))
-        max_workers = max(1, int(max_workers or self._categories.get(name, {}).get("max_workers", 4)))
-        desired = {"queue_capacity": queue_capacity, "max_workers": max_workers}
-        current = self._categories.get(name)
-        if current == desired:
-            return
-
-        updated = dict(self._categories)
-        updated[name] = desired
-        self._initialise(updated)
+    def ensure_category(
+        self,
+        name: str,
+        *,
+        queue_capacity: Optional[int] = None,
+        max_workers: Optional[int] = None,
+    ) -> None:
+        self._adapter.ensure_category(
+            name,
+            queue_capacity=queue_capacity,
+            max_workers=max_workers,
+        )
 
     def submit(
         self,
@@ -83,42 +73,20 @@ class NativeSchedulerBridge:
         args: Tuple[Any, ...] | None = None,
         kwargs: Optional[Dict[str, Any]] = None,
     ):
-        if self._scheduler is None:
-            raise RuntimeError("NativeSchedulerBridge is not initialised")
-        if args is None:
-            args = ()
-        elif not isinstance(args, tuple):
-            args = tuple(args)
-
-        if kwargs is None:
-            kwargs = {}
-        elif not isinstance(kwargs, dict):
-            kwargs = dict(kwargs)
-        submit_kwargs = {"call_args": args}
-        if kwargs:
-            submit_kwargs["call_kwargs"] = kwargs
-
-        return self._scheduler.submit(category, func, **submit_kwargs)
+        return self._adapter.submit(category, func, args=args, kwargs=kwargs)
 
     def stats(self) -> Dict[str, Any]:
-        if self._scheduler is None:
-            return {}
-        return self._scheduler.stats()
+        return self._adapter.stats()
 
     def shutdown(self, wait: bool = True) -> None:
-        if self._scheduler is None:
-            return
-        try:
-            self._scheduler.shutdown(wait=wait)
-        finally:
-            self._scheduler = None
+        logger.info("bridge shutdown: wait=%s", wait)
+        self._adapter.shutdown(wait=wait)
 
     def get_metrics(self) -> Dict[str, Any]:
         return self.stats()
 
     def reset(self, categories: Dict[str, Dict[str, int]]) -> None:
-        """重建调度器（例如需要调整线程数时调用）。"""
-        self._initialise(categories)
+        self._adapter.configure(categories)
 
     def __enter__(self) -> "NativeSchedulerBridge":
         return self
@@ -128,5 +96,5 @@ class NativeSchedulerBridge:
             self.shutdown(wait=True)
 
     def __repr__(self) -> str:  # pragma: no cover - 调试辅助
-        return f"<NativeSchedulerBridge categories={list(self._categories.keys())}>"
+        return f"<NativeSchedulerBridge categories={list(self.categories.keys())}>"
 

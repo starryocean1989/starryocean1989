@@ -5,13 +5,8 @@
 import struct
 from collections import OrderedDict
 
-# 🚀 性能优化：导入native_compute用于批量价格计算
-from backend.infrastructure.native.native_compute import batch_compute
-
-# 🚀 性能优化：导入native_conversion用于批量类型转换
-from backend.infrastructure.native.native_conversion import batch_convert
-
-from ...utils.helper import get_price, get_security_coefficient
+# 🚀 性能优化：使用安全批量计算与转换封装
+from ...utils.helper import get_price, get_security_coefficient, safe_batch_compute, safe_batch_convert
 from ..base import AsyncBaseParser
 
 
@@ -77,14 +72,14 @@ class AsyncGetMinuteTimeData(AsyncBaseParser):
 
         # 🚀 性能优化：批量转换为浮点数（使用native_conversion）
         if len(cumulative_prices_int) > 0:
-            cumulative_prices = batch_convert(cumulative_prices_int, float)  # type: ignore
+            cumulative_prices = safe_batch_convert(cumulative_prices_int, float)
         else:
             cumulative_prices = []
 
         # 🚀 性能优化：批量乘以系数（使用native_compute）
         if len(cumulative_prices) > 0:
             coefficients = [self.coefficient] * len(cumulative_prices)
-            final_prices = batch_compute(cumulative_prices, "multiply", coefficients)  # type: ignore
+            final_prices = safe_batch_compute(cumulative_prices, "multiply", coefficients)
         else:
             final_prices = []
 

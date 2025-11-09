@@ -37,7 +37,7 @@
 | 26 | `native_rpc_bridge` | 多语言 RPC 桥接、数据通道 | [native_rpc_bridge/README.md](./native_rpc_bridge/README.md) |
 | 27 | `native_calendar` | 高性能交易日历查询 | [native_calendar/README.md](./native_calendar/README.md) |
 
-> UI 侧的 `native_qhighlighter` 位于 `ui/native_extensions`，由脚本末尾额外构建。
+> UI 侧的 `native_qhighlighter` 已移至 `backend/infrastructure/native/native_qhighlighter`，由脚本统一构建。
 
 ## 统一特性
 
@@ -67,7 +67,7 @@ cd backend/infrastructure/native
 compile_all.bat
 ```
 
-脚本共 28 步：前 27 步依次构建当前目录内全部扩展，第 28 步进入 `ui/native_extensions/native_qhighlighter` 完成 UI 原生高亮编译。若任一步失败，脚本会打印错误并暂停，便于定位。
+脚本共 27 步，依次构建当前目录内全部扩展，包括 `native_qhighlighter`。若任一步失败，脚本会打印错误并暂停，便于定位。
 
 ### 编译单个包
 
@@ -242,4 +242,9 @@ MIT License
 ---
 
 **最后更新**: 2025-11-08
+
+### 启动阶段日志路由（最佳实践）
+- 原生模块的日志统一通过`LoggingHub`路由；控制台仅展示`STAGE_NODE`与`WARNING+`。
+- 子进程日志通过`MultiProcessLogCollector`汇聚到主进程，有序展示由`OrderedLogQueue`保证。
+- 若原生扩展（如`native_ipc`、`native_log_pipeline`）未编译或不可用，将自动回退至Python版本并输出`WARNING`提示，不影响启动。
 

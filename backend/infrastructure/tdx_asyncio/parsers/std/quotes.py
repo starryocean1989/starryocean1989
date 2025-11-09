@@ -5,11 +5,14 @@
 import struct
 from collections import OrderedDict
 
-# 🚀 性能优化：导入native_compute用于批量价格计算
-from backend.infrastructure.native.native_compute import batch_compute
-
-# 🚀 性能优化：导入批量get_price用于批量价格解析
-from ...utils.helper import get_price, batch_get_price, get_security_coefficient, get_volume
+# 🚀 性能优化：导入批量get_price与安全批量计算封装
+from ...utils.helper import (
+    get_price,
+    batch_get_price,
+    get_security_coefficient,
+    get_volume,
+    safe_batch_compute,
+)
 from ..base import AsyncBaseParser
 
 
@@ -305,10 +308,10 @@ class AsyncGetSecurityQuotesCmd(AsyncBaseParser):
         coefficients = [calc[2] for calc in price_calculations]
 
         # 先批量计算 base_price + diff
-        sums = batch_compute(base_prices, "add", diffs)
+        sums = safe_batch_compute(base_prices, "add", diffs)
 
         # 再批量计算 sums * coefficient
-        results = batch_compute(sums, "multiply", coefficients)
+        results = safe_batch_compute(sums, "multiply", coefficients)
 
         return results
 

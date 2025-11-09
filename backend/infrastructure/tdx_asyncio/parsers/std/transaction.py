@@ -5,10 +5,8 @@
 import struct
 from collections import OrderedDict
 
-# 🚀 性能优化：导入native_compute用于批量价格计算
-from backend.infrastructure.native.native_compute import batch_compute
-
-from ...utils.helper import get_price, get_time
+# 🚀 性能优化：导入安全批量计算封装
+from ...utils.helper import get_price, get_time, safe_batch_compute
 from ..base import AsyncBaseParser
 
 
@@ -82,7 +80,7 @@ class AsyncGetTransactionData(AsyncBaseParser):
 
         # 🚀 性能优化：批量除以100（使用native_compute）
         if len(cumulative_prices) > 0:
-            prices = batch_compute(cumulative_prices, "divide")  # type: ignore
+            prices = safe_batch_compute(cumulative_prices, "divide")
         else:
             prices = []
 

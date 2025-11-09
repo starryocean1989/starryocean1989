@@ -5,10 +5,8 @@
 import struct
 from collections import OrderedDict
 
-# 🚀 性能优化：导入native_compute用于批量价格计算
-from backend.infrastructure.native.native_compute import batch_compute
-
-from ...utils.helper import get_datetime, get_price
+# 🚀 性能优化：导入安全的批量计算封装
+from ...utils.helper import get_datetime, get_price, safe_batch_compute
 from ..base import AsyncBaseParser
 
 
@@ -122,13 +120,13 @@ class AsyncGetSecurityBarsCmd(AsyncBaseParser):
 
         # 🚀 性能优化：批量除以1000（使用native_compute）
         if len(prices_to_divide) > 0:
-            prices_divided = batch_compute(prices_to_divide, "divide_by_1000")
+            prices_divided = safe_batch_compute(prices_to_divide, "divide_by_1000")
         else:
             prices_divided = []
 
         # 🚀 性能优化：批量处理成交量（使用native_compute）
         if len(volumes_raw) > 0:
-            volumes = batch_compute(volumes_raw, "get_volume")
+            volumes = safe_batch_compute(volumes_raw, "get_volume")
         else:
             volumes = []
 

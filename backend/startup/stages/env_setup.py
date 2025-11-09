@@ -8,12 +8,14 @@
 - 不涉及任何业务逻辑
 """
 
+import importlib
 import logging
 import os
 import sys
 import time
 from logging.handlers import MemoryHandler
 from pathlib import Path
+from typing import Dict
 
 from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.startup.stages.base import StartupStage, StageResult
@@ -109,6 +111,70 @@ class EnvSetupStage(StartupStage):
                 )
             logger.info("✅ 项目路径已添加到sys.path", extra={"log_type": "STAGE_NODE"})
             
+# 新增原生扩展目录到 sys.path，确保顶层 native_* 包可导入
+            native_extensions_path = project_root / "backend" / "infrastructure" / "native"
+            native_path_str = str(native_extensions_path)
+            if native_extensions_path.exists():
+                if native_path_str not in sys.path:
+                    sys.path.insert(1, native_path_str)
+                    importlib.invalidate_caches()
+                    logger.debug(
+                        f"[ENV-SETUP] 原生扩展目录已添加到sys.path: {native_extensions_path}",
+                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                    )
+                else:
+                    logger.debug(
+                        f"[ENV-SETUP] 原生扩展目录已存在于sys.path: {native_extensions_path}",
+                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                    )
+                logger.info(
+                    "✅ 原生扩展目录已加入 sys.path",
+                    extra={"log_type": "STAGE_NODE"}
+                )
+            else:
+                logger.warning(
+                    f"[ENV-SETUP] ⚠️ 原生扩展目录不存在: {native_extensions_path}",
+                    extra={"log_type": "ALERT", "scenario": "application_startup"}
+                )
+
+# 原生扩展可用性自检
+            native_checks = {
+                "native_log_pipeline": "native_log_pipeline",
+                "native_ipc": "backend.infrastructure.native.native_ipc",
+                "native_serialization": "backend.infrastructure.native.native_serialization",
+            }
+            native_status: Dict[str, bool] = {}
+            for name, module_path in native_checks.items():
+                try:
+                    importlib.import_module(module_path)
+                    native_status[name] = True
+                    logger.debug(
+                        f"[ENV-SETUP] 原生扩展检测成功: {module_path}",
+                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                    )
+                except Exception as native_exc:
+                    native_status[name] = False
+                    logger.warning(
+                        f"[ENV-SETUP] ⚠️ 原生扩展检测失败: {module_path} - {native_exc}",
+                        extra={"log_type": "ALERT", "scenario": "application_startup"},
+                    )
+
+            context.native_extension_status.update(native_status)
+            context.native_log_pipeline_enabled = native_status.get("native_log_pipeline", False)
+
+            status_summary = "，".join(
+                f"{name}={'可用' if available else '不可用'}"
+                for name, available in native_status.items()
+            )
+            logger.info(
+                f"[ENV-SETUP] 原生扩展检测结果: {status_summary}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            logger.info(
+                f"✅ 原生扩展自检完成：{status_summary}",
+                extra={"log_type": "STAGE_NODE"}
+            )
+
 # DEBUG日志（只写入事件日志文件）
             logger.debug(
                 f"[ENV-SETUP] 项目根目录: {project_root}",

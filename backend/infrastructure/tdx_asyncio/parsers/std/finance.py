@@ -5,9 +5,8 @@
 import struct
 from collections import OrderedDict
 
-# 🚀 性能优化：导入native_compute用于批量乘法运算
-from backend.infrastructure.native.native_compute import batch_compute
-
+# 🚀 性能优化：导入安全的批量计算封装
+from ...utils.helper import safe_batch_compute
 from ..base import AsyncBaseParser
 
 
@@ -132,7 +131,7 @@ class AsyncGetFinanceInfo(AsyncBaseParser):
         # 批量乘以10000（使用native_compute）
         if len(values_to_multiply) > 0:
             multipliers = [10000.0] * len(values_to_multiply)
-            multiplied_values = batch_compute(values_to_multiply, "multiply", multipliers)  # type: ignore[call-arg]
+            multiplied_values = safe_batch_compute(values_to_multiply, "multiply", multipliers)
         else:
             multiplied_values = []
 

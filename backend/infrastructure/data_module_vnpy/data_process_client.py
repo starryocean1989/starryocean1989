@@ -94,6 +94,14 @@ class DataProcessClient:
         self._pipes: Dict[str, Any] = {}  # {pipe_type: AsyncIPCPipe}
         self._lock = threading.Lock()
         self._response_futures: Dict[str, asyncio.Future] = {}
+        
+        # 🔧 修复: 在Windows平台上使用ProactorEventLoop来支持IPC管道异步I/O
+        import platform
+        import sys
+        if platform.system() == "Windows":
+            # 必须在创建事件循环前设置策略
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        
         self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
         self._loop_ready = threading.Event()
         self._loop_thread = threading.Thread(
@@ -123,7 +131,7 @@ class DataProcessClient:
         else:
             logger.info("ℹ️ 使用 JSON RPC 协议模式")
 
-        logger.info("数据进程客户端已创建")
+        logger.info("数据进程客户端已创建（ProactorEventLoop模式）")
 
     # ==================== 底层辅助方法 ====================
 

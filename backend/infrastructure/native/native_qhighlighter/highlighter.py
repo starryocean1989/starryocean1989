@@ -39,9 +39,10 @@ class NativeHighlighterUnavailable(RuntimeError):
 def _ensure_core_available() -> None:
     if _core is None:
         raise NativeHighlighterUnavailable(
-            "native_qhighlighter_core 未找到，请先在 "
-            "ui/native_extensions/native_qhighlighter 目录执行 "
-            "`python setup.py build_ext --inplace`。"
+            "native_qhighlighter_core 未找到，请在 "
+            "backend/infrastructure/native/native_qhighlighter 目录执行 "
+            "`python setup.py build_ext --inplace` 或运行 "
+            "`backend/infrastructure/native/compile_all.bat`。"
         ) from _import_error
 
 

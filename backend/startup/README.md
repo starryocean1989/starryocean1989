@@ -1,9 +1,9 @@
 # 启动架构模块 (Startup Architecture)
 
-**版本**: v1.2  
+**版本**: v1.3  
 **创建日期**: 2025-11-02  
-**最后更新**: 2025-11-02（单一事实原则修复）  
-**状态**: ✅ 已完成实现
+**最后更新**: 2025-11-08（原生扩展集成评估）  
+**状态**: ✅ 已完成实现（原生日志管线路径待处理）
 
 ---
 
@@ -17,6 +17,10 @@
 - [六、日志系统特性](#六日志系统特性)
 - [七、开发指南](#七开发指南)
 - [八、常见问题](#八常见问题)
+- [九、原生扩展集成与验证](#九原生扩展集成与验证)
+- [十、参考文档](#十参考文档)
+- [十一、启动速度优化](#十一启动速度优化)
+- [十二、更新日志](#十二更新日志)
 
 ---
 
@@ -676,7 +680,102 @@ class MyNewWorker(StartupWorker):
 
 ---
 
-## 九、参考文档
+## 九、原生扩展集成与验证
+
+### 9.1 日志总线与原生命令链
+
+- `LoggingInitStage` 在初始化 `MultiProcessLogCollector` 成功后，会把跨进程可序列化的队列和令牌写入启动上下文，后续 Worker 复用这一令牌把子进程日志重新汇入主进程：
+
+```124:138:backend/startup/stages/logging_init.py
+            try:
+                log_collector = MultiProcessLogCollector(logging_hub)
+                log_collector.start()
+                self.log_collector = log_collector
+
+                # 将日志队列保存到context（供子进程使用）
+                context.log_queue = log_collector.get_queue()
+                context.log_queue_token = log_collector.get_bridge_token()
+```
+
+- `DataLauncherWorker` 与 `MonitorLauncherWorker` 在创建子进程时检测 `context.log_queue_token`，若存在则注入 `LOGGING_QUEUE_TOKEN_ENV`，保障 `native_log_pipeline` 或回退方案能在独立进程内接入相同的日志总线：
+
+```182:189:backend/startup/workers/data_launcher.py
+        env = os.environ.copy()
+        if getattr(context, "log_queue_token", None):
+            env[LOGGING_QUEUE_TOKEN_ENV] = context.log_queue_token  # type: ignore[arg-type]
+            logger.debug("[DATA-PROCESS] 已注入日志队列token")
+        else:
+            alert_log(
+                "⚠️ 未检测到日志队列令牌，数据进程日志将回退至本地输出",
+                scenario=stage_scenario,
+                stacklevel=3,
+            )
+```
+
+```196:203:backend/startup/workers/monitor_launcher.py
+        env = os.environ.copy()
+        if getattr(context, "log_queue_token", None):
+            env[LOGGING_QUEUE_TOKEN_ENV] = context.log_queue_token  # type: ignore[arg-type]
+            logger.debug("[MONITOR-PROCESS] 已注入日志队列token")
+        else:
+            alert_log(
+                "⚠️ 未检测到日志队列令牌，监控进程日志将回退至本地输出",
+                scenario=stage_scenario,
+                stacklevel=3,
+            )
+```
+
+- `SystemManagerService` 完成初始化后会检测 `_ipc_available`，如果底层 `native_ipc` 创立的命名管道握手成功，会在阶段日志中标记“native_ipc管道 ✅”，说明三进程之间的原生通信链路处于工作状态：
+
+```1720:1739:backend/startup/initializers/service_initializer.py
+                system_manager_service = SystemManagerService()
+                init_success = system_manager_service.initialize()
+
+                if init_success:
+                    self.service_manager.register_service(
+                        "system_manager_service", system_manager_service
+                    )
+                    self.initialized_services["system_manager_service"] = system_manager_service
+                    self.logger.info("✅ SystemManagerService 初始化成功")
+                    stage_logger.info(
+                        "✅ SystemManagerService初始化完成", extra={"log_type": "STAGE_NODE"}
+                    )
+
+                    # 检查native_ipc连接状态
+                    if (
+                        hasattr(system_manager_service, "_ipc_available")
+                        and system_manager_service._ipc_available
+                    ):
+                        stage_logger.info(
+                            "  └─ 连接监控进程native_ipc管道 ✅", extra={"log_type": "STAGE_NODE"}
+                        )
+```
+
+### 9.2 验证结果（2025-11-08）
+
+- **日志总线**：`logs/application_startup_20251108_220600.log` 中看到三进程 PID、Level1/Level2 就绪节点均被准确记录，说明 `StartupContext.log_queue_token` 成功传递。
+- **原生日志管线**：同一日志文件 264 行出现 `native_log_pipeline 模块导入失败：No module named 'native_log_pipeline'`，系统自动回退到 Python 路径；性能优化未生效但功能不受阻。主因是当前 `import_module("native_log_pipeline")` 仅搜索顶层模块，而仓库内的扩展位于 `backend/infrastructure/native/native_log_pipeline/`：
+
+```103:112:backend/infrastructure/system_vnpy/native_log_pipeline.py
+    try:
+        module = import_module("native_log_pipeline")
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.debug("native_log_pipeline 模块导入失败：%s", exc, exc_info=True)
+        return None
+```
+
+  建议在 `EnvSetupStage` 增补 `backend/infrastructure/native` 至 `sys.path`，或将编译产物复制到顶层 `native_log_pipeline.pyd`，以恢复原生日志批处理能力。
+- **native_ipc 通道**：`SystemManagerService` 初始化日志显示 `native_ipc管道 ✅`，证明监控进程侧的命名管道由 C 扩展成功建立并与主进程握手。
+- **零拷贝序列化**：`SystemManagerService` 直接使用 `zero_copy_serialize`；若未编译 `native_serialization`，该函数会抛出 `ImportError`。当前 Startup 流程未检测编译状态，若需要软降级，应在 `_serialize_json` 增加 `SERIALIZATION_AVAILABLE` 判定。
+
+### 9.3 待办与建议
+
+1. **原生日志管线路径**：为恢复批量刷写性能，需修正 `native_log_pipeline` 的导入路径（新增 `sys.path` 或调整 `import_module` 参数）。
+2. **序列化降级策略**：在 `SystemManagerService` 中为 `zero_copy_serialize` 增加可选回退逻辑，避免 C 扩展缺失时触发异常。
+3. **发布自检**：启动阶段可新增原生扩展健康检查（检测关键 `.pyd` 是否可导入），将问题提前暴露在 `EnvSetupStage`。
+
+## 十、参考文档
 
 - [重构方案.md](../../重构方案.md): 完整的重构设计方案
 - [启动完整设计文档.md](../../启动完整设计文档.md): 原有的启动设计文档
@@ -684,7 +783,7 @@ class MyNewWorker(StartupWorker):
 
 ---
 
-## 六、启动速度优化
+## 十一、启动速度优化
 
 新架构实现了四个关键的启动速度优化，提升约54%的启动性能：
 
@@ -764,7 +863,7 @@ class MyNewWorker(StartupWorker):
 
 ---
 
-## 十、更新日志
+## 十二、更新日志
 
 ### v1.0 (2025-11-02)
 - ✅ 实现完整的启动架构
@@ -800,6 +899,11 @@ class MyNewWorker(StartupWorker):
   - BackendInitStage统一负责业务服务初始化
   - 确保服务只初始化一次
 
+### v1.3 (2025-11-08) - 原生扩展集成评估
+- ✅ 审核 `LoggingInitStage`、各 Worker 以及 `SystemManagerService` 对原生 C 扩展（`native_log_pipeline`、`native_ipc` 等）的接入路径，并补充集成文档。
+- ✅ 通过 `logs/application_startup_20251108_220600.log` 验证三进程日志/IPC 交互正常，确认令牌透传与 watchdog 策略生效。
+- ⚠️ 发现 `native_log_pipeline` 仍因导入路径缺失而回退至 Python 实现，后续需在启动阶段或部署脚本中修复（新增路径或调整导入模块）。
+
 ---
 
 **注意**: 
@@ -817,3 +921,32 @@ class MyNewWorker(StartupWorker):
   from backend.startup.ui_startup import StartupCoordinator, BootOrchestrator
   ```
 
+---
+
+## 十二一、Terminal标准输出规范（最佳实践）
+
+- 控制台仅展示“开始 → 成果 → 结束”，异常展示`WARNING/ERROR/CRITICAL`；详细`DEBUG/INFO`写入事件日志文件。
+- 初始化前日志由`MemoryHandler`拦截并在`LoggingInitStage`重放，保证不丢失。
+- 多进程乱序日志通过`OrderedLogQueue`编排后按序展示；子进程日志由`MultiProcessLogCollector`汇聚。
+- 数据进程（`DataLauncherWorker`）承担“8步缓存验证”，主进程实时回放进度（`STAGE_NODE`）。
+- 统一遵循`backend/infrastructure/system_vnpy/统一日志系统说明文档.md`的路由与级别规则。
+
+示例（简版）：
+
+```
+【阶段1】日志系统初始化
+📍 开始
+✅ MemoryHandler启用；OrderedLogQueue启用；事件日志流程启动
+✅ 完成
+
+【阶段3】后端服务初始化（三进程并行）
+分支B（数据进程）8步缓存验证：
+📍 步骤1 服务器池验证与测速 → ✅ 完成
+📍 步骤2 初始化负载均衡器 → ✅ 完成
+📍 步骤3 本地缓存有效性检查 → ✅ 完成
+📍 步骤4 数据目录与索引扫描 → ✅ 完成
+📍 步骤5 数据新鲜度检测 → ✅ 完成
+📍 步骤6 异步本地数据索引 → ✅ 完成
+📍 步骤7 延迟数据更新检查 → ✅ 完成
+📍 步骤8 启动文件监控 → ✅ 完成
+```

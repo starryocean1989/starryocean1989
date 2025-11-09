@@ -5,7 +5,7 @@ REM 使用方法: compile_all.bat
 
 setlocal EnableDelayedExpansion
 
-set TOTAL_STEPS=28
+set TOTAL_STEPS=27
 set STEP=1
 
 echo ========================================
@@ -70,7 +70,7 @@ call :build_module native_indicator native_indicator
 if %ERRORLEVEL% NEQ 0 goto :FAILED
 call :build_module native_calendar native_calendar
 if %ERRORLEVEL% NEQ 0 goto :FAILED
-call :build_module "..\..\..\ui\native_extensions\native_qhighlighter" native_qhighlighter optional
+call :build_module "native_qhighlighter" native_qhighlighter optional
 if %ERRORLEVEL% NEQ 0 goto :FAILED
 
 goto :SUCCESS

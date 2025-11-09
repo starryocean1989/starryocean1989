@@ -81,6 +81,10 @@ class StartupContext:
         self.log_queue: Optional[Any] = None  # multiprocessing.Queue
         self.log_queue_token: Optional[str] = None  # 序列化的队列代理，供子进程恢复
 
+        # 原生扩展状态
+        self.native_extension_status: Dict[str, bool] = {}
+        self.native_log_pipeline_enabled: bool = False
+
     def validate(self, required_deps: Optional[list] = None) -> bool:
         """验证所有必需的依赖是否已初始化
 
@@ -179,4 +183,6 @@ class StartupContext:
             "logging_hub_initialized": self.logging_hub_initialized,
             "backend_initialized": self.backend_initialized,
             "ui_initialized": self.ui_initialized,
+            "native_extensions": self.native_extension_status,
+            "native_log_pipeline_enabled": self.native_log_pipeline_enabled,
         }

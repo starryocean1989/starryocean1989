@@ -255,7 +255,15 @@ class DataCenterService(BaseService, LoggerMixin):
         Returns:
             任务数据或默认值
         """
-        value = self._download_tasks.get(task_id)
+        try:
+            value = self._download_tasks.get(task_id)  # type: ignore[attr-defined]
+        except KeyError:
+            value = None
+        except TypeError:
+            try:
+                value = self._download_tasks.get(task_id, None)  # type: ignore[misc]
+            except Exception:  # noqa: BLE001 - 兼容降级实现
+                value = None
         return value if value is not None else default
 
     def _task_set(self, task_id: str, task_data: Dict[str, Any]) -> None:
@@ -276,7 +284,15 @@ class DataCenterService(BaseService, LoggerMixin):
         Returns:
             是否包含该任务
         """
-        return self._download_tasks.get(task_id) is not None
+        try:
+            return self._download_tasks.get(task_id) is not None  # type: ignore[attr-defined]
+        except KeyError:
+            return False
+        except TypeError:
+            try:
+                return self._download_tasks.get(task_id, None) is not None  # type: ignore[misc]
+            except Exception:  # noqa: BLE001 - 兼容降级实现
+                return False
 
     def _task_size(self) -> int:
         """获取任务数量.
@@ -285,6 +301,21 @@ class DataCenterService(BaseService, LoggerMixin):
             任务数量
         """
         return self._download_tasks.size()
+
+    @staticmethod
+    def _log_progress(module: str, message: str, progress: float, **details: Any) -> None:
+        """统一封装进度日志，兼容 logging_system 的参数签名变更."""
+        log_progress(
+            message,
+            progress=progress,
+            logger_name=f"backend.{module}",
+            **details,
+        )
+
+    @staticmethod
+    def _notify_complete(module: str, message: str, **details: Any) -> None:
+        """统一封装完成通知，兼容 logging_system 的参数签名."""
+        notify_complete(module, message, **details)
 
     def get_download_task_count(self) -> Dict[str, Any]:
         """获取当前下载任务数量."""
@@ -2675,7 +2706,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 )
 
                 # 统一进度日志（初始）
-                log_progress(
+                self._log_progress(
                     "data_center.download",
                     "增量下载任务创建并准备启动",
                     0.0,
@@ -2882,7 +2913,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     self._emit_download_complete_event(task_id, "incremental", start_date)
 
                     # 统一进度日志（任务已提交到引擎）
-                    log_progress(
+                    self._log_progress(
                         "data_center.download",
                         "增量下载任务已提交到引擎",
                         0.01,
@@ -3898,9 +3929,10 @@ class DataCenterService(BaseService, LoggerMixin):
             )
             # 统一进度日志：入口触发
             try:
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "开始触发数据质量扫描",
-                    percent=0,
+                    0.0,
                     scenario="manual_data_scan",
                     meta={"force_refresh": force_refresh},
                 )
@@ -3938,9 +3970,10 @@ class DataCenterService(BaseService, LoggerMixin):
                 extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
             try:
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "已触发数据质量扫描（后台执行）",
-                    percent=5,
+                    0.05,
                     scenario="manual_data_scan",
                     meta={"thread_id": thread.ident},
                 )
@@ -3988,9 +4021,10 @@ class DataCenterService(BaseService, LoggerMixin):
         with context_manager:
             try:
                 # 统一进度日志
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     f"开始手动数据扫描: force_refresh={force_refresh}",
-                    percent=0,
+                    0.0,
                     scenario="manual_data_scan",
                     meta={"force_refresh": force_refresh},
                 )
@@ -4038,9 +4072,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     "[SCAN-SERVICE] 调用china_stock_engine.trigger_data_quality_scan方法...",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "提交质量扫描到引擎",
-                    percent=10,
+                    0.10,
                     scenario="manual_data_scan",
                 )
                 scan_start_time = time.time()
@@ -4053,9 +4088,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[SCAN-SERVICE] trigger_data_quality_scan方法调用完成: 耗时={scan_elapsed:.2f}s",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "质量扫描引擎返回结果",
-                    percent=60,
+                    0.60,
                     scenario="manual_data_scan",
                     meta={"scan_elapsed": round(scan_elapsed, 2)},
                 )
@@ -4066,9 +4102,10 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[SCAN-SERVICE] 开始推送质量概览事件...",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    log_progress(
+                    self._log_progress(
+                        "data_center.scan",
                         "开始推送质量概览事件",
-                        percent=80,
+                        0.80,
                         scenario="manual_data_scan",
                     )
                     event_start_time = time.time()
@@ -4078,9 +4115,10 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"[SCAN-SERVICE] 质量概览事件推送完成: 耗时={event_elapsed:.2f}s",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    log_progress(
+                    self._log_progress(
+                        "data_center.scan",
                         "质量概览事件推送完成",
-                        percent=90,
+                        0.90,
                         scenario="manual_data_scan",
                         meta={"event_elapsed": round(event_elapsed, 2)},
                     )
@@ -4104,9 +4142,10 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"✅ 手动数据扫描完成: 评分={quality_score:.2f}, 耗时={total_elapsed:.2f}s",
                         scenario="manual_data_scan",
                     )
-                    log_progress(
+                    self._log_progress(
+                        "data_center.scan",
                         "数据质量扫描完成",
-                        percent=100,
+                        1.0,
                         scenario="manual_data_scan",
                         meta={
                             "quality_score": round(quality_score, 2),
@@ -4114,7 +4153,14 @@ class DataCenterService(BaseService, LoggerMixin):
                         },
                     )
                     try:
-                        notify_complete(True, scenario="manual_data_scan")
+                        self._notify_complete(
+                            "data_center.scan",
+                            "数据质量扫描完成",
+                            scenario="manual_data_scan",
+                            success=True,
+                            quality_score=round(quality_score, 2),
+                            total_elapsed=round(total_elapsed, 2),
+                        )
                     except Exception:
                         pass
 
@@ -4150,7 +4196,13 @@ class DataCenterService(BaseService, LoggerMixin):
                         scenario="manual_data_scan",
                     )
                     try:
-                        notify_complete(False, scenario="manual_data_scan")
+                        self._notify_complete(
+                            "data_center.scan",
+                            "数据质量扫描未返回结果",
+                            scenario="manual_data_scan",
+                            success=False,
+                            total_elapsed=round(total_elapsed, 2),
+                        )
                     except Exception:
                         pass
 
@@ -4172,7 +4224,13 @@ class DataCenterService(BaseService, LoggerMixin):
                     scenario="manual_data_scan",
                 )
                 try:
-                    notify_complete(False, scenario="manual_data_scan")
+                    self._notify_complete(
+                        "data_center.scan",
+                        f"数据质量扫描失败: {e}",
+                        scenario="manual_data_scan",
+                        success=False,
+                        total_elapsed=round(total_elapsed, 2),
+                    )
                 except Exception:
                     pass
 
@@ -4447,9 +4505,10 @@ class DataCenterService(BaseService, LoggerMixin):
                 settings = get_settings()
                 recording_path = custom_path or settings.vnpy.recording_data_path
                 try:
-                    log_progress(
+                    self._log_progress(
+                        "data_center.recording",
                         "准备启动数据录制",
-                        percent=0,
+                        0.0,
                         scenario="data_recording",
                         meta={"recording_path": recording_path},
                     )
@@ -4475,18 +4534,20 @@ class DataCenterService(BaseService, LoggerMixin):
                             recorder_app = DataRecorderApp
                             recorder_engine = main_engine.add_app(recorder_app)
                             self.recorder_engine = recorder_engine
-                            log_progress(
+                            self._log_progress(
+                                "data_center.recording",
                                 "已创建DataRecorder引擎",
-                                percent=40,
+                                0.40,
                                 scenario="data_recording",
                             )
 
                             # 配置录制路径（如果recorder_engine支持）
                             if hasattr(self.recorder_engine, "set_recording_path"):
                                 self.recorder_engine.set_recording_path(recording_path)
-                                log_progress(
+                                self._log_progress(
+                                    "data_center.recording",
                                     "已配置录制路径",
-                                    percent=60,
+                                    0.60,
                                     scenario="data_recording",
                                     meta={"recording_path": recording_path},
                                 )
@@ -4497,14 +4558,21 @@ class DataCenterService(BaseService, LoggerMixin):
                         if hasattr(self.recorder_engine, "start"):
                             self.recorder_engine.start()
                             self.logger.info("数据录制已启动")
-                            log_progress(
+                            self._log_progress(
+                                "data_center.recording",
                                 "数据录制已启动",
-                                percent=100,
+                                1.0,
                                 scenario="data_recording",
                                 meta={"recording_path": recording_path},
                             )
                             try:
-                                notify_complete(True, scenario="data_recording")
+                                self._notify_complete(
+                                    "data_center.recording",
+                                    "数据录制已启动",
+                                    scenario="data_recording",
+                                    success=True,
+                                    recording_path=recording_path,
+                                )
                             except Exception:
                                 pass
 
@@ -4530,7 +4598,13 @@ class DataCenterService(BaseService, LoggerMixin):
                         "启动录制失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
                     )
                     try:
-                        notify_complete(False, scenario="data_recording")
+                        self._notify_complete(
+                            "data_center.recording",
+                            f"数据录制启动失败: {e}",
+                            scenario="data_recording",
+                            success=False,
+                            recording_path=recording_path,
+                        )
                     except Exception:
                         pass
                     return {
@@ -4546,7 +4620,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 self._log_error("启动数据录制", e, exc_info=True)
                 alert("ERROR", "data_center", f"启动录制失败: {e}", scenario="data_recording")
                 try:
-                    notify_complete(False, scenario="data_recording")
+                    self._notify_complete(
+                        "data_center.recording",
+                        f"数据录制启动失败: {e}",
+                        scenario="data_recording",
+                        success=False,
+                    )
                 except Exception:
                     pass
                 return {
@@ -4676,9 +4755,10 @@ class DataCenterService(BaseService, LoggerMixin):
         with context_manager:
             try:
                 try:
-                    log_progress(
+                    self._log_progress(
+                        "data_center.realtime_recording",
                         "准备启动实时数据录制",
-                        percent=0,
+                        0.0,
                         scenario="realtime_data_recording",
                         meta={
                             "symbols": symbols or [],
@@ -4698,14 +4778,20 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 尝试导入vnpy_datarecorder
                 try:
                     from vnpy_datarecorder import DataRecorderApp  # type: ignore[import-untyped]
-                    log_progress(
+                    self._log_progress(
+                        "data_center.realtime_recording",
                         "已加载DataRecorderApp",
-                        percent=20,
+                        0.20,
                         scenario="realtime_data_recording",
                     )
                 except ImportError:
                     try:
-                        notify_complete(False, scenario="realtime_data_recording")
+                        self._notify_complete(
+                            "data_center.realtime_recording",
+                            "实时数据录制启动失败：缺少 vnpy_datarecorder",
+                            scenario="realtime_data_recording",
+                            success=False,
+                        )
                     except Exception:
                         pass
                     return {
@@ -4716,7 +4802,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 检查main_engine是否可用
                 if not self.main_engine:
                     try:
-                        notify_complete(False, scenario="realtime_data_recording")
+                        self._notify_complete(
+                            "data_center.realtime_recording",
+                            "实时数据录制启动失败：MainEngine 不可用",
+                            scenario="realtime_data_recording",
+                            success=False,
+                        )
                     except Exception:
                         pass
                     return {
@@ -4724,9 +4815,10 @@ class DataCenterService(BaseService, LoggerMixin):
                         "message": "MainEngine不可用，无法启动录制",
                     }
                 else:
-                    log_progress(
+                    self._log_progress(
+                        "data_center.realtime_recording",
                         "MainEngine可用",
-                        percent=30,
+                        0.30,
                         scenario="realtime_data_recording",
                     )
 
@@ -4734,9 +4826,10 @@ class DataCenterService(BaseService, LoggerMixin):
                 try:
                     self.recorder_engine = self.main_engine.add_app(DataRecorderApp)
                     self.logger.info("✅ DataRecorder引擎已创建")
-                    log_progress(
+                    self._log_progress(
+                        "data_center.realtime_recording",
                         "已创建DataRecorder引擎",
-                        percent=60,
+                        0.60,
                         scenario="realtime_data_recording",
                     )
                 except Exception as e:
@@ -4747,7 +4840,12 @@ class DataCenterService(BaseService, LoggerMixin):
                         extra={"log_type": "SYSTEM"},
                     )
                     try:
-                        notify_complete(False, scenario="realtime_data_recording")
+                        self._notify_complete(
+                            "data_center.realtime_recording",
+                            f"实时数据录制启动失败：创建引擎异常 {e}",
+                            scenario="realtime_data_recording",
+                            success=False,
+                        )
                     except Exception:
                         pass
                     return {
@@ -4761,9 +4859,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     "record_bar": record_bar,
                     "symbols": symbols or [],
                 }
-                log_progress(
+                self._log_progress(
+                    "data_center.realtime_recording",
                     "已设置录制参数",
-                    percent=80,
+                    0.80,
                     scenario="realtime_data_recording",
                     meta=recording_config,
                 )
@@ -4786,14 +4885,21 @@ class DataCenterService(BaseService, LoggerMixin):
                     record_bar,
                     len(symbols) if symbols else 0,
                 )
-                log_progress(
+                self._log_progress(
+                    "data_center.realtime_recording",
                     "实时数据录制已启动",
-                    percent=100,
+                    1.0,
                     scenario="realtime_data_recording",
                     meta=recording_config,
                 )
                 try:
-                    notify_complete(True, scenario="realtime_data_recording")
+                    self._notify_complete(
+                        "data_center.realtime_recording",
+                        "实时数据录制已启动",
+                        scenario="realtime_data_recording",
+                        success=True,
+                        config=recording_config,
+                    )
                 except Exception:
                     pass
 
@@ -4811,7 +4917,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 )
                 self._log_error("启动数据录制", e, exc_info=True)
                 try:
-                    notify_complete(False, scenario="realtime_data_recording")
+                    self._notify_complete(
+                        "data_center.realtime_recording",
+                        f"实时数据录制启动失败: {e}",
+                        scenario="realtime_data_recording",
+                        success=False,
+                    )
                 except Exception:
                     pass
                 return {
@@ -5004,9 +5115,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     date = datetime.now().strftime("%Y-%m-%d")
 
                 try:
-                    log_progress(
+                    self._log_progress(
+                        "data_center.recording_sync",
                         "准备同步录制数据",
-                        percent=0,
+                        0.0,
                         scenario="data_recording",
                         meta={"symbol": symbol, "date": date},
                     )
@@ -5035,9 +5147,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     recorded_files = list(date_dir.glob("*"))
 
                 self.logger.info("找到 %d 个录制文件待同步", len(recorded_files))
-                log_progress(
+                self._log_progress(
+                    "data_center.recording_sync",
                     "已扫描录制文件",
-                    percent=20,
+                    0.20,
                     scenario="data_recording",
                     meta={"files": len(recorded_files)},
                 )
@@ -5054,9 +5167,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     }
 
                 storage_manager = self.china_stock_engine.storage_manager
-                log_progress(
+                self._log_progress(
+                    "data_center.recording_sync",
                     "已连接存储管理器",
-                    percent=60,
+                    0.60,
                     scenario="data_recording",
                 )
 
@@ -5104,14 +5218,22 @@ class DataCenterService(BaseService, LoggerMixin):
                     message += f"，{failed_count} 个失败"
 
                 self.logger.info(message)
-                log_progress(
+                self._log_progress(
+                    "data_center.recording_sync",
                     "录制数据同步完成",
-                    percent=100,
+                    1.0,
                     scenario="data_recording",
                     meta={"synced": synced_count, "failed": failed_count},
                 )
                 try:
-                    notify_complete(True, scenario="data_recording")
+                    self._notify_complete(
+                        "data_center.recording_sync",
+                        "录制数据同步完成",
+                        scenario="data_recording",
+                        success=True,
+                        synced=synced_count,
+                        failed=failed_count,
+                    )
                 except Exception:
                     pass
 
@@ -5130,7 +5252,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 )
                 self._log_error("同步录制数据", e, exc_info=True)
                 try:
-                    notify_complete(False, scenario="data_recording")
+                    self._notify_complete(
+                        "data_center.recording_sync",
+                        f"录制数据同步失败: {e}",
+                        scenario="data_recording",
+                        success=False,
+                    )
                 except Exception:
                     pass
                 return {
@@ -6036,9 +6163,10 @@ class DataCenterService(BaseService, LoggerMixin):
         with context_manager:
             try:
                 # 统一进度日志
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "开始手动数据扫描",
-                    percent=0,
+                    0.0,
                     scenario="manual_data_scan",
                 )
                 # 阶段节点（输出到Terminal）
@@ -6082,11 +6210,15 @@ class DataCenterService(BaseService, LoggerMixin):
                 symbol_list_start_time = time.time()
                 reference_symbols = self.china_stock_engine.symbol_loader.extract_all_codes()
                 symbol_list_elapsed = time.time() - symbol_list_start_time
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "参考品种列表获取完成",
-                    percent=20,
+                    0.20,
                     scenario="manual_data_scan",
-                    meta={"symbols": len(reference_symbols), "elapsed": round(symbol_list_elapsed, 2)},
+                    meta={
+                        "symbols": len(reference_symbols),
+                        "elapsed": round(symbol_list_elapsed, 2),
+                    },
                 )
 
                 self.logger.debug(
@@ -6152,9 +6284,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     "[DATA-SCAN] 进度回调已注册",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "已注册扫描进度回调",
-                    percent=30,
+                    0.30,
                     scenario="manual_data_scan",
                 )
 
@@ -6174,9 +6307,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[DATA-SCAN] 质量扫描完成: 耗时={scan_elapsed:.2f}s, 结果数={len(overview)}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "质量扫描完成（原始结果）",
-                    percent=70,
+                    0.70,
                     scenario="manual_data_scan",
                     meta={"scan_elapsed": round(scan_elapsed, 2), "result_size": len(overview)},
                 )
@@ -6198,9 +6332,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"错误={error_symbols}, 警告={warning_symbols}, 耗时={stat_elapsed:.3f}s",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "统计扫描结果完成",
-                    percent=90,
+                    0.90,
                     scenario="manual_data_scan",
                     meta={
                         "total_symbols": total_symbols,
@@ -6225,9 +6360,10 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"警告={warning_symbols}, 耗时={total_elapsed:.2f}s",
                     scenario="manual_data_scan",
                 )
-                log_progress(
+                self._log_progress(
+                    "data_center.scan",
                     "数据扫描完成",
-                    percent=100,
+                    1.0,
                     scenario="manual_data_scan",
                     meta={
                         "missing": missing_symbols,
@@ -6237,7 +6373,16 @@ class DataCenterService(BaseService, LoggerMixin):
                     },
                 )
                 try:
-                    notify_complete(True, scenario="manual_data_scan")
+                    self._notify_complete(
+                        "data_center.scan",
+                        "手动数据扫描完成",
+                        scenario="manual_data_scan",
+                        success=True,
+                        missing=missing_symbols,
+                        errors=error_symbols,
+                        warnings=warning_symbols,
+                        total_elapsed=round(total_elapsed, 2),
+                    )
                 except Exception:
                     pass
 
@@ -6272,7 +6417,13 @@ class DataCenterService(BaseService, LoggerMixin):
                     scenario="manual_data_scan",
                 )
                 try:
-                    notify_complete(False, scenario="manual_data_scan")
+                    self._notify_complete(
+                        "data_center.scan",
+                        f"手动数据扫描失败: {e}",
+                        scenario="manual_data_scan",
+                        success=False,
+                        total_elapsed=round(total_elapsed, 2),
+                    )
                 except Exception:
                     pass
 

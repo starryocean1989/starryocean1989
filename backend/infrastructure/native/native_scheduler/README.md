@@ -21,8 +21,9 @@
 
 ```python
 from backend.infrastructure.native.native_scheduler import NativeScheduler
+from backend.infrastructure.native.native_threadpool import NativeThreadPool
 
-scheduler = NativeScheduler()
+scheduler = NativeScheduler(executor_factory=NativeThreadPool)
 scheduler.register_category("download", queue_capacity=1024, max_workers=4)
 
 def fetch(symbol: str) -> str:

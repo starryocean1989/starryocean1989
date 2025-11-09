@@ -8,38 +8,11 @@
 ```
 ui/
 ├── __init__.py                    # UI层统一导出（MainWindow, ThemeManager）
-│
-├── main_window.py                 # 主窗口：应用程序的主界面框架（包含 ShortcutManager）
-│                                    # 注意：startup_coordinator 已迁移到 backend/startup/ui_startup/
-│
-├── core/                          # 核心功能模块（已精简）
-│   ├── __init__.py
-│   └── boot_orchestrator.py       # 启动编排器：管理分层启动就绪状态
-│                                    # 注意：shortcut_manager 和 async_utils 已合并到各自使用者文件
-│
-├── components/                    # 可复用UI组件库
-│   ├── __init__.py
-│   ├── README.md                  # 组件库详细文档
-│   ├── widgets.py                 # 基础组件集合
-│   ├── theme_system.py            # 主题系统（DashboardTheme + ThemeManager）
-│   ├── enhanced_statusbar.py      # 增强状态栏组件
-│   ├── basic_monitors.py          # 基础监控组件（订单/成交/持仓/账户）
-│   ├── charts.py                  # 图表组件集合
-│   ├── task_queue_monitor.py      # 任务队列监控组件
-│   ├── resource_limit_config.py   # 资源限制配置组件
-│   ├── themes.json                # 主题配置文件
-│   ├── theme_preference.json      # 用户主题偏好
-│   ├── modern_dark_style.qss      # 暗色主题样式表
-│   └── modern_light_style.qss     # 亮色主题样式表
-│
-└── modules/                       # 六大功能模块视图
-    ├── __init__.py
-    ├── data_center_view.py        # 数据中心界面
-    ├── market_board_view.py       # 行情看板界面
-    ├── trading_gateway_view.py    # 交易网关界面
-    ├── portfolio_view.py          # 组合投资界面
-    ├── strategy_center_view.py    # 策略中心界面
-    └── system_manager_view.py     # 系统管理界面
+├── main_window.py                 # 主窗口 & 内嵌 ShortcutManager
+├── components/                    # 可复用UI组件库（widgets、theme_system 等）
+├── modules/                       # 六大业务视图模块
+├── tests/                         # UI 层单元测试（含 native_qhighlighter 自动化用例）
+└── UI架构说明.md                  # 本文档
 ```
 
 ---
@@ -85,43 +58,31 @@ __all__ = ["MainWindow", "ThemeManager"]
 
 ---
 
-#### 1.3 `startup_coordinator.py` ⚠️ 已迁移
-**状态**：已迁移到 `backend/startup/ui_startup/startup_coordinator.py`
-**原因**：启动协调器属于后端启动流程的一部分，已整合到后端启动模块
-**位置**：`backend/startup/ui_startup/startup_coordinator.py`
+#### 1.3 `ShortcutManager`（嵌入 `main_window.py`）
+**作用**：统一注册、管理主窗口快捷键
+**状态**：自 v0.50 起合并进 `MainWindow`，不再单独维护 `ui/core/shortcut_manager.py`
 
-**架构更新（v0.50 三进程）**：
-- UI 进程只负责 UI + 业务服务骨架，真实数据服务与监控服务分别运行在数据进程、监控进程。
-- `StartupCoordinator` 不再直接驱动六阶段初始化，而是作为 UI 侧的观测者，连接 `StartupOrchestrator` 的阶段信号、Terminal 输出与启动画面。
-- 三大 Worker (`DataLauncherWorker`、`MonitorLauncherWorker`、`BackendInitializerWorker`) 由 `BackendInitStage` 管理，`StartupCoordinator` 负责：
-  - 监听 `startup.stage` 日志，将 Stage 3 的分支 A/B/C 进度转换为 UI 文案；
-  - 根据 `BackendInitStage` 结果触发 UI 预加载与主窗口展示；
-  - 捕获 `MultiProcessLogCollector` Level 0/1/2 事件，在启动画面实时呈现数据/监控进程状态；
-  - 在异常情况下回放 `application_startup_*.log` 的关键信息，提示用户查看详细日志。
+**默认快捷键分类**（同步自 `ShortcutManager.DEFAULT_SHORTCUTS`）：
+- **文件**：`Ctrl+N` 新建、`Ctrl+S` 保存、`Ctrl+Shift+S` 保存全部、`Ctrl+Shift+T` 重新打开关闭的页面
+- **编辑**：`Ctrl+Z` 撤销、`Ctrl+Shift+F` 格式化、`Ctrl+/` 行注释
+- **导航**：`Ctrl+G` 跳转行、`Ctrl+P` 跳转文件、`Ctrl+Tab` / `Ctrl+Shift+Tab` 标签切换、`Ctrl+Shift+P` 命令面板
+- **搜索**：`Ctrl+Shift+F` 全局搜索、`Ctrl+Shift+H` 全局替换
+- **视图**：`Ctrl+B` 侧边栏、`Ctrl+`` 终端、`Ctrl+I` AI 助手、`Ctrl++/-/0` 缩放控制
+- **运行/调试**：`F5` 回测、`Shift+F5` 停止、`F9` 断点、`Ctrl+Shift+F9` 清除断点、`F10`/`F11`/`Shift+F11` 单步
+- **终端**：`Ctrl+L` 清屏、`Ctrl+Shift+`` 新建终端
+- **其他**：`Ctrl+Shift+L` 保存布局、`Ctrl+,` 设置、`F1` 帮助
 
-**三进程职责概览**：
-- UI 进程：`StartupCoordinator` + `MainWindow`，渲染界面、注册服务代理、订阅事件。
-- 数据进程：`data_process_main.py`，执行数据下载、质量扫描、RPC 请求处理，并通过 `data_process_ready.signal` 反馈状态。
-- 监控进程：`monitor_system.py`，负责系统/硬件监控，向 UI 进程推送 `ALERT`/`NOTIFICATION` 事件。
-- 跨进程通信：统一通过 `native_ipc` + `LOGGING_QUEUE_TOKEN`，日志路由回主进程的 `LoggingHub`。
-
-**关键类**：
-- `BackendInitializerWorker(QObject)` - UI 线程内的占位 Worker，现仅在需要时用于回放业务服务初始化日志；
-  - 信号：`progress_updated` / `initialization_completed` / `error_occurred`
-  - 方法：`run()` - 兼容模式下仍可串行执行旧版六阶段流程（测试环境使用）
-- `StartupCoordinator` - Splash 层控制器，负责：
-  - `start()`：订阅 `StartupOrchestrator` 事件，显示启动画面；
-  - `handle_stage_update()`：解析 Stage 3 分支日志（PID、IPC、Level 2）并更新 UI；
-  - `on_startup_completed()`：通知 `MainWindow` 初始化功能模块，关闭 Splash；
-  - `on_startup_failed()`：展示错误对话框并附带日志路径。
-
-> ✅ **提示**：Terminal 的 Stage 3 输出与启动画面完全一致。Terminal 仅展示 `STAGE_NODE` / `WARNING+`，详细 DEBUG 日志保存在 `logs/application_startup_YYYYMMDD_HHMMSS.log`，`StartupCoordinator` 的“查看详版日志”按钮即指向该文件。
+**核心能力**：
+- `register_shortcut` / `unregister_shortcut` / `get_shortcut` 管理快捷键生命周期
+- `save_shortcuts()` / `load_shortcuts()` 将用户自定义绑定持久化到 `config/shortcuts.json`
+- 冲突检测与日志反馈：避免重复绑定，异常统一记录到 `ui.main_window` 日志
 
 ---
 
-### 2. 核心功能模块（core/）
+### 2. 启动编排依赖（backend/startup/ui_startup/）
 
 #### 2.1 `boot_orchestrator.py`
+**位置**：`backend/startup/ui_startup/boot_orchestrator.py`
 **作用**：启动编排器 - 前端就绪协议与分层启动管理
 **功能**：
 - 统一管理就绪阶段标记（config_ready, backend_ready, ui_ready, ui_visible）
@@ -144,33 +105,27 @@ __all__ = ["MainWindow", "ThemeManager"]
 
 ---
 
-#### 2.2 `shortcut_manager.py` ⚠️ 已迁移
-**状态**：已合并到 `ui/main_window.py`
-**原因**：该模块仅被 `MainWindow` 使用，为减少模块间依赖，已合并到主窗口文件
-**位置**：`ui/main_window.py` 中的 `ShortcutManager` 类
+#### 2.2 `startup_coordinator.py`
+**位置**：`backend/startup/ui_startup/startup_coordinator.py`
+**作用**：三进程架构下的启动调度观察者，负责驱动启动画面与 UI 就绪
 
-**原始功能**：
-- 快捷键注册和管理
-- 快捷键冲突检测
-- 快捷键配置持久化（保存到JSON）
-- 支持动态修改快捷键
+**核心职责**：
+- 订阅 `StartupOrchestrator` 阶段事件，将 Stage 3 A/B/C 分支日志转换为启动界面文案
+- 监听 `BackendInitStage` 输出，触发 UI 预加载与主窗口显示
+- 聚合 `MultiProcessLogCollector` Level 0/1/2 事件，实时呈现数据/监控进程状态
+- 异常时回放 `application_startup_*.log` 关键信息，给出定位提示
 
-**关键类**：
-- `ShortcutManager(QObject, LoggerMixin)` - 快捷键管理器
+**三进程架构摘要**：
+- **UI 进程**：`StartupCoordinator` + `MainWindow`，渲染界面、注册服务代理、订阅事件
+- **数据进程**：`data_process_main.py`，执行数据服务并通过 `data_process_ready.signal` 汇报状态
+- **监控进程**：`monitor_system.py`，负责系统/硬件监控，向 UI 推送 `ALERT` / `NOTIFICATION`
+- **通信通道**：统一使用 `native_ipc` + `LOGGING_QUEUE_TOKEN`，日志回传主进程 `LoggingHub`
 
-**默认快捷键分类**：
-- **文件操作**：Ctrl+N（新建）、Ctrl+S（保存）、Ctrl+W（关闭）
-- **编辑操作**：Ctrl+Z（撤销）、Ctrl+C（复制）、Ctrl+V（粘贴）
-- **导航操作**：Ctrl+G（跳转行）、Ctrl+P（跳转文件）
-- **视图操作**：F11（全屏）、Ctrl+Tab（切换标签）
-- **运行调试**：F5（运行）、F9（断点）、F10（单步）
-- **终端操作**：Ctrl+`（打开终端）
+**相关类**：
+- `BackendInitializerWorker(QObject)`：兼容旧版串行初始化流程，必要时回放初始化日志
+- `StartupCoordinator(QObject)`：提供 `start()`、`handle_stage_update()`、`on_startup_completed()`、`on_startup_failed()` 等接口
 
-**核心方法**：
-- `register_shortcut(action_id, key_sequence, callback)` - 注册快捷键
-- `unregister_shortcut(action_id)` - 注销快捷键
-- `get_shortcut(action_id)` - 获取快捷键
-- `save_shortcuts()` / `load_shortcuts()` - 持久化
+> ✅ **提示**：启动画面日志与 Terminal Stage 3 输出一致，详细 DEBUG 信息存储在 `logs/application_startup_YYYYMMDD_HHMMSS.log`，启动界面“查看详版日志”按钮直达该文件。
 
 ---
 
@@ -200,7 +155,7 @@ __all__ = ["MainWindow", "ThemeManager"]
 **特性**：
 - 默认内置 Python 实现；若已编译并启用 `native_qhighlighter_core` 扩展，将自动切换至原生高亮路径（环境变量 `NATIVE_QHIGHLIGHTER=0` 可显式关闭）。
 - 原生实现支持主题热切换、批量 token 化，5k 行脚本滚动延迟显著降低。
-- `compile_all.bat` 会自动编译扩展，也可在 `ui/native_extensions/native_qhighlighter` 手动运行 `python setup.py build_ext --inplace`。
+- 扩展已迁移至 `backend/infrastructure/native/native_qhighlighter`；可执行 `backend/infrastructure/native/compile_all.bat` 或进入该目录运行 `python setup.py build_ext --inplace`。
 - 任意异常都会写入 UI 日志并即时回退到 Python 版本，确保编辑器始终可用。
 - 零外部依赖（无需WebEngine），继续统一使用 DashboardTheme 主题配置。
 - 高性能渲染和实时更新。
@@ -1658,3 +1613,8 @@ async def on_action(self):
 **本章维护**: 星辰金融终端开发组
 **最后更新**: 2025-10-31
 
+### Terminal显示规则（启动阶段）
+- 启动画面只映射`STAGE_NODE`与`WARNING+`级别日志，与Terminal保持一致。
+- 多进程日志由主进程`OrderedLogQueue`编排后展示，避免乱序闪烁。
+- 日志系统初始化前的输出由`MemoryHandler`拦截并重放，确保启动画面完整呈现关键节点。
+- 数据进程8步缓存验证的进度在启动画面以阶段节点形式回放，异常触发离线降级提示。

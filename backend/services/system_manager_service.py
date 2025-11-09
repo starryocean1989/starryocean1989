@@ -19,6 +19,7 @@ import gc
 import json
 import logging
 import os
+import pickle
 import platform
 import psutil
 import sqlite3
@@ -31,11 +32,26 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Callable, Union, TYPE_CHECKING, cast
+from typing import Any, Dict, Iterable, List, Optional, Callable, Union, TYPE_CHECKING, cast, Protocol
 
 from backend.core.service_base import BaseService
 from backend.core.models import UnifiedMarketData, get_data_model_manager
 from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor
+class SystemMonitorProtocol(Protocol):
+    def get_resource_usage(self) -> Any:
+        ...
+
+    def get_disk_io_speed(self) -> Dict[str, Any]:
+        ...
+
+    def get_network_speed(self) -> Dict[str, Any]:
+        ...
+
+    def get_disk_info(self) -> Dict[str, Any]:
+        ...
+
+    def get_system_info(self) -> Any:
+        ...
 from backend.infrastructure.system_vnpy import NetworkTester, PortScanner
 from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.infrastructure.system_vnpy.native_log_pipeline import (
@@ -57,8 +73,17 @@ logger = bind_logger_defaults(
     scenario="system_manager",
 )
 
-# 直接使用native序列化优化
-from backend.infrastructure.native.native_serialization import zero_copy_serialize
+# 直接使用native序列化优化（若不可用则回退）
+try:
+    from backend.infrastructure.native.native_serialization import (
+        zero_copy_serialize,
+        SERIALIZATION_AVAILABLE as _NATIVE_SERIALIZATION_AVAILABLE,
+    )
+except Exception:  # pragma: no cover - 仅在原生扩展缺失时触发
+    zero_copy_serialize = None  # type: ignore[assignment]
+    _NATIVE_SERIALIZATION_AVAILABLE = False
+else:
+    _NATIVE_SERIALIZATION_AVAILABLE = bool(_NATIVE_SERIALIZATION_AVAILABLE)
 
 # 专用logger - 日志埋点v4.0
 logger_monitor = bind_logger_defaults(
@@ -77,6 +102,18 @@ EVENT_LOG_RECORD = "eLogRecord"
 EVENT_ALERT_CREATED = "eAlertCreated"
 EVENT_ALERT_UPDATED = "eAlertUpdated"
 
+_SERIALIZATION_FALLBACK_WARNED = False
+
+
+def _serialize_with_fallback(obj: Any) -> str:
+    """回退序列化方案（原生扩展不可用时使用）."""
+    # 优先尝试 JSON，可序列化对象走 JSON 路径保持可读性
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except (TypeError, ValueError):
+        pickled = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+        return pickled.decode("latin1")
+
 
 def _serialize_json(obj: Any) -> str:
     """
@@ -88,22 +125,42 @@ def _serialize_json(obj: Any) -> str:
     Returns:
         JSON字符串
     """
+    global _SERIALIZATION_FALLBACK_WARNED
+
     # 对于JSON兼容的数据，直接使用json.dumps
     if isinstance(obj, (dict, list, str, int, float, bool)) or obj is None:
         return json.dumps(obj, ensure_ascii=False)
-    else:
-        # 对于复杂对象，使用native序列化的结果
+
+    if not _NATIVE_SERIALIZATION_AVAILABLE or zero_copy_serialize is None:
+        if not _SERIALIZATION_FALLBACK_WARNED:
+            logger.warning(
+                "[SystemManager] native_serialization 不可用，使用回退序列化方案",
+                extra={"log_type": "SYSTEM"},
+            )
+            _SERIALIZATION_FALLBACK_WARNED = True
+        return _serialize_with_fallback(obj)
+
+    try:
         serialized_bytes = zero_copy_serialize(obj)
+    except Exception as exc:  # pragma: no cover - 回退逻辑
+        if not _SERIALIZATION_FALLBACK_WARNED:
+            logger.warning(
+                "[SystemManager] native_serialization 调用失败，使用回退序列化方案: %s",
+                exc,
+                extra={"log_type": "SYSTEM"},
+            )
+            _SERIALIZATION_FALLBACK_WARNED = True
+        return _serialize_with_fallback(obj)
 
-        if isinstance(serialized_bytes, memoryview):
-            serialized_bytes = serialized_bytes.tobytes()
-        elif isinstance(serialized_bytes, bytearray):
-            serialized_bytes = bytes(serialized_bytes)
+    if isinstance(serialized_bytes, memoryview):
+        serialized_bytes = serialized_bytes.tobytes()
+    elif isinstance(serialized_bytes, bytearray):
+        serialized_bytes = bytes(serialized_bytes)
 
-        if not isinstance(serialized_bytes, (bytes, bytearray)):
-            serialized_bytes = bytes(serialized_bytes)
+    if not isinstance(serialized_bytes, (bytes, bytearray)):
+        serialized_bytes = bytes(serialized_bytes)
 
-        return serialized_bytes.decode("latin1")  # pickle使用latin1编码
+    return serialized_bytes.decode("latin1")  # pickle使用latin1编码
 
 
 # =============================================================================
@@ -2926,7 +2983,9 @@ class SystemManagerService(BaseService):
         self.registered_tools: Dict[str, Any] = {}
 
         # system_vnpy工具
-        self.system_monitor = SystemMonitor()
+        self.system_monitor: SystemMonitorProtocol = cast(
+            SystemMonitorProtocol, SystemMonitor()
+        )
         self.network_tester = cast(Any, NetworkTester())
         self.port_scanner = cast(Any, PortScanner())
 
@@ -3119,9 +3178,13 @@ class SystemManagerService(BaseService):
             from PySide6.QtCore import QTimer
 
             # 等待监控进程就绪（读取就绪信号文件）
+            # 🔧 修复：使用项目根目录拼接，避免工作目录变化导致路径失效
             max_wait = 15.0
             wait_start = time.time()
-            signal_file = Path("logs/monitor_ready.signal")
+            def _get_root() -> Path:
+                current_file = Path(__file__).resolve()
+                return current_file.parent.parent.parent
+            signal_file = _get_root() / "logs" / "monitor_ready.signal"
 
             while not signal_file.exists() and (time.time() - wait_start) < max_wait:
                 time.sleep(0.5)
@@ -3245,12 +3308,14 @@ class SystemManagerService(BaseService):
             import platform
 
             if platform.system() == "Windows":
-                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+                # 🔧 修复: IPC需要使用ProactorEventLoop来支持IOCP异步I/O
+                # WindowsSelectorEventLoopPolicy不支持管道异步操作
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             self._ipc_loop = loop
-            self.logger.info("✅ IPC事件循环已启动（后台线程）")
+            self.logger.info("✅ IPC事件循环已启动（后台线程，ProactorEventLoop模式）")
             loop.run_forever()
 
         loop_thread = threading.Thread(target=run_loop, name="IPCEventLoopThread", daemon=True)
@@ -3292,20 +3357,14 @@ class SystemManagerService(BaseService):
             from pathlib import Path
             import json
 
-            # 🔧 修复：先等待监控进程就绪信号文件，确保监控进程完全就绪
+            # 🔧 优化修复：快速检查信号文件，不阻塞过长时间
             # 监控进程启动后会创建logs/monitor_ready.signal文件，表示就绪
-            signal_file = Path("logs/monitor_ready.signal")
-            signal_wait_start = time.time()
-            signal_max_wait = 20.0  # 最多等待20秒
-
-            while not signal_file.exists() and (time.time() - signal_wait_start) < signal_max_wait:
-                await asyncio.sleep(0.5)
-
-            if not signal_file.exists():
-                self.logger.warning(
-                    "[IPC] 监控进程就绪信号文件未创建，继续尝试连接", extra={"log_type": "SYSTEM"}
-                )
-            else:
+            # 使用项目根目录拼接，避免工作目录变化导致路径失效
+            def _get_root() -> Path:
+                current_file = Path(__file__).resolve()
+                return current_file.parent.parent.parent
+            signal_file = _get_root() / "logs" / "monitor_ready.signal"
+            if signal_file.exists():
                 try:
                     with open(signal_file, "r", encoding="utf-8") as f:
                         signal_data = json.load(f)
@@ -3316,9 +3375,13 @@ class SystemManagerService(BaseService):
                     self.logger.warning(
                         f"[IPC] 读取监控进程就绪信号失败: {e}", extra={"log_type": "SYSTEM"}
                     )
+            else:
+                self.logger.warning(
+                    "[IPC] 监控进程就绪信号文件未创建，继续尝试连接", extra={"log_type": "SYSTEM"}
+                )
 
-            # 等待监控进程创建服务端（最多等待20秒，已等待信号文件）
-            max_wait = 20.0
+            # 等待监控进程创建服务端（最多等待30秒，使用轮询重试机制）
+            max_wait = 30.0
             wait_start = time.time()
 
             while (time.time() - wait_start) < max_wait:
@@ -3340,10 +3403,10 @@ class SystemManagerService(BaseService):
                     await asyncio.sleep(0.5)
 
                     if time.time() - wait_start >= max_wait:
-                        raise TimeoutError("监控进程服务端未就绪（超时20秒）") from e
+                        raise TimeoutError("监控进程服务端未就绪（超时30秒）") from e
                     continue
 
-            raise TimeoutError("监控进程服务端未就绪（超时20秒）")
+            raise TimeoutError("监控进程服务端未就绪（超时30秒）")
 
         except Exception as e:
             self.logger.error(
@@ -3358,20 +3421,14 @@ class SystemManagerService(BaseService):
             from pathlib import Path
             import json
 
-            # 🔧 修复：先等待监控进程就绪信号文件，确保监控进程完全就绪
+            # 🔧 优化修复：快速检查信号文件，不阻塞过长时间
             # 监控进程启动后会创建logs/monitor_ready.signal文件，表示就绪
-            signal_file = Path("logs/monitor_ready.signal")
-            signal_wait_start = time.time()
-            signal_max_wait = 20.0  # 最多等待20秒
-
-            while not signal_file.exists() and (time.time() - signal_wait_start) < signal_max_wait:
-                await asyncio.sleep(0.5)
-
-            if not signal_file.exists():
-                self.logger.warning(
-                    "[IPC] 监控进程就绪信号文件未创建，继续尝试连接", extra={"log_type": "SYSTEM"}
-                )
-            else:
+            # 使用项目根目录拼接，避免工作目录变化导致路径失效
+            def _get_root() -> Path:
+                current_file = Path(__file__).resolve()
+                return current_file.parent.parent.parent
+            signal_file = _get_root() / "logs" / "monitor_ready.signal"
+            if signal_file.exists():
                 try:
                     with open(signal_file, "r", encoding="utf-8") as f:
                         signal_data = json.load(f)
@@ -3382,9 +3439,13 @@ class SystemManagerService(BaseService):
                     self.logger.warning(
                         f"[IPC] 读取监控进程就绪信号失败: {e}", extra={"log_type": "SYSTEM"}
                     )
+            else:
+                self.logger.warning(
+                    "[IPC] 监控进程就绪信号文件未创建，继续尝试连接", extra={"log_type": "SYSTEM"}
+                )
 
-            # 等待监控进程创建服务端（最多等待20秒，已等待信号文件）
-            max_wait = 20.0
+            # 等待监控进程创建服务端（最多等待30秒，使用轮询重试机制）
+            max_wait = 30.0
             wait_start = time.time()
 
             while (time.time() - wait_start) < max_wait:
@@ -3406,10 +3467,10 @@ class SystemManagerService(BaseService):
                     await asyncio.sleep(0.5)
 
                     if time.time() - wait_start >= max_wait:
-                        raise TimeoutError("监控进程服务端未就绪（超时20秒）") from e
+                        raise TimeoutError("监控进程服务端未就绪（超时30秒）") from e
                     continue
 
-            raise TimeoutError("监控进程服务端未就绪（超时20秒）")
+            raise TimeoutError("监控进程服务端未就绪（超时30秒）")
 
         except Exception as e:
             self.logger.error(

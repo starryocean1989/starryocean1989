@@ -591,7 +591,19 @@ allocations = pool_manager.allocate_connections_intelligently(total_connections)
 - **自动解析**: 二进制格式自动转换为DataFrame
 - **零依赖**: 不需要运行通达信客户端
 
-#### 4. 增强常量系统 📊
+#### 4. 原生扩展整合（Windows 优化）⚙️
+- **I/O 加速**: `native_iocp` 为异步读取器与缓存系统提供真·IOCP 支持，失败时自动降级到 `aiofiles`。
+- **批量数值运算**: 读写器与解析器统一通过 `safe_batch_compute()` 调用 `native_compute`，在扩展缺失或运行时异常时回退至纯 Python 实现。
+- **批量类型转换**: 交易日、日期字段通过 `safe_batch_convert()` 优先调用 `native_conversion`，缺省时使用内置转换逻辑。
+- **零拷贝序列化**: `AsyncFileCache` 首选 `native_serialization.zero_copy_serialize`，失败时依次回退到 `pyarrow` 与 `pickle`。
+- **高性能缓存**: 内存缓存优先使用 `HighPerfLRUCache`；当原生实现不可用或抛出 `KeyError` 时会自动捕获并退化到 Python LRU，同时利用 `hashlib.md5` 生成缓存键。
+- **金融复权**: `native_finance_ops.apply_price_adjustments` 提供整段复权计算，若扩展缺失则回落到 pandas 计算。
+- **交易日历**: `TradingCalendar` 直接加载 `native_calendar` 的位图数据，不可用时按顺序退回至 `pandas_market_calendars` 与工作日判定。
+- **可观测性**: 每个集成点均在失败时记录 debug 日志，方便排查扩展编译或运行异常。
+- **编译建议**: 首次部署或升级后，推荐在 `backend/infrastructure/native` 目录执行 `compile_all.bat`；亦可逐包运行 `python setup.py build_ext --inplace`。
+- **运行时检测**: 可通过 `native_compute.COMPUTE_AVAILABLE`、`native_conversion.CONVERSION_AVAILABLE` 等常量判断扩展状态，`safe_batch_*` 将在扩展缺失时自动回退。
+
+#### 5. 增强常量系统 📊
 - **扩展市场常量**: `EX_MARKET_*` 系列
 - **复权类型映射**: `ADJUST_TYPE_MAP`
 - **除权除息类别**: `XDXR_CATEGORY_*`
@@ -1060,6 +1072,7 @@ value = await cache.get('key1')  # 获取缓存
 - `AsyncFileCache` - 异步文件缓存装饰器
 - `AsyncDataCache` - 异步内存缓存管理器
 - `async_file_cache()` - 便捷缓存装饰器工厂
+- **原生扩展兼容**：支持 `native_iocp`、`native_serialization`、`HighPerfLRUCache`，并在缺省时自动捕获 `KeyError`、降级到 `hashlib` 与 `aiofiles`
 
 ### 复权调整 (`adjustments.py`)
 - `apply_adjustment()` - 异步复权调整（前复权/后复权）

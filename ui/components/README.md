@@ -156,7 +156,8 @@ code = editor.text()
 ```
 
 > 📌 **原生高亮说明**：若需编译原生高亮扩展，可在
-> `ui/native_extensions/native_qhighlighter` 执行 `python setup.py build_ext --inplace`。
+> `backend/infrastructure/native/native_qhighlighter` 执行 `python setup.py build_ext --inplace`，
+> 或运行 `backend/infrastructure/native/compile_all.bat`。
 > 当扩展不可用或设置 `NATIVE_QHIGHLIGHTER=0` 时会自动回退到 Python 实现。
 
 ### 图表组件

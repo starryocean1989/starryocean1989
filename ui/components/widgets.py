@@ -54,9 +54,9 @@ try:
     from native_qhighlighter import NativePythonHighlighter  # type: ignore
 except Exception:  # noqa: BLE001
     try:
-        from ui.native_extensions.native_qhighlighter import (
+        from backend.infrastructure.native.native_qhighlighter import (  # type: ignore
             NativePythonHighlighter,
-        )  # type: ignore
+        )
     except Exception:  # noqa: BLE001 - 仅用于探测
         NativePythonHighlighter = None  # type: ignore
         NATIVE_QHIGHLIGHTER_AVAILABLE = False

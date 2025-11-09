@@ -1072,12 +1072,34 @@ class DataModelManager:
         # 每个品种的最大缓存条数
         self._max_market_data_per_symbol = 5000
 
+    @staticmethod
+    def _safe_cache_get(cache: Any, key: Any, default: Any = None) -> Any:
+        """安全地从HighPerfLRUCache或降级实现中获取数据."""
+        if cache is None:
+            return default
+
+        try:
+            getter = cache.get  # type: ignore[attr-defined]
+        except AttributeError:
+            return default
+
+        try:
+            return getter(key)  # type: ignore[misc]
+        except KeyError:
+            return default
+        except TypeError:
+            # 降级实现可能支持默认值参数，尝试带默认值调用
+            try:
+                return getter(key, default)  # type: ignore[misc]
+            except Exception:  # noqa: BLE001 - 降级逻辑，保证稳健性
+                return default
+
     def add_market_data(self, data: UnifiedMarketData):
         """添加行情数据."""
         key = f"{data.symbol}_{data.exchange}"
 
         # 从缓存获取列表（如果存在）
-        data_list = self._market_data_cache.get(key)  # type: ignore
+        data_list = self._safe_cache_get(self._market_data_cache, key)
         if data_list is None:
             data_list = []
 
@@ -1099,8 +1121,8 @@ class DataModelManager:
         key = f"{symbol}_{exchange}"
 
         # get()方法会自动更新LRU顺序
-        data_list = self._market_data_cache.get(key)  # type: ignore
-        if data_list is None:
+        data_list = self._safe_cache_get(self._market_data_cache, key)
+        if not data_list:
             return []
         return data_list[-limit:] if data_list else []
 
@@ -1110,7 +1132,7 @@ class DataModelManager:
 
     def get_order(self, order_id: str) -> Optional[UnifiedOrder]:
         """获取订单."""
-        return self._order_cache.get(order_id)  # type: ignore
+        return self._safe_cache_get(self._order_cache, order_id)
 
     def add_trade(self, trade: UnifiedTrade):
         """添加成交."""
@@ -1118,7 +1140,7 @@ class DataModelManager:
 
     def get_trade(self, trade_id: str) -> Optional[UnifiedTrade]:
         """获取成交."""
-        return self._trade_cache.get(trade_id)  # type: ignore
+        return self._safe_cache_get(self._trade_cache, trade_id)
 
     def add_position(self, position: UnifiedPosition):
         """添加持仓."""
@@ -1130,7 +1152,7 @@ class DataModelManager:
     ) -> Optional[UnifiedPosition]:
         """获取持仓."""
         key = f"{symbol}_{exchange}_{direction}"
-        return self._position_cache.get(key)  # type: ignore
+        return self._safe_cache_get(self._position_cache, key)
 
     def add_account(self, account: UnifiedAccount):
         """添加账户."""
@@ -1138,7 +1160,7 @@ class DataModelManager:
 
     def get_account(self, account_id: str) -> Optional[UnifiedAccount]:
         """获取账户."""
-        return self._account_cache.get(account_id)  # type: ignore
+        return self._safe_cache_get(self._account_cache, account_id)
 
     def to_pandas_dataframe(self, data_list: List[UnifiedMarketData]) -> Optional[Any]:
         """将行情数据转换为pandas DataFrame."""

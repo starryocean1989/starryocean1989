@@ -1,15 +1,25 @@
-import importlib
 import time
 
 import pytest
 
-native_scheduler_module = importlib.import_module("backend.infrastructure.native.native_scheduler")
-NativeScheduler = getattr(native_scheduler_module, "NativeScheduler")
+from backend.infrastructure.native.native_scheduler import NativeScheduler
+from backend.infrastructure.native.native_scheduler import USING_NATIVE_CORE
+from backend.infrastructure.native.native_threadpool import NativeThreadPool
+
+
+def _make_factory():
+    calls = []
+
+    def factory(max_workers: int):
+        calls.append(max_workers)
+        return NativeThreadPool(max_workers=max_workers)
+
+    return factory, calls
 
 
 @pytest.mark.timeout(5)
 def test_scheduler_submit_and_stats():
-    scheduler = NativeScheduler()
+    scheduler = NativeScheduler(executor_factory=NativeThreadPool)
     scheduler.register_category("download", queue_capacity=8, max_workers=2)
 
     results = []
@@ -36,7 +46,22 @@ def test_scheduler_submit_and_stats():
 
 
 def test_scheduler_unknown_category():
-    scheduler = NativeScheduler()
+    scheduler = NativeScheduler(executor_factory=NativeThreadPool)
     with pytest.raises(KeyError):
         scheduler.submit("missing", lambda: None)
+
+
+def test_executor_factory_called_per_category():
+    factory, calls = _make_factory()
+    scheduler = NativeScheduler(executor_factory=factory)
+    scheduler.register_category("alpha", max_workers=3)
+    scheduler.register_category("beta", max_workers=5)
+    assert calls == [3, 5]
+    scheduler.shutdown()
+
+
+@pytest.mark.skipif(not USING_NATIVE_CORE, reason="Only relevant when native core is enabled")
+def test_missing_executor_factory_raises():
+    with pytest.raises(ValueError):
+        NativeScheduler()  # type: ignore[call-arg]
 

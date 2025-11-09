@@ -5,10 +5,8 @@
 import struct
 from collections import OrderedDict
 
-# 🚀 性能优化：导入native_compute用于批量成交量计算
-from backend.infrastructure.native.native_compute import batch_compute
-
-from ...utils.helper import get_datetime
+# 🚀 性能优化：导入安全的批量计算封装
+from ...utils.helper import get_datetime, safe_batch_compute
 from ..base import AsyncBaseParser
 
 XDXR_CATEGORY_MAPPING = {
@@ -146,7 +144,7 @@ class AsyncGetXdXrInfo(AsyncBaseParser):
 
         # 🚀 性能优化：批量处理成交量（使用native_compute）
         if len(volume_raws) > 0:
-            volumes = batch_compute(volume_raws, "get_volume")  # type: ignore[call-arg]
+            volumes = safe_batch_compute(volume_raws, "get_volume")
         else:
             volumes = []
 

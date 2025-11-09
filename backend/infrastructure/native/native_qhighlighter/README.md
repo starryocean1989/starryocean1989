@@ -14,7 +14,7 @@
 ## 构建
 
 ```powershell
-cd ui/native_extensions/native_qhighlighter
+cd backend/infrastructure/native/native_qhighlighter
 python setup.py build_ext --inplace
 ```
 

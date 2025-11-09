@@ -41,11 +41,29 @@ except ImportError:
         compat_aopen = None  # type: ignore
         IOCP_AVAILABLE = False
 
-# 导入native_compute
-from backend.infrastructure.native.native_compute import batch_compute  # type: ignore
+# 导入native_compute（支持降级）
+try:
+    from backend.infrastructure.native.native_compute import (
+        batch_compute,
+        COMPUTE_AVAILABLE,
+    )
 
-# 导入native_conversion
-from backend.infrastructure.native.native_conversion import batch_convert  # type: ignore
+    _USE_NATIVE_COMPUTE = COMPUTE_AVAILABLE
+except ImportError:
+    batch_compute = None  # type: ignore
+    _USE_NATIVE_COMPUTE = False
+
+# 导入native_conversion（支持降级）
+try:
+    from backend.infrastructure.native.native_conversion import (
+        batch_convert,
+        CONVERSION_AVAILABLE,
+    )
+
+    _USE_NATIVE_CONVERSION = CONVERSION_AVAILABLE
+except ImportError:
+    batch_convert = None  # type: ignore
+    _USE_NATIVE_CONVERSION = False
 
 from .base import BaseReader
 from .bj_decoder import BjStockDecoder
@@ -356,14 +374,44 @@ class TdxBinaryReader(BaseReader):
 
         # 批量除以1000.0（使用native_compute）
         if len(open_prices) > 0:
-            open_prices = batch_compute(open_prices, "divide_by_1000")  # type: ignore
-            high_prices = batch_compute(high_prices, "divide_by_1000")  # type: ignore
-            low_prices = batch_compute(low_prices, "divide_by_1000")  # type: ignore
-            close_prices = batch_compute(close_prices, "divide_by_1000")  # type: ignore
+            if _USE_NATIVE_COMPUTE and batch_compute is not None:
+                compute_func = batch_compute
+                try:
+                    open_prices = compute_func(open_prices, "divide_by_1000")  # type: ignore[call-arg]
+                    high_prices = compute_func(high_prices, "divide_by_1000")  # type: ignore[call-arg]
+                    low_prices = compute_func(low_prices, "divide_by_1000")  # type: ignore[call-arg]
+                    close_prices = compute_func(close_prices, "divide_by_1000")  # type: ignore[call-arg]
+                except Exception as exc:
+                    self.logger.debug(
+                        "[TdxBinaryReader] native_compute失败，降级到Python实现: %s",
+                        exc,
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                    open_prices = [p / 1000.0 for p in open_prices]
+                    high_prices = [p / 1000.0 for p in high_prices]
+                    low_prices = [p / 1000.0 for p in low_prices]
+                    close_prices = [p / 1000.0 for p in close_prices]
+            else:
+                open_prices = [p / 1000.0 for p in open_prices]
+                high_prices = [p / 1000.0 for p in high_prices]
+                low_prices = [p / 1000.0 for p in low_prices]
+                close_prices = [p / 1000.0 for p in close_prices]
 
         # 🚀 性能优化：使用native_conversion批量转换日期整数到字符串，然后批量解析
         # 批量转换日期整数到字符串
-        date_strs = batch_convert(date_ints, str)  # type: ignore
+        if _USE_NATIVE_CONVERSION and batch_convert is not None:
+            convert_func = batch_convert
+            try:
+                date_strs = convert_func(date_ints, str)  # type: ignore[call-arg]
+            except Exception as exc:
+                self.logger.debug(
+                    "[TdxBinaryReader] native_conversion批量转换失败，降级到Python实现: %s",
+                    exc,
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
+                date_strs = [str(d) for d in date_ints]
+        else:
+            date_strs = [str(d) for d in date_ints]
 
         # 🚀 性能优化：批量提取年、月、日字符串切片，然后批量转换为整数
         # 批量提取年、月、日字符串
@@ -381,16 +429,22 @@ class TdxBinaryReader(BaseReader):
 
         # 🚀 使用native_conversion批量转换字符串到整数
         if len(year_strs) > 0:
-            try:
-                years = batch_convert(year_strs, int)  # type: ignore
-                months = batch_convert(month_strs, int)  # type: ignore
-                days = batch_convert(day_strs, int)  # type: ignore
-            except Exception as e:
-                # 降级到Python实现
-                self.logger.debug(
-                    f"[TdxBinaryReader] native_conversion批量转换失败，降级到Python实现: {e}",
-                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-                )
+            if _USE_NATIVE_CONVERSION and batch_convert is not None:
+                convert_func = batch_convert
+                try:
+                    years = convert_func(year_strs, int)  # type: ignore[call-arg]
+                    months = convert_func(month_strs, int)  # type: ignore[call-arg]
+                    days = convert_func(day_strs, int)  # type: ignore[call-arg]
+                except Exception as e:
+                    # 降级到Python实现
+                    self.logger.debug(
+                        f"[TdxBinaryReader] native_conversion批量转换失败，降级到Python实现: {e}",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                    years = [int(s) for s in year_strs]
+                    months = [int(s) for s in month_strs]
+                    days = [int(s) for s in day_strs]
+            else:
                 years = [int(s) for s in year_strs]
                 months = [int(s) for s in month_strs]
                 days = [int(s) for s in day_strs]

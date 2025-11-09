@@ -661,6 +661,13 @@ psutil, PSUTIL_AVAILABLE
 
 > 以上阶段由 `start_new.py` 驱动，Terminal 仅展示 `STAGE_NODE`、`WARNING+` 级别日志，完整调试信息写入 `logs/application_startup_YYYYMMDD_HHMMSS.log`。
 
+#### Terminal输出策略（最佳实践）
+- 控制台仅展示“开始 → 成果 → 结束”，异常展示`WARNING/ERROR/CRITICAL`；详细`DEBUG/INFO`写入事件日志文件。
+- 初始化前日志由`MemoryHandler`拦截并在`LoggingInitStage`重放，保证不丢失。
+- 多进程乱序日志通过`OrderedLogQueue`编排后按序展示；子进程日志由`MultiProcessLogCollector`汇聚。
+- 数据进程（`DataLauncherWorker`）承担“8步缓存验证”，主进程实时回放进度（`STAGE_NODE`）。
+- 参考：`启动完整设计文档.md` 与 `backend/infrastructure/system_vnpy/统一日志系统说明文档.md`。
+
 ### 关键架构特点
 
 **1. 三进程隔离**
@@ -679,6 +686,13 @@ psutil, PSUTIL_AVAILABLE
 - native_collections:LRU缓存性能提升80%
 - native_ipc:跨进程通信延迟降低70%
 - native_serialization:序列化性能提升50%
+- native_vnpy_conversion:批量行情/订单转换平均耗时降低75%
+
+### 原生扩展集成注意事项（v0.50+）
+
+- `native_vnpy_conversion` 已在 `backend/core/service_base.py` 的 `DataConverter.batch_convert_vnpy_data` 中自动探测。默认启用（环境变量 `NATIVE_VNPY_CONVERSION=1`），当扩展缺失或显式关闭时会回退到纯 Python 实现；输出格式固定为 `dict`，可通过 `NATIVE_VNPY_CONVERSION_OUTPUT=dict` 显式声明。
+- `HighPerfLRUCache` 的 `get()` 方法在键不存在时抛出 `KeyError`（与标准字典保持一致）。`DataModelManager`、`DataCenterService` 等模块已增加兼容处理，二次开发时需注意使用 `try/except KeyError` 或封装的 `_safe_cache_get()`、`_task_get()` 等方法，避免因为缺失键导致服务初始化失败。
+- 降级路径仍可用：当原生扩展未编译时，代码自动切换到 Python 实现，并输出 `WARNING` 日志提示。建议通过 `backend/infrastructure/native/compile_all.bat` 或 `python setup.py build_ext --inplace` 编译最新扩展。
 
 ### 服务依赖关系 (UI进程内)
 

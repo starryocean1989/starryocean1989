@@ -102,6 +102,7 @@ NativeFuture_result(NativeFutureObject *self, PyObject *args, PyObject *kwargs)
     }
 
     DWORD wait_result;
+
     Py_BEGIN_ALLOW_THREADS
     wait_result = WaitForSingleObject(self->event, wait_ms);
     Py_END_ALLOW_THREADS
@@ -307,7 +308,8 @@ worker_main(void *arg)
 
     PyGILState_Release(gstate);
     Py_DECREF(pool);
-    PyThread_exit_thread();
+    // 使用与 _beginthreadex 对应的结束函数，确保线程句柄正确发信号
+    _endthreadex(0);
 }
 
 static int

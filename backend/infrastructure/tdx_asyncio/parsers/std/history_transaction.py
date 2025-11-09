@@ -5,17 +5,21 @@
 import struct
 from collections import OrderedDict
 
-# 🚀 性能优化：导入native_compute用于批量价格计算
-from backend.infrastructure.native.native_compute import (
-    batch_compute,
-    COMPUTE_AVAILABLE as NATIVE_COMPUTE_AVAILABLE,
-    PREFIX_SUM_AVAILABLE,
-    prefix_sum_scale,
-)
+# 🚀 性能优化：导入native_compute前缀和安全批量封装
+try:
+    from backend.infrastructure.native.native_compute import (
+        COMPUTE_AVAILABLE as NATIVE_COMPUTE_AVAILABLE,
+        PREFIX_SUM_AVAILABLE,
+        prefix_sum_scale,
+    )
+except ImportError:
+    NATIVE_COMPUTE_AVAILABLE = False  # type: ignore
+    PREFIX_SUM_AVAILABLE = False  # type: ignore
+    prefix_sum_scale = None  # type: ignore
 
 HAS_PREFIX_SUM_SCALE = NATIVE_COMPUTE_AVAILABLE and PREFIX_SUM_AVAILABLE
 
-from ...utils.helper import get_price, get_time
+from ...utils.helper import get_price, get_time, safe_batch_compute
 from ...utils.logger import logger
 from ..base import AsyncBaseParser
 
@@ -100,7 +104,7 @@ class AsyncGetHistoryTransactionData(AsyncBaseParser):
                 for price_raw in price_raws:
                     last_price += price_raw
                     cumulative_prices.append(last_price)
-                prices = batch_compute(cumulative_prices, "divide")  # type: ignore
+                prices = safe_batch_compute(cumulative_prices, "divide")
         else:
             prices = []
 

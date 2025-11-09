@@ -10,6 +10,7 @@
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import pickle
@@ -111,7 +112,10 @@ class AsyncFileCache:
 
             # 检查内存缓存
             if self.memory_cache and self._memory_cache is not None:
-                cached_value = self._memory_cache.get(cache_key)
+                try:
+                    cached_value = self._memory_cache.get(cache_key)
+                except KeyError:
+                    cached_value = None
                 if cached_value is not None:
                     # cached_value是 (data, timestamp) 元组
                     data, timestamp = cached_value
@@ -152,11 +156,21 @@ class AsyncFileCache:
 
         # 🚀 使用native_compute批量哈希计算（即使只有一个值）
         # batch_hash接受bytes列表，返回hex字符串列表
-        hashes = batch_hash([key_bytes], "md5")  # type: ignore
+        hashes = None
+        if batch_hash is not None:
+            try:
+                hashes = batch_hash([key_bytes], "md5")  # type: ignore
+            except Exception as exc:
+                logger.debug(
+                    "[AsyncFileCache] batch_hash 调用失败，降级到hashlib: %s",
+                    exc,
+                    extra={"log_type": "SYSTEM"},
+                )
+
         if hashes and len(hashes) > 0:
             return hashes[0]
 
-        raise RuntimeError("batch_hash returned empty result")
+        return hashlib.md5(key_bytes).hexdigest()
 
     def _is_cache_valid(self, timestamp: float) -> bool:
         """检查缓存是否有效"""

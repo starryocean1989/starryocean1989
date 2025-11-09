@@ -1,4 +1,4 @@
-# data_module_vnpy v3.4
+# data_module_vnpy v3.6
 
 **中国股票数据模块** - 高性能、智能化、异步化的 A 股数据管理系统
 
@@ -8,7 +8,7 @@
 
 - [模块概述](#模块概述)
 - [核心特性](#核心特性)
-- [架构设计](#架架构设计)
+- [架构设计](#架构设计)
 - [核心功能](#核心功能)
 - [快速开始](#快速开始)
 - [API 参考](#api-参考)
@@ -49,6 +49,19 @@ data_module_vnpy 是一个专为中国 A 股市场设计的高性能数据管理
 - ✅ **Parquet 序列化**: 保持 pyarrow 序列化（已优化）
 - ✅ **内存操作**: 优化缓存数据的内存管理
 - ✅ **数值计算**: 保持 Python 计算（单个计算已足够快）
+
+#### 原生 C 扩展集成矩阵（v3.6）
+
+| 模块入口 | 关键 C 扩展 | 集成方式 | 回退策略 | 相关环境变量 |
+|----------|-------------|----------|----------|--------------|
+| `data_acquisition.py` | `native_async.reduce_task_results`、`native_scheduler`、`native_ipc`、`native_dataframe_ops`、`native_collections`、`native_iocp`、`native_symbol_index` | 初始化时检测扩展并注入 `_NATIVE_SCHEDULER_BRIDGE`、`native_reduce_task_results`、原生品种索引等 | 大部分扩展提供 Python 回退；`native_async` 为强依赖，缺失时抛出 `RuntimeError` | `DISABLE_NATIVE_SCHEDULER`、`SYMBOL_INDEX_IMPL` |
+| `data_quality.py` | `native_scheduler`、`native_dataframe_ops`、`native_iocp`、`native_fs`、`native_ipc`、`native_collections`、`native_compute` | 运行时按需检测并按类别创建调度器、批量扫描器 | 全量回退到 Python 实现，记录降级日志 | `DISABLE_NATIVE_SCHEDULER` |
+| `data_storage.py` | `native_iocp`、`native_serialization`、`native_memory`、`native_collections` | 异步 I/O、批量序列化、零拷贝内存池 | 不可用时回退到 `aiofiles`、标准序列化与 Python 容器 | `NATIVE_LRU_DISABLED` |
+| `data_process_main.py` | `native_rpc_bridge`、`native_indicator`、`native_finance_ops`、`native_serialization`、`native_ipc` | 数据进程主服务优先采用原生协议、指标与风险计算 | 指标/风险计算自动退回到 `talib` / Python；RPC 桥接缺失时使用 JSON 协议 | `NATIVE_RPC_JSON_ONLY` |
+| `data_process_client.py` | `native_ipc`、`native_rpc_bridge` | 使用 Proactor event loop 与原生 RPC 请求头 | 缺失时回退到纯 JSON RPC 并输出告警 | `NATIVE_RPC_JSON_ONLY` |
+| `load_balancer.py` | `native_load_balancer`、`native_process_metrics`、`native_socket_metrics` | 优先调用原生优化器与指标采集 | 自动退回到 Python 版本与 `psutil` | `NATIVE_RESOURCE_MONITOR`、`FORCE_PY_LOAD_BALANCER` |
+
+> 📌 **提示**：所有关键入口都以 `try/except ImportError` 包裹，可安全部署在未编译扩展的环境中。若需强制使用纯 Python 行为，可通过上述环境变量关闭对应原生路径。
 
 ### v3.5 架构优化亮点（2025-11-06）
 
@@ -919,6 +932,8 @@ pytest tests/test_symbol_loader_native.py -v
 pytest tests/test_native_async_reduce.py -v
 ```
 
+> ⚠️ **依赖提示**：部分回归用例（尤其是 `backend/infrastructure/data_module_vnpy/tests/test_native_scheduler_bridge.py`）需要预装 `vnpy` 生态包与全部原生扩展。若缺失依赖，可通过设置 `PYTHONPATH` 并安装 `vnpy`，或暂时跳过相关用例。
+
 **详细测试报告**: 请查看 [测试报告_v3.1.md](测试报告_v3.1.md)
 
 ---
@@ -1397,3 +1412,15 @@ from backend.infrastructure.data_module_vnpy import (
 **测试状态**: ✅ 功能测试 100% 通过 (7/7)
 **性能评级**: ⭐⭐⭐⭐⭐ 优秀
 **架构状态**: ✅ 底层功能已迁移到 `tdx_asyncio`，职责分离清晰
+
+### 启动阶段输出（8步缓存验证）
+- 数据进程执行并通过`STAGE_NODE`回放以下8步进度到主进程：
+  1) 服务器池验证与测速
+  2) 初始化负载均衡器
+  3) 本地缓存有效性检查
+  4) 数据目录与索引扫描
+  5) 数据新鲜度检测
+  6) 异步本地数据索引
+  7) 延迟数据更新检查
+  8) 启动文件监控
+- Terminal仅展示每步“开始/完成/异常”，详细`DEBUG/INFO`写入事件日志文件；离线降级在步骤1失败时触发。

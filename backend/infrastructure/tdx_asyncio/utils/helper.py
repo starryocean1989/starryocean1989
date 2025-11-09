@@ -4,18 +4,35 @@ import struct
 import threading
 import logging
 from datetime import datetime
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Sequence, Iterable
 
 # 🚀 性能优化：导入native_compute用于批量get_price解析
 try:
     from backend.infrastructure.native.native_compute import (
         batch_get_price as _batch_get_price_native,
+        batch_compute as _batch_compute_native,
+        COMPUTE_AVAILABLE as _NATIVE_COMPUTE_AVAILABLE,
+    )
+    from backend.infrastructure.native.native_conversion import (
+        batch_convert as _batch_convert_native,
+        CONVERSION_AVAILABLE as _NATIVE_CONVERSION_AVAILABLE,
     )
 
     BATCH_GET_PRICE_AVAILABLE = True
 except ImportError:
     BATCH_GET_PRICE_AVAILABLE = False
     _batch_get_price_native = None
+    _batch_compute_native = None  # type: ignore
+    _NATIVE_COMPUTE_AVAILABLE = False
+    _batch_convert_native = None  # type: ignore
+    _NATIVE_CONVERSION_AVAILABLE = False
+else:
+    if "_batch_compute_native" not in locals():
+        _batch_compute_native = None  # type: ignore
+        _NATIVE_COMPUTE_AVAILABLE = False
+    if "_batch_convert_native" not in locals():
+        _batch_convert_native = None  # type: ignore
+        _NATIVE_CONVERSION_AVAILABLE = False
 
 from ..network.constants import SECURITY_COEFFICIENT, TDXParams
 from .logger import logger
@@ -88,20 +105,87 @@ def batch_get_price(data: bytes, start_pos: int, count: int) -> Tuple[List[int],
         return values, pos
 
     try:
-        values_list, positions_list = _batch_get_price_native(data, start_pos, count)
+        values_list, positions_list = _batch_get_price_native(data, start_pos, count)  # type: ignore[call-arg]
         # 转换为Python列表
         values = [int(v) for v in values_list]
         final_pos = int(positions_list[-1]) if len(positions_list) > 0 else start_pos
         return values, final_pos
     except Exception as e:
         # 降级到Python实现
-        logger.debug(f"batch_get_price失败，降级到Python实现: {e}")
         values = []
         pos = start_pos
         for _ in range(count):
             value, pos = get_price(data, pos)
             values.append(value)
+        logger.debug(f"batch_get_price失败，降级到Python实现: {e}")
         return values, pos
+
+
+def _python_batch_compute(values: Sequence[float], operation: str, *args: Iterable[float]) -> List[float]:
+    if operation == "divide_by_1000":
+        return [float(v) / 1000.0 for v in values]
+    if operation in {"divide_by_100", "divide"}:
+        return [float(v) / 100.0 for v in values]
+    if operation == "get_volume":
+        return [float(get_volume(int(v))) for v in values]
+    if operation == "multiply":
+        if not args:
+            raise ValueError("multiply operation requires multipliers")
+        multipliers = list(args[0])
+        return [float(v) * float(m) for v, m in zip(values, multipliers)]
+    if operation == "add":
+        if not args:
+            raise ValueError("add operation requires addends")
+        addends = list(args[0])
+        return [float(v) + float(a) for v, a in zip(values, addends)]
+    raise ValueError(f"Unsupported operation for fallback: {operation}")
+
+
+def safe_batch_compute(values: Sequence[float], operation: str, *args: Iterable[float]) -> List[float]:
+    if _NATIVE_COMPUTE_AVAILABLE and _batch_compute_native is not None:
+        try:
+            result = _batch_compute_native(values, operation, *args)  # type: ignore[call-arg]
+            if isinstance(result, list):
+                return result
+            return list(result)
+        except Exception as exc:
+            logger.debug(
+                "[helper.safe_batch_compute] native_compute失败，使用Python回退: %s",
+                exc,
+            )
+    return _python_batch_compute(values, operation, *args)
+
+
+def safe_batch_convert(values: Sequence[object], target_type: object):
+    def _resolve_converter(target):
+        if callable(target):
+            return target
+        if isinstance(target, str):
+            mapping = {
+                "int": int,
+                "float": float,
+                "str": str,
+                "bytes": bytes,
+            }
+            if target not in mapping:
+                raise ValueError(f"Unsupported conversion target: {target}")
+            return mapping[target]
+        raise ValueError(f"Unsupported conversion target type: {target}")
+
+    if _NATIVE_CONVERSION_AVAILABLE and _batch_convert_native is not None:
+        try:
+            result = _batch_convert_native(values, target_type)  # type: ignore[call-arg]
+            if isinstance(result, list):
+                return result
+            return list(result)
+        except Exception as exc:
+            logger.debug(
+                "[helper.safe_batch_convert] native_conversion失败，使用Python回退: %s",
+                exc,
+            )
+
+    converter = _resolve_converter(target_type)
+    return [converter(value) for value in values]
 
 
 def get_volume(vol):

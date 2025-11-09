@@ -8898,10 +8898,11 @@ def main():
         import os
         import platform
 
-        # Windows需要使用SelectorEventLoop
+        # 🔧 修复: Windows需要使用ProactorEventLoop来支持IPC管道异步I/O
+        # 监控进程需要创建IPC服务端管道，必须使用ProactorEventLoop
         if platform.system() == "Windows":
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-            logger.info("✅ 已设置Windows SelectorEventLoop策略")
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            logger.info("✅ 已设置Windows ProactorEventLoop策略（支持IPC管道）")
 
         logger.info("正在创建MonitoringProcessV2实例...")
 
