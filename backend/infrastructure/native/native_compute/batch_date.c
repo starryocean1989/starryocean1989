@@ -7,6 +7,8 @@
 #include "batch_date.h"
 #include <string.h>
 #include <ctype.h>
+/* 日志桥接宏 */
+#include "../native_log_bridge.h"
 
 /* 验证单个ISO日期字符串格式 (YYYY-MM-DD)
  * 返回: 1=有效, 0=无效
@@ -63,10 +65,12 @@ PyObject* batch_validate_iso_dates(PyObject* self, PyObject* args) {
     PyObject* date_list;
     
     if (!PyArg_ParseTuple(args, "O", &date_list)) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "batch_validate_iso_dates", __LINE__, "invalid arguments to batch_validate_iso_dates");
         return NULL;
     }
     
     if (!PyList_Check(date_list)) {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_validate_iso_dates", __LINE__, "参数必须是列表", NULL);
         PyErr_SetString(PyExc_TypeError, "参数必须是列表");
         return NULL;
     }
@@ -74,6 +78,7 @@ PyObject* batch_validate_iso_dates(PyObject* self, PyObject* args) {
     Py_ssize_t size = PyList_Size(date_list);
     PyObject* result = PyList_New(size);
     if (!result) {
+        NATIVE_LOG_CRITICAL("backend.native.compute.core", "batch_validate_iso_dates", __LINE__, "failed to allocate result list");
         return NULL;
     }
     
@@ -102,16 +107,19 @@ PyObject* batch_compare_dates(PyObject* self, PyObject* args) {
     const char* reference_date;
     
     if (!PyArg_ParseTuple(args, "Os", &date_list, &reference_date)) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "batch_compare_dates", __LINE__, "invalid arguments to batch_compare_dates");
         return NULL;
     }
     
     if (!PyList_Check(date_list)) {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_compare_dates", __LINE__, "第一个参数必须是列表", NULL);
         PyErr_SetString(PyExc_TypeError, "第一个参数必须是列表");
         return NULL;
     }
     
     /* 验证参考日期格式 */
     if (!validate_iso_date_format(reference_date)) {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_compare_dates", __LINE__, "参考日期格式无效", reference_date);
         PyErr_SetString(PyExc_ValueError, "参考日期格式无效");
         return NULL;
     }
@@ -119,6 +127,7 @@ PyObject* batch_compare_dates(PyObject* self, PyObject* args) {
     Py_ssize_t size = PyList_Size(date_list);
     PyObject* result = PyList_New(size);
     if (!result) {
+        NATIVE_LOG_CRITICAL("backend.native.compute.core", "batch_compare_dates", __LINE__, "failed to allocate result list");
         return NULL;
     }
     

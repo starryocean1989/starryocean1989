@@ -2,7 +2,7 @@
 
 **版本**: v1.3  
 **创建日期**: 2025-11-02  
-**最后更新**: 2025-11-08（原生扩展集成评估）  
+**最后更新**: 2025-11-09（原生执行器 + Qt 主线程桥接 + 非阻塞后台调度）  
 **状态**: ✅ 已完成实现（原生日志管线路径待处理）
 
 ---
@@ -76,6 +76,11 @@ backend/startup/
 ├── __init__.py                    # 模块导出
 ├── context.py                     # StartupContext（启动上下文）
 ├── orchestrator.py                # StartupOrchestrator（启动编排器）
+├── event_bus.py                   # 启动事件总线（StartupEvent/ReadinessBarrier）
+├── native_support.py              # 原生线程池执行器 & 服务追踪封装
+├── plan.py                        # StartupPlan（启动计划解析）
+├── startup_plan.json              # 启动计划清单（DAG 描述）
+├── supervisor.py                  # ProcessSupervisor（并行任务监督）
 ├── stages/                        # 启动阶段模块
 │   ├── __init__.py
 │   ├── base.py                    # StartupStage 基类
@@ -137,6 +142,12 @@ backend/startup/
 - `app`: QApplication实例
 - `main_window`: MainWindow实例
 - `service_manager`: ServiceManager实例
+- `event_bus`: 启动事件总线（原生发布支持）
+- `service_tracker`: 基于 HighPerfEvent 的服务就绪追踪
+- `native_runtime`: 封装 native_threadpool/native_scheduler 的执行器
+- `native_runtime_options`: 原生执行器的线程池/调度器配置（类别并发、默认超时）
+- `service_initializer`: 最近一次服务初始化器引用（可获取任务、状态快照）
+- `get_service_status_snapshot()`: 提供 ready/pending/failed 的服务状态视图
 
 ### 3.3 StartupStage（启动阶段基类）
 
@@ -194,14 +205,17 @@ backend/startup/
 **目标流程（v1.3 三进程）**
 
 1. **继承阶段2产物**：读取 `StartupContext` 中的 `EventEngine`、`MainEngine` 并确认唯一性。
-2. **并行启动三条子流程**：
+2. **ProcessSupervisor 并发调度**：解析 `startup_plan.json`，将分支节点映射到 Worker，并基于 `asyncio.TaskGroup` 并发执行，自动发布 `NODE_STARTED/NODE_READY/NODE_FAILED` 事件。
+3. **ReadinessBarrier 等待就绪**：通过 `ReadinessBarrier` 监听 `backend_init.monitor/data/backend/cache` 关键 `ready_key`，默认 30 秒超时，未就绪立即降级或失败返回。
+4. **分支 Worker 职责**：
    - `MonitorLauncherWorker` → 启动监控进程、完成 Level 1/2 就绪校验并挂载 2s 轮询 watchdog；
    - `DataLauncherWorker` → 启动数据进程，写入 `data_process_ready.signal`，完成 IPC 管道握手并安装 2s 轮询 watchdog；
-   - `BackendInitializerWorker` → 初始化主进程内的业务服务骨架，为后续跨进程代理预留依赖。
-3. **跨进程日志桥接**：等待 `MultiProcessLogCollector` 与子进程 `QueueHandler` 建立连接，Terminal 仅展示阶段节点与 WARNING 及以上日志；若桥接失败会自动降级并输出警告。
-4. **缓存验证当前状态**：`CacheValidatorWorker` 仍输出“将在数据进程执行”的占位日志，RPC 化正在推进；完成后会回放 8 步进度并触发降级策略。
-5. **业务服务激活**：在数据进程 Level 2 就绪后，主进程仅初始化交易、策略、辅助服务骨架并注册到 `ServiceManager`；远程 RPC 客户端使用占位实现，待数据通道完成后替换。
-6. **并行 UI 预加载**：触发 `context.ui_preload_task`，让 UI 预加载与缓存验证并行，确保 Stage 4 能拿到 “预加载完成” 的 Future。
+   - `BackendInitializerWorker` → 初始化主进程内的业务服务骨架，为后续跨进程代理预留依赖；
+   - `CacheValidatorWorker` → 回放 8 步缓存验证，如检测到数据进程接管则输出降级提示。
+5. **跨进程日志桥接**：等待 `MultiProcessLogCollector` 与子进程 `QueueHandler` 建立连接，Terminal 仅展示阶段节点与 WARNING 及以上日志；若桥接失败会自动降级并输出警告。
+6. **缓存验证当前状态**：`CacheValidatorWorker` 仍输出“将在数据进程执行”的占位日志，RPC 化正在推进；完成后会回放 8 步进度并触发降级策略。
+7. **业务服务激活与后台调度**：在数据进程 Level 2 就绪后，主进程通过 `ServiceInitializer` 将交易、策略、辅助等服务提交给 `NativeStartupRuntime`，Portfolio/Market/SystemManager 等重任务会在原生线程池/调度器中后台执行；阶段即时返回，并把状态快照写入 `StartupContext.service_tracker` / `StageResults` 供 UI 与后续阶段订阅。
+8. **并行 UI 预加载**：触发 `context.ui_preload_task`，让 UI 预加载与缓存验证并行，确保 Stage 4 能拿到 “预加载完成” 的 Future。
 
 **阶段输出设计**
 
@@ -213,6 +227,7 @@ backend/startup/
 - DataLauncher/MonitorLauncher 需要输出 `Level 0 (PID)`、`Level 1 (IPC)`、`Level 2 (服务)` 三个检查点，配合 watchdog 实现自恢复。
 - `StartupContext` 应保存子进程 PID、日志队列句柄、IPC 管道元数据，供后续阶段与退出流程使用。
 - 保持“主进程不再直接初始化数据服务”的原则，所有数据相关操作通过数据进程 RPC 处理。
+- `startup_plan.json` 描述分支依赖；`context.readiness_state` 会记录所有 `NODE_READY` 事件，终端模板基于真实事件动态回放分支状态。
 
 #### 3.4.5 UIActivationStage（UI激活阶段）
 
@@ -246,6 +261,7 @@ backend/startup/
 - 在三进程架构下**不再直接创建ChinaStockEngine**，而是为数据进程预留 RPC 客户端占位
 - 逐步初始化交易、策略、辅助等主进程服务，并等待数据进程 Level 2 就绪后注入远程依赖
 - 报告初始化进度、错误信息，并将所有阶段日志交由 `StartupLogger` 输出
+- 通过事件总线发布 `backend_init.backend:services/health` 就绪事件，为 ReadinessBarrier 提供输入
 
 **关键设计点**:
 
@@ -262,6 +278,7 @@ backend/startup/
 - 创建native_ipc管道（3条：`monitor_alerts`, `monitor_status`, `monitor_query`）
 - 等待监控进程Level 1就绪（管道就绪）
 - 管理监控进程生命周期
+- 通过 `EventBus` 发布 `backend_init.monitor:level0/level1/level2` 就绪事件，附带 PID/管道等元数据
 
 #### 3.6.3 DataLauncherWorker（数据进程启动Worker）
 
@@ -273,6 +290,7 @@ backend/startup/
 - 等待数据进程就绪
 - 管理数据进程生命周期
 - 向子进程注入 `LOGGING_QUEUE_TOKEN`，复用主进程的 `MultiProcessLogCollector`
+- 通过 `EventBus` 发布 `backend_init.data:level0/level1/level2` 就绪事件，回传 PID、管道、RPC 连通性等信息
 
 **三进程要点**:
 
@@ -289,6 +307,7 @@ backend/startup/
 - 使用async/await支持异步执行
 - 报告进度
 - 在三进程模式下仅输出占位日志，实际 8 步验证将迁移至数据进程 RPC，完成后会通过事件日志重放进度条并触发 UI 回放。
+- 将缓存验证完成或委托信息通过 `backend_init.cache:steps` 就绪事件写回主进程
 
 ### 3.7 服务初始化器模块（已迁移）
 
@@ -371,6 +390,21 @@ from backend.startup.ui_startup import StartupCoordinator, BootOrchestrator
 - 每次启动生成一个日志文件到 `logs/`
 - 文件命名格式：`application_startup_YYYYMMDD_HHMMSS.log`
 - 包含所有级别的日志（DEBUG+）
+
+### 3.10 StartupPlan、EventBus 与 ProcessSupervisor
+
+**文件**: `plan.py`、`startup_plan.json`、`event_bus.py`、`supervisor.py`
+
+**职责**:
+- `StartupPlan`：解析 `startup_plan.json`，构建启动 DAG，提供拓扑排序与节点依赖查询能力。
+- `EventBus`：提供跨阶段的事件发布/订阅、历史记录、就绪屏障 `ReadinessBarrier`，统一管理分支就绪信号。
+- `ProcessSupervisor`：封装并行 Worker 调度（基于 `asyncio.TaskGroup`），统一输出节点开始/完成/失败事件。
+
+**关键点**:
+- 默认计划文件位于 `backend/startup/startup_plan.json`，可通过 `StartupPlan.load_default()` 加载；如需扩展，可自定义 manifest 描述新的节点与依赖。
+- `ReadinessBarrier` 通过 `ready_key`（如 `backend_init.data:level2`）等待事件，超时会触发降级或失败回滚。
+- 分支 Worker（监控、数据、主进程、缓存验证）通过 `StartupWorker._mark_ready/_mark_failure` 上报事件，终端模板会展示实时状态。
+- `ProcessSupervisor` 在并发运行 Worker 时自动发布 `NODE_STARTED/NODE_READY/NODE_FAILED` 事件，支持在失败时收敛错误并输出上下文。
 
 ---
 
@@ -725,9 +759,9 @@ class MyNewWorker(StartupWorker):
             )
 ```
 
-- `SystemManagerService` 完成初始化后会检测 `_ipc_available`，如果底层 `native_ipc` 创立的命名管道握手成功，会在阶段日志中标记“native_ipc管道 ✅”，说明三进程之间的原生通信链路处于工作状态：
+- `SystemManagerService` 的初始化现已异步化：阶段3立即输出“后台初始化任务已启动”，真正的管道握手在后台完成后会自动回写“后台初始化完成”，确保不会阻塞后续 UI 启动：
 
-```1720:1739:backend/startup/initializers/service_initializer.py
+```1720:1749:backend/startup/initializers/service_initializer.py
                 system_manager_service = SystemManagerService()
                 init_success = system_manager_service.initialize()
 
@@ -737,23 +771,29 @@ class MyNewWorker(StartupWorker):
                     )
                     self.initialized_services["system_manager_service"] = system_manager_service
                     self.logger.info("✅ SystemManagerService 初始化成功")
+                    stage_extra = {"log_type": "STAGE_NODE", "scenario": "backend_services_init"}
                     stage_logger.info(
-                        "✅ SystemManagerService初始化完成", extra={"log_type": "STAGE_NODE"}
+                        "✅ SystemManagerService后台初始化任务已启动",
+                        extra=stage_extra,
                     )
 
-                    # 检查native_ipc连接状态
-                    if (
-                        hasattr(system_manager_service, "_ipc_available")
-                        and system_manager_service._ipc_available
-                    ):
+                    if getattr(system_manager_service, "_ipc_available", False):
                         stage_logger.info(
-                            "  └─ 连接监控进程native_ipc管道 ✅", extra={"log_type": "STAGE_NODE"}
+                            "  └─ 原生日志与监控管道将后台握手（Native IPC 已启用）",
+                            extra=stage_extra,
+                        )
+                    else:
+                        stage_logger.warning(
+                            "  └─ Native IPC 暂不可用，将自动重试或使用降级模式",
+                            extra=stage_extra,
                         )
 ```
+- `native_support.NativeStartupRuntime` 统一封装 `native_threadpool` / `HighPerfEvent`，`ServiceInitializer` 会将 Portfolio/Market/System 初始化任务提交到原生线程池并由 `ServiceStartupTracker` 自动发布 `NODE_READY`/`NODE_FAILED` 事件。
 
-### 9.2 验证结果（2025-11-08）
+### 9.2 验证结果（2025-11-09）
 
-- **日志总线**：`logs/application_startup_20251108_220600.log` 中看到三进程 PID、Level1/Level2 就绪节点均被准确记录，说明 `StartupContext.log_queue_token` 成功传递。
+- **日志总线**：`logs/application_startup_20251109_180638.log` 中看到三进程 PID、Level1/Level2 就绪节点均被准确记录，说明 `StartupContext.log_queue_token` 成功传递。
+- **原生执行器**：同一日志末尾新增“原生执行统计”段落，来自 `service_tracker.snapshot()` 的结果，确认 `NativeStartupRuntime` 正常发布就绪事件并记录耗时。
 - **原生日志管线**：同一日志文件 264 行出现 `native_log_pipeline 模块导入失败：No module named 'native_log_pipeline'`，系统自动回退到 Python 路径；性能优化未生效但功能不受阻。主因是当前 `import_module("native_log_pipeline")` 仅搜索顶层模块，而仓库内的扩展位于 `backend/infrastructure/native/native_log_pipeline/`：
 
 ```103:112:backend/infrastructure/system_vnpy/native_log_pipeline.py
@@ -766,7 +806,7 @@ class MyNewWorker(StartupWorker):
 ```
 
   建议在 `EnvSetupStage` 增补 `backend/infrastructure/native` 至 `sys.path`，或将编译产物复制到顶层 `native_log_pipeline.pyd`，以恢复原生日志批处理能力。
-- **native_ipc 通道**：`SystemManagerService` 初始化日志显示 `native_ipc管道 ✅`，证明监控进程侧的命名管道由 C 扩展成功建立并与主进程握手。
+- **native_ipc 通道**：`SystemManagerService` 初始化日志会先提示后台任务启动，待握手完成后会追加“系统管理服务后台初始化完成”，说明监控进程侧的命名管道由 C 扩展成功建立并与主进程握手。
 - **零拷贝序列化**：`SystemManagerService` 直接使用 `zero_copy_serialize`；若未编译 `native_serialization`，该函数会抛出 `ImportError`。当前 Startup 流程未检测编译状态，若需要软降级，应在 `_serialize_json` 增加 `SERIALIZATION_AVAILABLE` 判定。
 
 ### 9.3 待办与建议
@@ -904,6 +944,12 @@ class MyNewWorker(StartupWorker):
 - ✅ 通过 `logs/application_startup_20251108_220600.log` 验证三进程日志/IPC 交互正常，确认令牌透传与 watchdog 策略生效。
 - ⚠️ 发现 `native_log_pipeline` 仍因导入路径缺失而回退至 Python 实现，后续需在启动阶段或部署脚本中修复（新增路径或调整导入模块）。
 
+### v1.4 (2025-11-09) - 非阻塞后台调度
+- ✅ `NativeStartupRuntime` 集成类别调度、任务回调与 Qt 主线程桥接。
+- ✅ `ServiceInitializer` 将辅助服务提交至原生执行器，Stage 3 立即返回，并提供状态快照接口。
+- ✅ `BackendInitStage` 使用 `StageResults` 输出 ready/pending/failed 统计与原生执行器诊断信息。
+- ✅ `SystemManagerService` 通过 `run_on_qt_main()` 在主线程安装 `QTimer`，消除启动阶段 UI 卡顿。
+
 ---
 
 **注意**: 
@@ -950,3 +996,18 @@ class MyNewWorker(StartupWorker):
 📍 步骤7 延迟数据更新检查 → ✅ 完成
 📍 步骤8 启动文件监控 → ✅ 完成
 ```
+
+### 3.11 NativeStartupRuntime（2025-11-09 升级）
+
+**文件**: `native_support.py`
+
+**新增能力**:
+- `QtMainInvoker`：在 PySide6 主线程执行回调（缺失时自动降级），避免后台线程直接创建 Qt 对象导致卡死。
+- `NativeStartupRuntime(stats/run_on_qt_main)`：线程池 + `native_scheduler` 组合执行器，支持类别限流、原生 HighPerfEvent 完成通知、任务回调。
+- `submit_service()`：返回 `NativeStartupFuture`，可注册 `add_done_callback()`；`stats()` 提供运行态诊断。
+- `ServiceStartupTracker`：与 `StartupContext.service_tracker`/`StageResults` 联动，实时生成 ready/pending/failed 快照。
+
+**最佳实践**:
+- BackendInitStage 将辅助服务提交到 `category="auxiliary"` 队列，主流程立刻推进到阶段 4。
+- 需要在 Qt 主线程收尾的服务（如 `SystemManagerService`）应调用 `runtime.run_on_qt_main()` 包装定时器、信号注册。
+- 通过 `StartupContext.get_service_status_snapshot()` + `service_tracker.snapshot()` 为 UI/日志提供精细的进度呈现。

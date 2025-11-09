@@ -49,6 +49,9 @@ python -m pytest backend/infrastructure/native/native_threadpool/tests/test_nati
 
 - 使用 `THREADPOOL_AVAILABLE` 将原生可用性写入统一日志。
 - 当任务执行异常时，可通过 `NativeFuture.exception()` 捕获原始错误，便于回传至上层监控。
+- **日志集成**：已集成 NativeLogBridge，支持任务提交、执行、失败的结构化日志记录。
+  - C 层：线程创建失败、任务执行异常、资源分配错误等关键事件。
+  - Python 层：使用 `@native_call_guard` 装饰器捕获包装层异常，回退实现提供基础日志。
 
 ---
 

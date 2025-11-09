@@ -8,6 +8,8 @@
 #include <Python.h>
 #include <string.h>
 #include "batch_hash.h"
+/* 日志桥接宏 */
+#include "../native_log_bridge.h"
 
 /* 批量哈希计算函数 */
 PyObject* batch_hash_func(PyObject *self, PyObject *args) {
@@ -20,21 +22,25 @@ PyObject* batch_hash_func(PyObject *self, PyObject *args) {
 
     /* 解析参数：data 列表，algorithm 可选的字符串对象 */
     if (!PyArg_ParseTuple(args, "O|O", &data, &algorithm)) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "batch_hash", __LINE__, "invalid arguments to batch_hash");
         return NULL;
     }
 
     if (!PyList_Check(data)) {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_hash", __LINE__, "data must be a list", NULL);
         PyErr_SetString(PyExc_TypeError, "data must be a list");
         return NULL;
     }
 
     if (algorithm != NULL) {
         if (!PyUnicode_Check(algorithm)) {
+            NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_hash", __LINE__, "algorithm must be a string", NULL);
             PyErr_SetString(PyExc_TypeError, "algorithm must be a string");
             return NULL;
         }
         algo = PyUnicode_AsUTF8(algorithm);
         if (algo == NULL) {
+            NATIVE_LOG_ERROR("backend.native.compute.core", "batch_hash", __LINE__, "failed to parse algorithm string");
             return NULL;
         }
     }
@@ -47,12 +53,14 @@ PyObject* batch_hash_func(PyObject *self, PyObject *args) {
     /* 导入hashlib模块 */
     hashlib_module = PyImport_ImportModule("hashlib");
     if (hashlib_module == NULL) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "batch_hash", __LINE__, "failed to import hashlib");
         return NULL;
     }
 
     /* 获取哈希函数 */
     hash_func = PyObject_GetAttrString(hashlib_module, algo);
     if (hash_func == NULL) {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_hash", __LINE__, "unsupported hash algorithm", algo);
         Py_DECREF(hashlib_module);
         return NULL;
     }
@@ -60,6 +68,7 @@ PyObject* batch_hash_func(PyObject *self, PyObject *args) {
     /* 创建结果列表 */
     result = PyList_New(count);
     if (result == NULL) {
+        NATIVE_LOG_CRITICAL("backend.native.compute.core", "batch_hash", __LINE__, "failed to allocate result list");
         Py_DECREF(hash_func);
         Py_DECREF(hashlib_module);
         return NULL;
@@ -75,6 +84,7 @@ PyObject* batch_hash_func(PyObject *self, PyObject *args) {
         /* 创建哈希对象 */
         args_tuple = PyTuple_New(0);
         if (args_tuple == NULL) {
+            NATIVE_LOG_ERROR("backend.native.compute.core", "batch_hash", __LINE__, "failed to create args tuple");
             Py_DECREF(result);
             Py_DECREF(hash_func);
             Py_DECREF(hashlib_module);
@@ -85,6 +95,7 @@ PyObject* batch_hash_func(PyObject *self, PyObject *args) {
         Py_DECREF(args_tuple);
 
         if (hash_obj == NULL) {
+            NATIVE_LOG_ERROR("backend.native.compute.core", "batch_hash", __LINE__, "failed to create hash object");
             Py_DECREF(result);
             Py_DECREF(hash_func);
             Py_DECREF(hashlib_module);
@@ -114,6 +125,7 @@ PyObject* batch_hash_func(PyObject *self, PyObject *args) {
         Py_DECREF(hash_obj);
 
         if (hashed == NULL) {
+            NATIVE_LOG_ERROR("backend.native.compute.core", "batch_hash", __LINE__, "failed to compute hexdigest");
             Py_DECREF(result);
             Py_DECREF(hash_func);
             Py_DECREF(hashlib_module);

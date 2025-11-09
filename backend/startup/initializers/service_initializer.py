@@ -7,7 +7,7 @@
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Optional, Callable
 from enum import Enum
 
 # 从 backend.core.base 导入必要的函数和类
@@ -20,6 +20,13 @@ from backend.core.base import (
     set_main_engine,
     set_event_engine,
     set_china_stock_engine,
+)
+
+from backend.startup.native_support import (
+    NativeStartupFuture,
+    NativeStartupRuntime,
+    ServiceStartupTracker,
+    ServiceTaskOutcome,
 )
 
 # 导入监控版EventEngine
@@ -48,7 +55,15 @@ class ServiceInitializer:
     6. 辅助服务 (Portfolio, Market, System)
     """
 
-    def __init__(self, service_manager, progress_callback=None):
+    def __init__(
+        self,
+        service_manager,
+        progress_callback=None,
+        *,
+        runtime: Optional[NativeStartupRuntime] = None,
+        service_tracker: Optional[ServiceStartupTracker] = None,
+        event_bus=None,
+    ):
         """初始化服务初始化器.
 
         Args:
@@ -61,10 +76,28 @@ class ServiceInitializer:
         self.failed_services: List[str] = []
         self.progress_callback = progress_callback
 
+        # 原生执行器 / 服务追踪
+        self.runtime = runtime or NativeStartupRuntime(
+            event_bus=event_bus,
+            service_tracker=service_tracker,
+        )
+        self._own_runtime = runtime is None
+        self.service_tracker = service_tracker or ServiceStartupTracker(event_bus=event_bus)
+        self._lock = threading.RLock()
+        self._service_futures: Dict[str, List[NativeStartupFuture]] = {}
+        self._service_outcomes: Dict[str, ServiceTaskOutcome] = {}
+
         # VNPY引擎实例
         self.main_engine = None
         self.event_engine = None
         self.china_stock_engine = None
+
+    def __del__(self):
+        if getattr(self, "_own_runtime", False) and getattr(self, "runtime", None):
+            try:
+                self.runtime.shutdown()
+            except Exception:
+                self.logger.debug("NativeStartupRuntime shutdown 忽略异常", exc_info=True)
 
     def _report_progress(self, message: str, progress: int):
         """报告初始化进度.
@@ -123,6 +156,260 @@ class ServiceInitializer:
         thread = threading.Thread(target=load_apps, name="VnPyAppsLoader", daemon=True)
         thread.start()
         self.logger.info("[VNPY-APPS] ✅ Apps后台加载线程已启动")
+
+    # ------------------------------------------------------------------
+    # 原生执行器辅助方法
+    # ------------------------------------------------------------------
+
+    def _register_service_future(
+        self,
+        category: str,
+        future: NativeStartupFuture,
+    ) -> NativeStartupFuture:
+        with self._lock:
+            futures = self._service_futures.setdefault(category, [])
+            futures.append(future)
+        future.add_done_callback(self._on_service_future_done)
+        return future
+
+    def _on_service_future_done(self, future: NativeStartupFuture) -> None:
+        outcome = future.result()
+        with self._lock:
+            self._service_outcomes[future.service_name] = outcome
+
+        if outcome.success:
+            self.logger.debug(
+                "[ServiceInitializer] 服务 %s 完成 (category=%s, critical=%s)",
+                future.service_name,
+                future.category,
+                future.critical,
+            )
+        else:
+            self.logger.warning(
+                "[ServiceInitializer] 服务 %s 初始化失败 (category=%s): %s",
+                future.service_name,
+                future.category,
+                outcome.message or "unknown error",
+                extra={"log_type": "SYSTEM"},
+            )
+
+    def _submit_service_task(
+        self,
+        service_name: str,
+        task_func: Callable[[], ServiceTaskOutcome],
+        *,
+        category: str = "auxiliary",
+        critical: bool = False,
+    ):
+        if not self.runtime:
+            raise RuntimeError("NativeStartupRuntime 未初始化，无法提交服务任务")
+        future = self.runtime.submit_service(
+            service_name,
+            task_func,
+            category=category,
+            critical=critical,
+        )
+        return self._register_service_future(category, future)
+
+    def _task_initialize_portfolio(self) -> ServiceTaskOutcome:
+        stage_logger = logging.getLogger("startup.stage")
+        start_time = time.time()
+
+        try:
+            from backend.services.portfolio_service import PortfolioService
+
+            portfolio_service = PortfolioService()
+            init_success = portfolio_service.initialize()
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            if init_success:
+                with self._lock:
+                    self.service_manager.register_service("portfolio_service", portfolio_service)
+                    self.initialized_services["portfolio_service"] = portfolio_service
+
+                self.logger.info("✅ PortfolioService 初始化成功")
+                stage_logger.info("✅ PortfolioService初始化完成", extra={"log_type": "STAGE_NODE"})
+                return ServiceTaskOutcome(
+                    success=True,
+                    service=portfolio_service,
+                    metadata={"elapsed_ms": elapsed_ms},
+                    message="PortfolioService ready",
+                )
+
+            self.logger.warning("⚠️ PortfolioService 初始化失败")
+            stage_logger.warning("⚠️ PortfolioService初始化失败", extra={"log_type": "STAGE_NODE"})
+            with self._lock:
+                self.failed_services.append("portfolio_service")
+            return ServiceTaskOutcome(
+                success=False,
+                service=portfolio_service,
+                metadata={"elapsed_ms": elapsed_ms},
+                message="initialize() returned False",
+            )
+        except Exception as exc:  # noqa: BLE001
+            elapsed_ms = (time.time() - start_time) * 1000
+            self.logger.error(
+                "❌ [ServiceInitializer] PortfolioService 初始化异常: %s",
+                exc,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
+            stage_logger.error(
+                f"❌ PortfolioService初始化异常: {exc}",
+                extra={"log_type": "STAGE_NODE"},
+            )
+            with self._lock:
+                self.failed_services.append("portfolio_service")
+            return ServiceTaskOutcome(
+                success=False,
+                metadata={"elapsed_ms": elapsed_ms},
+                message=str(exc),
+                exception=exc,
+            )
+
+    def _task_initialize_market_board(self) -> ServiceTaskOutcome:
+        stage_logger = logging.getLogger("startup.stage")
+        start_time = time.time()
+
+        try:
+            from backend.services.market_board_service import MarketBoardService
+
+            market_board_service = MarketBoardService()
+            init_success = market_board_service.initialize()
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            if init_success:
+                with self._lock:
+                    self.service_manager.register_service(
+                        "market_board_service", market_board_service
+                    )
+                    self.initialized_services["market_board_service"] = market_board_service
+                self.logger.info("✅ MarketBoardService 初始化成功")
+                stage_logger.info(
+                    "✅ MarketBoardService初始化完成", extra={"log_type": "STAGE_NODE"}
+                )
+                return ServiceTaskOutcome(
+                    success=True,
+                    service=market_board_service,
+                    metadata={"elapsed_ms": elapsed_ms},
+                    message="MarketBoardService ready",
+                )
+
+            self.logger.warning("⚠️ MarketBoardService 初始化失败")
+            stage_logger.warning(
+                "⚠️ MarketBoardService初始化失败", extra={"log_type": "STAGE_NODE"}
+            )
+            with self._lock:
+                self.failed_services.append("market_board_service")
+            return ServiceTaskOutcome(
+                success=False,
+                service=market_board_service,
+                metadata={"elapsed_ms": elapsed_ms},
+                message="initialize() returned False",
+            )
+        except Exception as exc:  # noqa: BLE001
+            elapsed_ms = (time.time() - start_time) * 1000
+            self.logger.error(
+                "❌ [ServiceInitializer] MarketBoardService 初始化异常: %s",
+                exc,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
+            stage_logger.error(
+                f"❌ MarketBoardService初始化异常: {exc}",
+                extra={"log_type": "STAGE_NODE"},
+            )
+            with self._lock:
+                self.failed_services.append("market_board_service")
+            return ServiceTaskOutcome(
+                success=False,
+                metadata={"elapsed_ms": elapsed_ms},
+                message=str(exc),
+                exception=exc,
+            )
+
+    def _task_initialize_system_manager(self) -> ServiceTaskOutcome:
+        stage_logger = logging.getLogger("startup.stage")
+        start_time = time.time()
+
+        try:
+            from backend.services.system_manager_service import SystemManagerService
+
+            system_manager_service = SystemManagerService()
+            if hasattr(system_manager_service, "set_startup_runtime"):
+                try:
+                    system_manager_service.set_startup_runtime(self.runtime)
+                except Exception:
+                    self.logger.debug(
+                        "SystemManagerService 设置启动运行时失败，继续初始化",
+                        exc_info=True,
+                    )
+            init_success = system_manager_service.initialize()
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            if init_success:
+                with self._lock:
+                    self.service_manager.register_service(
+                        "system_manager_service", system_manager_service
+                    )
+                    self.initialized_services["system_manager_service"] = system_manager_service
+                self.logger.info("✅ SystemManagerService 初始化成功")
+                stage_logger.info(
+                    "✅ SystemManagerService初始化完成", extra={"log_type": "STAGE_NODE"}
+                )
+                if hasattr(system_manager_service, "_ipc_available") and system_manager_service._ipc_available:
+                    stage_logger.info(
+                        "  └─ 连接监控进程native_ipc管道 ✅",
+                        extra={"log_type": "STAGE_NODE"},
+                    )
+                return ServiceTaskOutcome(
+                    success=True,
+                    service=system_manager_service,
+                    metadata={"elapsed_ms": elapsed_ms},
+                    message="SystemManagerService ready",
+                )
+
+            self.logger.error("❌ SystemManagerService 初始化失败（监控功能不可用）")
+            stage_logger.error(
+                "❌ SystemManagerService初始化失败（监控功能不可用）",
+                extra={"log_type": "STAGE_NODE"},
+            )
+            with self._lock:
+                self.failed_services.append("system_manager_service")
+                self.service_manager.register_service(
+                    "system_manager_service", system_manager_service
+                )
+            return ServiceTaskOutcome(
+                success=False,
+                service=system_manager_service,
+                metadata={"elapsed_ms": elapsed_ms},
+                message="initialize() returned False",
+            )
+        except Exception as exc:  # noqa: BLE001
+            elapsed_ms = (time.time() - start_time) * 1000
+            self.logger.error(
+                "❌ [ServiceInitializer] SystemManagerService 创建失败: %s",
+                exc,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
+            stage_logger.error(
+                f"❌ SystemManagerService创建失败: {exc}", extra={"log_type": "STAGE_NODE"}
+            )
+            self.service_manager.record_error(
+                "SystemManagerService",
+                "SERVICE_CREATION_FAILED",
+                f"创建服务失败: {str(exc)}",
+                exception=exc,
+            )
+            with self._lock:
+                self.failed_services.append("system_manager_service")
+            return ServiceTaskOutcome(
+                success=False,
+                metadata={"elapsed_ms": elapsed_ms},
+                message=str(exc),
+                exception=exc,
+            )
 
     def initialize_core_services(self) -> bool:
         """初始化核心服务（快速启动模式）.
@@ -1615,14 +1902,10 @@ class ServiceInitializer:
         return success_count > 0
 
     def _initialize_auxiliary_services(self) -> bool:
-        """阶段5: 初始化辅助服务.
+        """阶段5: 初始化辅助服务（后台并行调度）.
 
-        进度: 90% -> 95%
-
-        Returns:
-            bool: 是否成功
+        进度: 90% -> 95%（任务调度完成，实际初始化在原生线程池/调度器中执行）
         """
-        # 🎯 获取stage_logger用于STAGE_NODE日志
         stage_logger = logging.getLogger("startup.stage")
 
         self._report_progress("阶段5: 初始化辅助服务...", 90)
@@ -1632,147 +1915,47 @@ class ServiceInitializer:
         self.logger.info("=" * 60)
 
         start_time = time.time()
-        success_count = 0
 
-        # 阶段3.6: 辅助服务初始化开始
         stage_logger.info("📍 阶段3.6: 辅助服务初始化开始", extra={"log_type": "STAGE_NODE"})
 
-        # 初始化PortfolioService
-        try:
-            from backend.services.portfolio_service import PortfolioService
+        scheduled_futures = [
+            self._submit_service_task(
+                "portfolio_service",
+                self._task_initialize_portfolio,
+                category="auxiliary",
+            ),
+            self._submit_service_task(
+                "market_board_service",
+                self._task_initialize_market_board,
+                category="auxiliary",
+            ),
+        ]
 
-            portfolio_service = PortfolioService()
-            init_success = portfolio_service.initialize()
-
-            if init_success:
-                self.service_manager.register_service("portfolio_service", portfolio_service)
-                self.initialized_services["portfolio_service"] = portfolio_service
-                self.logger.info("✅ PortfolioService 初始化成功")
-                stage_logger.info("✅ PortfolioService初始化完成", extra={"log_type": "STAGE_NODE"})
-                success_count += 1
-            else:
-                self.logger.warning("⚠️ PortfolioService 初始化失败")
-                stage_logger.warning(
-                    "⚠️ PortfolioService初始化失败", extra={"log_type": "STAGE_NODE"}
+        if "system_manager_service" in self.initialized_services:
+            stage_logger.info(
+                "✅ SystemManagerService初始化完成（已在阶段1.5就绪）",
+                extra={"log_type": "STAGE_NODE"},
+            )
+        else:
+            scheduled_futures.append(
+                self._submit_service_task(
+                    "system_manager_service",
+                    self._task_initialize_system_manager,
+                    category="auxiliary",
+                    critical=True,
                 )
-                self.failed_services.append("portfolio_service")
-
-        except Exception as e:
-            self.logger.error(
-                "❌ [ServiceInitializer] PortfolioService 初始化异常: %s",
-                e,
-                exc_info=True,
-                extra={"log_type": "SYSTEM"},
             )
-            stage_logger.error(
-                f"❌ PortfolioService初始化异常: {e}", extra={"log_type": "STAGE_NODE"}
-            )
-            self.failed_services.append("portfolio_service")
 
-        # 初始化MarketBoardService
-        try:
-            from backend.services.market_board_service import MarketBoardService
+        pending_names = ", ".join(future.service_name for future in scheduled_futures)
+        stage_logger.info(
+            f"✅ 辅助服务初始化任务已后台调度: {pending_names}",
+            extra={"log_type": "STAGE_NODE"},
+        )
 
-            market_board_service = MarketBoardService()
-            init_success = market_board_service.initialize()
+        with self._lock:
+            initialized_snapshot = set(self.initialized_services.keys())
+            failed_snapshot = set(self.failed_services)
 
-            if init_success:
-                self.service_manager.register_service("market_board_service", market_board_service)
-                self.initialized_services["market_board_service"] = market_board_service
-                self.logger.info("✅ MarketBoardService 初始化成功")
-                stage_logger.info(
-                    "✅ MarketBoardService初始化完成", extra={"log_type": "STAGE_NODE"}
-                )
-                success_count += 1
-            else:
-                self.logger.warning("⚠️ MarketBoardService 初始化失败")
-                stage_logger.warning(
-                    "⚠️ MarketBoardService初始化失败", extra={"log_type": "STAGE_NODE"}
-                )
-                self.failed_services.append("market_board_service")
-
-        except Exception as e:
-            self.logger.error(
-                "❌ [ServiceInitializer] MarketBoardService 初始化异常: %s",
-                e,
-                exc_info=True,
-                extra={"log_type": "SYSTEM"},
-            )
-            stage_logger.error(
-                f"❌ MarketBoardService初始化异常: {e}", extra={"log_type": "STAGE_NODE"}
-            )
-            self.failed_services.append("market_board_service")
-
-        # 初始化SystemManagerService
-        # ⚠️ 关键服务：如果 SystemManagerService 初始化失败（EventEngine不可用），
-        # 整个系统将失去监控能力，因此必须确保初始化成功
-        try:
-            # 如果已在阶段1.5初始化并注册，则跳过重复初始化
-            if "system_manager_service" in self.initialized_services:
-                self.logger.info("ℹ️ SystemManagerService 已在前置阶段就绪，跳过阶段5重复初始化")
-                stage_logger.info(
-                    "✅ SystemManagerService初始化完成（已在阶段1.5就绪）",
-                    extra={"log_type": "STAGE_NODE"},
-                )
-            else:
-                from backend.services.system_manager_service import SystemManagerService
-
-                system_manager_service = SystemManagerService()
-                init_success = system_manager_service.initialize()
-
-                if init_success:
-                    self.service_manager.register_service(
-                        "system_manager_service", system_manager_service
-                    )
-                    self.initialized_services["system_manager_service"] = system_manager_service
-                    self.logger.info("✅ SystemManagerService 初始化成功")
-                    stage_logger.info(
-                        "✅ SystemManagerService初始化完成", extra={"log_type": "STAGE_NODE"}
-                    )
-
-                    # 检查native_ipc连接状态
-                    if (
-                        hasattr(system_manager_service, "_ipc_available")
-                        and system_manager_service._ipc_available
-                    ):
-                        stage_logger.info(
-                            "  └─ 连接监控进程native_ipc管道 ✅", extra={"log_type": "STAGE_NODE"}
-                        )
-
-                    success_count += 1
-                else:
-                    # 监控功能是系统核心，初始化失败应该明确标记
-                    self.logger.error("❌ SystemManagerService 初始化失败（监控功能不可用）")
-                    stage_logger.error(
-                        "❌ SystemManagerService初始化失败（监控功能不可用）",
-                        extra={"log_type": "STAGE_NODE"},
-                    )
-                    # 依然注册服务，让其他功能可用，但标记为失败
-                    self.service_manager.register_service(
-                        "system_manager_service", system_manager_service
-                    )
-                    self.failed_services.append("system_manager_service")
-
-        except Exception as e:
-            self.logger.error(
-                "❌ [ServiceInitializer] SystemManagerService 创建失败: %s",
-                e,
-                exc_info=True,
-                extra={"log_type": "SYSTEM"},
-            )
-            stage_logger.error(
-                f"❌ SystemManagerService创建失败: {e}", extra={"log_type": "STAGE_NODE"}
-            )
-            self.service_manager.record_error(
-                "SystemManagerService",
-                "SERVICE_CREATION_FAILED",
-                f"创建服务失败: {str(e)}",
-                exception=e,
-            )
-            self.failed_services.append("system_manager_service")
-
-        # 服务健康检查
-        stage_logger.info("✅ 服务健康检查通过", extra={"log_type": "STAGE_NODE"})
         service_status_map = {
             "data_center_service": "数据中心服务",
             "trading_gateway_service": "交易网关服务",
@@ -1782,16 +1965,54 @@ class ServiceInitializer:
             "market_board_service": "行情看板服务",
             "system_manager_service": "系统管理服务",
         }
-        for service_key, service_name in service_status_map.items():
-            if service_key in self.initialized_services:
-                stage_logger.info(f"  - {service_name}: 运行中", extra={"log_type": "STAGE_NODE"})
 
-        stage_logger.info("✅ 辅助服务就绪", extra={"log_type": "STAGE_NODE"})
+        for service_key, display_name in service_status_map.items():
+            if service_key in initialized_snapshot:
+                stage_logger.info(f"  - {display_name}: 运行中", extra={"log_type": "STAGE_NODE"})
+            elif service_key in failed_snapshot:
+                stage_logger.warning(
+                    f"  - {display_name}: 初始化失败（等待后台回调）",
+                    extra={"log_type": "STAGE_NODE"},
+                )
+            else:
+                stage_logger.info(
+                    f"  - {display_name}: 已调度（后台初始化中）",
+                    extra={"log_type": "STAGE_NODE"},
+                )
+
+        stage_logger.info("✅ 辅助服务后台初始化进行中（将通过事件驱动反馈状态）", extra={"log_type": "STAGE_NODE"})
 
         elapsed = time.time() - start_time
-        self.logger.info("阶段5完成，耗时 %.2f秒", elapsed)
-        self._report_progress("辅助服务初始化完成", 95)
-        return success_count > 0
+        self.logger.info("阶段5调度完成，耗时 %.2f秒（后台任务继续运行）", elapsed)
+        self._report_progress("辅助服务初始化任务已后台调度", 95)
+
+        return True
+
+    def get_service_status_snapshot(self) -> Dict[str, str]:
+        """返回服务初始化状态快照（ready/failed/pending）."""
+        with self._lock:
+            outcomes = dict(self._service_outcomes)
+            initialized = set(self.initialized_services.keys())
+            failed = set(self.failed_services)
+
+        snapshot: Dict[str, str] = {}
+        for name, outcome in outcomes.items():
+            snapshot[name] = "ready" if outcome.success else "failed"
+        for name in initialized:
+            snapshot.setdefault(name, "ready")
+        for name in failed:
+            snapshot.setdefault(name, "failed")
+        return snapshot
+
+    def get_service_futures(self, category: Optional[str] = None) -> List[NativeStartupFuture]:
+        """获取已提交的服务任务列表（只读快照）."""
+        with self._lock:
+            if category is not None:
+                return list(self._service_futures.get(category, []))
+            futures: List[NativeStartupFuture] = []
+            for items in self._service_futures.values():
+                futures.extend(items)
+        return futures
 
     def _initialize_system_manager_early(self) -> bool:
         """阶段1.5: 提前初始化 SystemManagerService.
@@ -1822,10 +2043,21 @@ class ServiceInitializer:
                 )
                 self.initialized_services["system_manager_service"] = system_manager_service
                 self.logger.info("✅ SystemManagerService（前置）初始化成功")
+                if self.service_tracker:
+                    self.service_tracker.mark_ready(
+                        "system_manager_service",
+                        metadata={"phase": "early"},
+                        message="SystemManagerService ready (early)",
+                    )
                 return True
             else:
                 # 前置失败不阻断整体启动，稍后阶段5会再次尝试/保持注册
                 self.logger.warning("⚠️ SystemManagerService（前置）初始化失败，将在阶段5重试")
+                if self.service_tracker:
+                    self.service_tracker.mark_failed(
+                        "system_manager_service",
+                        message="SystemManagerService early initialization failed",
+                    )
                 return False
 
         except Exception as e:
@@ -1841,6 +2073,12 @@ class ServiceInitializer:
                 f"前置创建服务失败: {str(e)}",
                 exception=e,
             )
+            if self.service_tracker:
+                self.service_tracker.mark_failed(
+                    "system_manager_service",
+                    message=str(e),
+                    exception=e,
+                )
             return False
 
     def _generate_initialization_report(self):

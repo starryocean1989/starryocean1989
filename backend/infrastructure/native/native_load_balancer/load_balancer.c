@@ -7,6 +7,49 @@
 #include <Python.h>
 #include <math.h>
 
+/* NativeLogBridge declarations */
+static PyObject *g_log_bridge_module = NULL;
+static PyObject *g_log_from_native_func = NULL;
+
+/* Log level constants matching Python side */
+#define NATIVE_LOG_DEBUG 10
+#define NATIVE_LOG_INFO 20
+#define NATIVE_LOG_WARNING 30
+#define NATIVE_LOG_ERROR 40
+#define NATIVE_LOG_CRITICAL 50
+
+/* 统一组件命名，符合统一日志规范 */
+#define NATIVE_COMPONENT "backend.native.load_balancer.core"
+
+/* Logging utility functions */
+static void native_log(int level, const char *component, const char *function, int line, const char *message, const char *details) {
+    if (!g_log_from_native_func) {
+        return;  /* Silent fail if logging not initialized */
+    }
+
+    PyGILState_STATE gstate = PyGILState_Ensure();
+
+    PyObject *result = PyObject_CallFunction(g_log_from_native_func, "ississs",
+        level, component, function, line, message, details ? details : "");
+
+    if (result) {
+        Py_DECREF(result);
+    } else {
+        /* Log the logging failure, but avoid recursion */
+        PyErr_Clear();
+    }
+
+    PyGILState_Release(gstate);
+}
+
+static void native_log_info(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_INFO, component, function, line, message, details);
+}
+
+static void native_log_error(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_ERROR, component, function, line, message, details);
+}
+
 static long clamp_long(long value, long min_value, long max_value)
 {
     if (value < min_value) {
@@ -170,8 +213,15 @@ py_optimize(PyObject *Py_UNUSED(self), PyObject *args, PyObject *kwargs)
             &min_coroutines,
             &total_max_connections,
             &task_total_count)) {
+        native_log_error(NATIVE_COMPONENT, "py_optimize", __LINE__, "Failed to parse optimize arguments", "invalid_arguments");
         return NULL;
     }
+
+    /* Log optimization start */
+    char opt_details[256];
+    sprintf(opt_details, "bottleneck=%.1f, queue_factor=%.1f, tasks=%llu",
+            bottleneck_value, queue_factor, task_total_count);
+    native_log_info(NATIVE_COMPONENT, "py_optimize", __LINE__, "Starting load balancing optimization", opt_details);
 
     if (base_processes < 1) base_processes = 1;
     if (base_coroutines < 1) base_coroutines = 1;
@@ -339,6 +389,26 @@ static struct PyModuleDef loadbalancermodule = {
 PyMODINIT_FUNC
 PyInit_load_balancer(void)
 {
+    /* Initialize logging bridge */
+    g_log_bridge_module = PyImport_ImportModule("backend.infrastructure.native.logging_bridge");
+    if (g_log_bridge_module != NULL) {
+        g_log_from_native_func = PyObject_GetAttrString(g_log_bridge_module, "log_from_native");
+        if (g_log_from_native_func == NULL) {
+            Py_DECREF(g_log_bridge_module);
+            g_log_bridge_module = NULL;
+        }
+    }
+
+    if (g_log_bridge_module != NULL && g_log_from_native_func != NULL) {
+        native_log_info(NATIVE_COMPONENT, "PyInit_load_balancer", __LINE__, "Logging bridge initialized successfully", NULL);
+    } else {
+        /* Logging bridge not available, continue without logging */
+        Py_XDECREF(g_log_bridge_module);
+        Py_XDECREF(g_log_from_native_func);
+        g_log_bridge_module = NULL;
+        g_log_from_native_func = NULL;
+    }
+
     return PyModule_Create(&loadbalancermodule);
 }
 

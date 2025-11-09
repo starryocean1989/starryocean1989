@@ -23,3 +23,10 @@ python setup.py build_ext --inplace
 
 > 依赖 `pybind11`。推荐先在 `backend/infrastructure/native` 目录运行 `compile_all.bat`，脚本会逐一编译全部扩展（含本模块），遇到错误会暂停并打印日志。
 
+## 日志集成
+
+已集成 NativeLogBridge，支持异步任务归约过程的结构化日志记录：
+
+- **C++ 层**：任务执行异常、进度回调失败、处理统计等关键事件。
+- **Python 层**：使用 `@native_call_guard` 装饰器捕获回退实现的异常，统一接口层提供结构化日志。
+

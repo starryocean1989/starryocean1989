@@ -5,10 +5,19 @@
 提供批量数值运算和批量哈希计算功能。
 """
 
-import platform
 import logging
+import platform
 
-logger = logging.getLogger(__name__)
+from backend.infrastructure.system_vnpy.logging_system import (
+    LogType,
+    bind_logger_defaults,
+)
+
+_logger = bind_logger_defaults(
+    logging.getLogger("backend.native.compute.wrapper"),
+    log_type=LogType.SYSTEM.value,
+    scenario="backend.native.compute",
+)
 IS_WINDOWS = platform.system() == "Windows"
 
 if IS_WINDOWS:
@@ -18,6 +27,11 @@ if IS_WINDOWS:
         COMPUTE_AVAILABLE = False
         PREFIX_SUM_AVAILABLE = False
         __all__ = ["COMPUTE_AVAILABLE", "PREFIX_SUM_AVAILABLE"]
+
+        _logger.warning(
+            "native_compute extension unavailable, using Python fallbacks",
+            extra={"native_module": "backend.native.compute.core"},
+        )
 
         def _raise_error():
             raise ImportError("Compute C extension not compiled")
@@ -36,6 +50,11 @@ if IS_WINDOWS:
         PREFIX_SUM_AVAILABLE = callable(prefix_sum_scale)
 
         if not COMPUTE_AVAILABLE:
+            _logger.error(
+                "native_compute extension missing core entrypoints, disabling",
+                extra={"native_module": "backend.native.compute.core"},
+            )
+
             def _raise_error():
                 raise ImportError("Compute C extension not compiled correctly")
 
@@ -43,6 +62,11 @@ if IS_WINDOWS:
             PREFIX_SUM_AVAILABLE = False
 
         if not PREFIX_SUM_AVAILABLE:
+            _logger.warning(
+                "native_compute.prefix_sum_scale missing, exposing stub",
+                extra={"native_module": "backend.native.compute.core"},
+            )
+
             def prefix_sum_scale(*_args, **_kwargs):  # type: ignore
                 raise ImportError("prefix_sum_scale not available in native_compute")
 
@@ -56,6 +80,10 @@ if IS_WINDOWS:
             "COMPUTE_AVAILABLE",
             "PREFIX_SUM_AVAILABLE",
         ]
+    _logger.debug(
+        "native_compute extension loaded successfully",
+        extra={"native_module": "backend.native.compute.core"},
+    )
 else:
     COMPUTE_AVAILABLE = False
     PREFIX_SUM_AVAILABLE = False
@@ -63,6 +91,11 @@ else:
 
     def _raise_error():
         raise RuntimeError("Compute extension only supports Windows")
+
+    _logger.warning(
+        "native_compute not supported on current platform, using Python stubs",
+        extra={"native_module": "backend.native.compute.core", "platform": platform.system()},
+    )
 
     batch_compute = batch_hash = batch_get_price = batch_validate_iso_dates = batch_compare_dates = prefix_sum_scale = _raise_error  # type: ignore
 

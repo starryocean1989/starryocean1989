@@ -9,6 +9,8 @@
 #include <string.h>
 #include <math.h>
 #include "batch_compute.h"
+/* 日志桥接宏 */
+#include "../native_log_bridge.h"
 
 /* 批量数值运算函数 */
 PyObject* batch_compute_func(PyObject *self, PyObject *args) {
@@ -19,21 +21,25 @@ PyObject* batch_compute_func(PyObject *self, PyObject *args) {
 
     /* 解析参数：data 列表，operation 可选的字符串对象，operands 可选列表 */
     if (!PyArg_ParseTuple(args, "O|OO", &data, &operation, &operands)) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "batch_compute", __LINE__, "invalid arguments to batch_compute");
         return NULL;
     }
 
     if (!PyList_Check(data)) {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_compute", __LINE__, "data must be a list", NULL);
         PyErr_SetString(PyExc_TypeError, "data must be a list");
         return NULL;
     }
 
     if (operation != NULL) {
         if (!PyUnicode_Check(operation)) {
+            NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_compute", __LINE__, "operation must be a string", NULL);
             PyErr_SetString(PyExc_TypeError, "operation must be a string");
             return NULL;
         }
         op = PyUnicode_AsUTF8(operation);
         if (op == NULL) {
+            NATIVE_LOG_ERROR("backend.native.compute.core", "batch_compute", __LINE__, "failed to parse operation string");
             return NULL;
         }
     }
@@ -46,6 +52,7 @@ PyObject* batch_compute_func(PyObject *self, PyObject *args) {
     /* 创建结果列表 */
     result = PyList_New(count);
     if (result == NULL) {
+        NATIVE_LOG_CRITICAL("backend.native.compute.core", "batch_compute", __LINE__, "failed to allocate result list");
         return NULL;
     }
 
@@ -158,12 +165,14 @@ PyObject* batch_compute_func(PyObject *self, PyObject *args) {
             dbl_ret = dbl_xmm6 + dbl_xmm4 + dbl_xmm3 + dbl_xmm1;
             computed = PyFloat_FromDouble(dbl_ret);
         } else {
+            NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_compute", __LINE__, "Unsupported operation", op);
             PyErr_SetString(PyExc_ValueError, "Unsupported operation");
             Py_DECREF(result);
             return NULL;
         }
 
         if (computed == NULL) {
+            NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_compute", __LINE__, "failed to compute item", NULL);
             Py_DECREF(result);
             return NULL;
         }
@@ -187,10 +196,12 @@ PyObject* batch_get_price_func(PyObject *self, PyObject *args) {
     Py_ssize_t pos;
 
     if (!PyArg_ParseTuple(args, "Onn", &data_obj, &start_pos, &count)) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "batch_get_price", __LINE__, "invalid arguments to batch_get_price");
         return NULL;
     }
 
     if (!PyBytes_Check(data_obj)) {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "batch_get_price", __LINE__, "data must be bytes", NULL);
         PyErr_SetString(PyExc_TypeError, "data must be bytes");
         return NULL;
     }
@@ -201,11 +212,13 @@ PyObject* batch_get_price_func(PyObject *self, PyObject *args) {
 
     data = (const unsigned char *)PyBytes_AsString(data_obj);
     if (data == NULL) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "batch_get_price", __LINE__, "failed to read bytes buffer");
         return NULL;
     }
 
     data_len = PyBytes_Size(data_obj);
     if (start_pos < 0 || start_pos >= data_len) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "batch_get_price", __LINE__, "start_pos out of range");
         PyErr_SetString(PyExc_ValueError, "start_pos out of range");
         return NULL;
     }
@@ -214,6 +227,7 @@ PyObject* batch_get_price_func(PyObject *self, PyObject *args) {
     values_list = PyList_New(count);
     positions_list = PyList_New(count);
     if (values_list == NULL || positions_list == NULL) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "batch_get_price", __LINE__, "failed to allocate result lists");
         Py_XDECREF(values_list);
         Py_XDECREF(positions_list);
         return NULL;
@@ -228,6 +242,7 @@ PyObject* batch_get_price_func(PyObject *self, PyObject *args) {
         int sign = 0;
 
         if (pos >= data_len) {
+            NATIVE_LOG_ERROR("backend.native.compute.core", "batch_get_price", __LINE__, "data buffer too short");
             PyErr_SetString(PyExc_ValueError, "data buffer too short");
             Py_DECREF(values_list);
             Py_DECREF(positions_list);
@@ -245,6 +260,7 @@ PyObject* batch_get_price_func(PyObject *self, PyObject *args) {
             while (1) {
                 pos++;
                 if (pos >= data_len) {
+                    NATIVE_LOG_ERROR("backend.native.compute.core", "batch_get_price", __LINE__, "data buffer too short (continuation) ");
                     PyErr_SetString(PyExc_ValueError, "data buffer too short");
                     Py_DECREF(values_list);
                     Py_DECREF(positions_list);
@@ -270,6 +286,7 @@ PyObject* batch_get_price_func(PyObject *self, PyObject *args) {
         PyObject *value_obj = PyLong_FromLong(int_data);
         PyObject *pos_obj = PyLong_FromSsize_t(pos);
         if (value_obj == NULL || pos_obj == NULL) {
+            NATIVE_LOG_ERROR("backend.native.compute.core", "batch_get_price", __LINE__, "failed to create value/pos objects");
             Py_XDECREF(value_obj);
             Py_XDECREF(pos_obj);
             Py_DECREF(values_list);
@@ -294,11 +311,13 @@ PyObject* prefix_sum_scale_func(PyObject *self, PyObject *args) {
     double custom_scale = 0.0;
 
     if (!PyArg_ParseTuple(args, "O|sd", &diffs_obj, &operation, &custom_scale)) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "prefix_sum_scale", __LINE__, "invalid arguments to prefix_sum_scale");
         return NULL;
     }
 
     PyObject *seq = PySequence_Fast(diffs_obj, "diffs must be a sequence");
     if (seq == NULL) {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "prefix_sum_scale", __LINE__, "diffs must be a sequence", NULL);
         return NULL;
     }
 
@@ -323,23 +342,27 @@ PyObject* prefix_sum_scale_func(PyObject *self, PyObject *args) {
         if (custom_scale == 0.0) {
             Py_DECREF(seq);
             PyErr_SetString(PyExc_ValueError, "scale operation requires non-zero custom scale");
+            NATIVE_LOG_ERROR("backend.native.compute.core", "prefix_sum_scale", __LINE__, "scale operation requires non-zero custom scale");
             return NULL;
         }
         scale_factor = custom_scale;
     } else {
         Py_DECREF(seq);
         PyErr_SetString(PyExc_ValueError, "Unsupported operation for prefix_sum_scale");
+        NATIVE_LOG_ERROR_DETAILS("backend.native.compute.core", "prefix_sum_scale", __LINE__, "Unsupported operation for prefix_sum_scale", operation);
         return NULL;
     }
 
     if (scale_factor == 0.0) {
         Py_DECREF(seq);
         PyErr_SetString(PyExc_ZeroDivisionError, "scale factor must not be zero");
+        NATIVE_LOG_ERROR("backend.native.compute.core", "prefix_sum_scale", __LINE__, "scale factor must not be zero");
         return NULL;
     }
 
     PyObject *result_list = PyList_New(count);
     if (result_list == NULL) {
+        NATIVE_LOG_ERROR("backend.native.compute.core", "prefix_sum_scale", __LINE__, "failed to allocate result list");
         Py_DECREF(seq);
         return NULL;
     }
@@ -350,6 +373,7 @@ PyObject* prefix_sum_scale_func(PyObject *self, PyObject *args) {
         PyObject *item = items[i];
         long value = PyLong_AsLong(item);
         if (PyErr_Occurred()) {
+            NATIVE_LOG_ERROR("backend.native.compute.core", "prefix_sum_scale", __LINE__, "failed to convert diff to long");
             Py_DECREF(seq);
             Py_DECREF(result_list);
             return NULL;

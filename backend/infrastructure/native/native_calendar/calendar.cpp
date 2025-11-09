@@ -7,6 +7,24 @@
 #include <stdexcept>
 #include <optional>
 #include <tuple>
+#include <cerrno>
+
+#include "../native_log_bridge.h"
+
+#define CALENDAR_CORE_COMPONENT "backend.native.calendar.core"
+#define CALENDAR_MODULE_COMPONENT "backend.native.calendar.module"
+
+#define CALENDAR_LOG(level, message, details) \
+    native_log_bridge_log(level, CALENDAR_CORE_COMPONENT, __FUNCTION__, __LINE__, message, details)
+
+#define CALENDAR_LOG_INFO(message, details) \
+    CALENDAR_LOG(NATIVE_LOG_LEVEL_INFO, message, details)
+
+#define CALENDAR_LOG_WARNING(message, details) \
+    CALENDAR_LOG(NATIVE_LOG_LEVEL_WARNING, message, details)
+
+#define CALENDAR_LOG_ERROR(message, details) \
+    CALENDAR_LOG(NATIVE_LOG_LEVEL_ERROR, message, details)
 
 #ifdef _WIN32
 #include <windows.h>
@@ -62,22 +80,26 @@ private:
 
 public:
     NativeCalendar(int start_year, const std::string& bitmap_path) : start_year_(start_year) {
-        std::cout << "NativeCalendar constructed" << std::endl;
 #ifdef _WIN32
         hFile_ = CreateFileA(bitmap_path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile_ == INVALID_HANDLE_VALUE) {
+            CALENDAR_LOG_ERROR("Failed to open calendar bitmap file", bitmap_path.c_str());
             throw std::runtime_error("Failed to open file for mapping.");
         }
 
         DWORD fileSize = GetFileSize(hFile_, NULL);
         if (fileSize < 8) {
             CloseHandle(hFile_);
+            std::string details = "path=" + bitmap_path + ", size=" + std::to_string(fileSize);
+            CALENDAR_LOG_ERROR("Invalid calendar file size", details.c_str());
             throw std::runtime_error("Invalid calendar file: too small");
         }
 
         hMapFile_ = CreateFileMapping(hFile_, NULL, PAGE_READONLY, 0, 0, "Local\\TradingCalendarSharedMemory");
         if (hMapFile_ == NULL) {
             CloseHandle(hFile_);
+            std::string details = "path=" + bitmap_path + ", error_code=" + std::to_string(GetLastError());
+            CALENDAR_LOG_ERROR("Failed to create file mapping", details.c_str());
             throw std::runtime_error("Failed to create file mapping.");
         }
 
@@ -85,6 +107,8 @@ public:
         if (mapped_data == NULL) {
             CloseHandle(hMapFile_);
             CloseHandle(hFile_);
+            std::string details = "path=" + bitmap_path + ", error_code=" + std::to_string(GetLastError());
+            CALENDAR_LOG_ERROR("Failed to map calendar file view", details.c_str());
             throw std::runtime_error("Failed to map view of file.");
         }
         // Skip 8-byte ASCII header YYYYMMDD, then bitmap data
@@ -93,28 +117,39 @@ public:
 #else
         fd_ = open(bitmap_path.c_str(), O_RDONLY);
         if (fd_ == -1) {
+            CALENDAR_LOG_ERROR("Failed to open calendar bitmap file", bitmap_path.c_str());
             throw std::runtime_error("Failed to open file for mapping.");
         }
 
         struct stat sb;
         if (fstat(fd_, &sb) == -1) {
             close(fd_);
+            std::string details = "path=" + bitmap_path + ", errno=" + std::to_string(errno);
+            CALENDAR_LOG_ERROR("Failed to stat calendar file", details.c_str());
             throw std::runtime_error("Failed to get file size.");
         }
         if (sb.st_size < 8) {
             close(fd_);
+            std::string details = "path=" + bitmap_path + ", size=" + std::to_string(sb.st_size);
+            CALENDAR_LOG_ERROR("Invalid calendar file size", details.c_str());
             throw std::runtime_error("Invalid calendar file: too small");
         }
 
         const char* mapped_data = (const char*)mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd_, 0);
         if (mapped_data == MAP_FAILED) {
             close(fd_);
+            std::string details = "path=" + bitmap_path + ", errno=" + std::to_string(errno);
+            CALENDAR_LOG_ERROR("Failed to map calendar file", details.c_str());
             throw std::runtime_error("Failed to map file.");
         }
         // Skip 8-byte ASCII header YYYYMMDD, then bitmap data
         bitmap_ = reinterpret_cast<const unsigned char*>(mapped_data + 8);
         bitmap_size_ = static_cast<size_t>(sb.st_size - 8) * 8; // number of bits
 #endif
+
+        std::string load_details =
+            "start_year=" + std::to_string(start_year) + ", path=" + bitmap_path;
+        CALENDAR_LOG_INFO("Calendar bitmap mapped successfully", load_details.c_str());
 
         year_offsets_.push_back(0);
         for (int year = start_year; year < start_year + 100; ++year) {
@@ -123,7 +158,6 @@ public:
     }
 
     ~NativeCalendar() {
-        std::cout << "NativeCalendar destructed" << std::endl;
         unmap_file();
     }
     
@@ -253,6 +287,8 @@ private:
 
         int year_index = year - start_year_;
         if (year_index < 0 || year_index >= static_cast<int>(year_offsets_.size())) {
+            std::string details = "year=" + std::to_string(year) + ", start_year=" + std::to_string(start_year_);
+            CALENDAR_LOG_WARNING("Requested date outside of calendar range", details.c_str());
             return -1; // Invalid index for out-of-bounds year
         }
 
@@ -283,4 +319,12 @@ PYBIND11_MODULE(_native_calendar, m) {
         .def("get_next_trading_day", &NativeCalendar::get_next_trading_day)
         .def("get_previous_trading_day", &NativeCalendar::get_previous_trading_day)
         .def("get_trading_days_in_range", &NativeCalendar::get_trading_days_in_range);
+
+    native_log_bridge_log(
+        NATIVE_LOG_LEVEL_INFO,
+        CALENDAR_MODULE_COMPONENT,
+        "calendar_module_init",
+        __LINE__,
+        "native_calendar module initialized",
+        nullptr);
 }

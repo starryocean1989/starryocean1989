@@ -632,6 +632,28 @@ class StartupOrchestrator:
                         extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
                     )
 
+                if getattr(self.context, "service_tracker", None):
+                    snapshot = self.context.service_tracker.snapshot()
+                    if snapshot:
+                        stage_logger.info(
+                            "",
+                            extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                        )
+                        stage_logger.info(
+                            "原生执行统计:",
+                            extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                        )
+                        for service_name, data in snapshot.items():
+                            status = data.get("status", "unknown")
+                            elapsed = data.get("elapsed")
+                            metadata = data.get("metadata", {})
+                            status_icon = "✅" if status == "ready" else "⚠️" if status == "failed" else "⏳"
+                            elapsed_text = f"{elapsed*1000:.0f}ms" if elapsed is not None else "-"
+                            stage_logger.info(
+                                f"  - {service_name}: {status_icon} 状态={status}, 耗时={elapsed_text}, 元数据={metadata}",
+                                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                            )
+
                 # 监控进程信息
                 monitor_pid = getattr(self.context, "monitor_process_pid", None)
                 if (

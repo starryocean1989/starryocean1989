@@ -229,15 +229,7 @@ class QtFrameworkStage(StartupStage):
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"}
                 )
                 stage_logger.info(
-                    "✅ 主题系统加载完成", 
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
-                stage_logger.info(
-                    f"  - 当前主题: {current_theme}", 
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
-                stage_logger.info(
-                    f"  - 主题配置: {theme_config_abs}", 
+                    "✅ 主题系统加载完成",
                     extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
                 )
             except Exception as e:
@@ -252,9 +244,9 @@ class QtFrameworkStage(StartupStage):
                 "[QT-INIT] 启动画面显示",
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
-            stage_logger.info(
-                "✅ 启动画面显示", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+            logger.info(
+                "[QT-INIT] 启动画面显示完成",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
 
             # 加载配置文件
@@ -313,9 +305,15 @@ class QtFrameworkStage(StartupStage):
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
             stage_logger.info(
-                f"✅ Qt框架就绪 ({elapsed_ms:.0f}ms)", 
+                f"✅ Qt框架就绪 ({int(elapsed_ms)}ms)",
                 extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
             )
+            # 避免部分模块在阶段2期间新增StreamHandler导致INFO泄漏到Terminal
+            try:
+                from backend.infrastructure.system_vnpy.logging_system import cleanup_all_logger_handlers
+                cleanup_all_logger_handlers()
+            except Exception:
+                pass
 
             return StageResult(
                 success=True,

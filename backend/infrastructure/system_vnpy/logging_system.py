@@ -346,7 +346,12 @@ def stage_log(
 ) -> None:
     """输出阶段节点日志，自动补齐 ``log_type`` / ``scenario`` 信息."""
 
-    target_logger = _coerce_logger(logger, default_name=name, log_type="STAGE_NODE", scenario=scenario)
+    resolved_log_type = "STAGE_NODE"
+    if scenario and scenario != "application_startup":
+        resolved_log_type = "SYSTEM"
+    target_logger = _coerce_logger(
+        logger, default_name=name, log_type=resolved_log_type, scenario=scenario
+    )
     payload = dict(extra) if extra else {}
     if scenario and "scenario" not in payload:
         payload["scenario"] = scenario
@@ -2193,9 +2198,19 @@ class LoggingHub(logging.Handler):
             if any(word in message_lower for word in progress_indicators):
                 return LogType.PROGRESS
 
-        # 增强阶段节点检测
-        stage_keywords = ["stage", "phase", "step", "task", "job", "process", "workflow"]
-        stage_indicators = ["start", "begin", "end", "complete", "finish", "initializing", "finalizing"]
+        # 增强阶段节点检测（收紧规则以避免误判）
+        # 原规则包含 "process"/"workflow" 等过于宽泛的词，导致一般INFO被误判为阶段日志。
+        # 收紧为仅当消息同时包含明确的阶段标识（stage/phase/step）与状态词（start/end/complete等）时才判定为STAGE_NODE。
+        stage_keywords = ["stage", "phase", "step"]
+        stage_indicators = [
+            "start",
+            "begin",
+            "end",
+            "complete",
+            "finish",
+            "initializing",
+            "finalizing",
+        ]
         if any(word in message_lower for word in stage_indicators):
             if any(word in message_lower for word in stage_keywords):
                 return LogType.STAGE_NODE
@@ -2373,6 +2388,12 @@ class LoggingHub(logging.Handler):
             (record.level == logging.INFO and hasattr(record, 'show_in_console') and record.show_in_console)  # 显式指定显示在控制台
         )
 
+        # 仅在启动阶段抑制普通INFO到控制台，保留STAGE_NODE和显式show_in_console
+        if self._is_startup_phase():
+            if record.level < logging.WARNING and record.type != LogType.STAGE_NODE:
+                if not getattr(record, 'show_in_console', False):
+                    needs_console = False
+
         # 数据库输出条件（可以单独控制）
         needs_database = (
             needs_console or  # 默认与控制台一致
@@ -2517,6 +2538,24 @@ class LoggingHub(logging.Handler):
         # 有序队列只负责console和database的输出顺序
 
         # 根据路由目标输出（console和database）
+        record_scenario = getattr(record, "scenario", None)
+        if (
+            record.type == LogType.STAGE_NODE
+            and record_scenario not in (None, "application_startup")
+        ):
+            # 非启动主流程的阶段日志仅写入数据库，不在Terminal展示
+            self._to_database_batched(record)
+            return
+
+        if (
+            record.type != LogType.STAGE_NODE
+            and record.level < logging.WARNING
+            and record.logger_name != "startup.stage"
+        ):
+            # 启动阶段的普通INFO日志不在终端展示，仅写入数据库
+            self._to_database_batched(record)
+            return
+
         if record.level >= logging.WARNING or (
             record.type == LogType.STAGE_NODE and record.level == logging.INFO
         ):
@@ -3266,9 +3305,9 @@ async def initialize_logging_hub_complete(
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
-        stage_logger.info(
-            "✅ 有序日志队列初始化完成",
-            extra={"log_type": "STAGE_NODE", "scenario": scenario}
+        logger.debug(
+            "[LOG-SETUP] 有序日志队列初始化完成",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
         # 7. 将LoggingHub添加到root logger
@@ -3316,55 +3355,21 @@ async def initialize_logging_hub_complete(
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
-        # 11. 阶段1标题与分隔（此时LoggingHub已就绪）
-        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": scenario})
-        stage_logger.info("【阶段1: 日志系统初始化】 (5-10%)", extra={"log_type": "STAGE_NODE", "scenario": scenario})
-        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": scenario})
-        stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": scenario})
-
-        # 添加阶段1开始标记
-        stage_logger.info("📍 阶段1: 日志系统初始化开始", extra={"log_type": "STAGE_NODE", "scenario": scenario})
-
-        # 使用logger输出（此时已经过LoggingHub）
-        stage_logger.info(
+        stage_lines = [
+            "=" * 70,
+            "【阶段1: 日志系统初始化】 (5-10%)",
+            "=" * 70,
+            "",
+            "📍 阶段1: 日志系统初始化开始",
+            "✅ MemoryHandler已启用（拦截早期日志）",
             "✅ LoggingHub创建完成",
-            extra={"log_type": "STAGE_NODE", "scenario": scenario}
-        )
+            "✅ 有序日志队列（OrderedLogQueue）已启用",
+            "✅ 事件日志流程（start_event_process）已启动",
+            "✅ MemoryHandler日志重放完成",
+        ]
+        for line in stage_lines:
+            stage_logger.info(line, extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
-        # 注意：新架构使用硬编码路由规则，不再有路由引擎和配置文件
-        stage_logger.info(
-            "✅ 路由规则系统初始化完成（硬编码规则）",
-            extra={"log_type": "STAGE_NODE", "scenario": scenario}
-        )
-        stage_logger.info(
-            "   - 路由规则: 硬编码（简化架构）",
-            extra={"log_type": "STAGE_NODE", "scenario": scenario},
-        )
-
-        # 事件日志Handler信息
-        stage_logger.info(
-            "✅ 事件日志Handler初始化完成",
-            extra={"log_type": "STAGE_NODE", "scenario": scenario}
-        )
-        stage_logger.info(
-            f"  - 基础目录: {Path('logs').absolute()}",
-            extra={"log_type": "STAGE_NODE", "scenario": scenario}
-        )
-
-        # MemoryHandler日志重放信息
-        stage_logger.info(
-            f"✅ MemoryHandler日志重放完成 ({buffered_count}条)",
-            extra={"log_type": "STAGE_NODE", "scenario": scenario}
-        )
-
-        # 有序日志队列信息（如果已启用）
-        if ordered_queue:
-            stage_logger.info(
-                "✅ 有序日志队列已启用（启动阶段日志将按顺序输出）",
-                extra={"log_type": "STAGE_NODE", "scenario": scenario},
-            )
-
-        # 初始化阶段完成耗时
         t_ms = int((time.time() - t0) * 1000)
         logger.info(
             f"[LOG-SETUP] 日志系统初始化完成: 总耗时={t_ms}ms",

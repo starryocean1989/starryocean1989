@@ -2,9 +2,55 @@
 #include <Python.h>
 #include <structmember.h>
 
-#define LOG_DEBUG(fmt, ...) PySys_WriteStderr("[DEBUG] " fmt "\n", ##__VA_ARGS__)
-#define LOG_ERROR(fmt, ...) PySys_WriteStderr("[ERROR] %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)
-#define LOG_WARNING(fmt, ...) PySys_WriteStderr("[WARNING] %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)
+/* NativeLogBridge declarations */
+static PyObject *g_log_bridge_module = NULL;
+static PyObject *g_log_from_native_func = NULL;
+
+/* Log level constants matching Python side */
+#define NATIVE_LOG_DEBUG 10
+#define NATIVE_LOG_INFO 20
+#define NATIVE_LOG_WARNING 30
+#define NATIVE_LOG_ERROR 40
+#define NATIVE_LOG_CRITICAL 50
+
+#define COMPONENT_CORE "backend.native.native_scheduler.core"
+
+/* Logging utility functions */
+static void native_log(int level, const char *component, const char *function, int line, const char *message, const char *details) {
+    if (!g_log_from_native_func) {
+        return;  /* Silent fail if logging not initialized */
+    }
+
+    PyGILState_STATE gstate = PyGILState_Ensure();
+
+    PyObject *result = PyObject_CallFunction(g_log_from_native_func, "ississs",
+        level, component, function, line, message, details ? details : "");
+
+    if (result) {
+        Py_DECREF(result);
+    } else {
+        /* Log the logging failure, but avoid recursion */
+        PyErr_Clear();
+    }
+
+    PyGILState_Release(gstate);
+}
+
+static void native_log_error(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_ERROR, component, function, line, message, details);
+}
+
+static void native_log_warning(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_WARNING, component, function, line, message, details);
+}
+
+static void native_log_info(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_INFO, component, function, line, message, details);
+}
+
+static void native_log_debug(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_DEBUG, component, function, line, message, details);
+}
 
 typedef struct {
     PyObject *threadpool;
@@ -219,13 +265,16 @@ NativeScheduler_submit(NativeSchedulerObject *self, PyObject *args, PyObject *kw
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|OO:submit", kwlist,
                                      &category_name, &callable, &call_args, &call_kwargs)) {
+        native_log_error(COMPONENT_CORE, "NativeScheduler_submit", __LINE__, "Failed to parse submit arguments", NULL);
         return NULL;
     }
     if (!PyUnicode_Check(category_name)) {
+        native_log_error(COMPONENT_CORE, "NativeScheduler_submit", __LINE__, "Category name must be string", NULL);
         PyErr_SetString(PyExc_TypeError, "category must be str");
         return NULL;
     }
     if (!PyCallable_Check(callable)) {
+        native_log_error(COMPONENT_CORE, "NativeScheduler_submit", __LINE__, "Submitted object is not callable", NULL);
         PyErr_SetString(PyExc_TypeError, "callable must be callable");
         return NULL;
     }
@@ -260,6 +309,10 @@ NativeScheduler_submit(NativeSchedulerObject *self, PyObject *args, PyObject *kw
 
     CategoryContext *ctx = get_category(self, category_name);
     if (ctx == NULL) {
+        const char *category_str = PyUnicode_AsUTF8(category_name);
+        char error_details[256];
+        sprintf(error_details, "Category '%s' not registered", category_str ? category_str : "<invalid>");
+        native_log_error(COMPONENT_CORE, "NativeScheduler_submit", __LINE__, "Category not found", error_details);
         Py_DECREF(call_args_owned);
         Py_DECREF(call_kwargs_owned);
         return NULL;
@@ -267,7 +320,15 @@ NativeScheduler_submit(NativeSchedulerObject *self, PyObject *args, PyObject *kw
 
     PyThread_acquire_lock(ctx->pending_lock, 1);
     ctx->pending += 1;
+    Py_ssize_t current_pending = ctx->pending;
     PyThread_release_lock(ctx->pending_lock);
+
+    /* Log successful task submission */
+    const char *category_str = PyUnicode_AsUTF8(category_name);
+    char submit_details[256];
+    sprintf(submit_details, "category='%s', pending=%zd, callable=%s",
+            category_str ? category_str : "<unknown>", current_pending, callable->ob_type->tp_name);
+    native_log_debug(COMPONENT_CORE, "NativeScheduler_submit", __LINE__, "Task submitted to scheduler", submit_details);
 
     PyObject *ctx_capsule = PyCapsule_New(ctx, "native_scheduler.CategoryContext", NULL);
     if (ctx_capsule == NULL) {
@@ -304,8 +365,21 @@ NativeScheduler_submit(NativeSchedulerObject *self, PyObject *args, PyObject *kw
         PyThread_acquire_lock(ctx->pending_lock, 1);
         ctx->pending -= 1;
         PyThread_release_lock(ctx->pending_lock);
+
+        const char *category_str = PyUnicode_AsUTF8(category_name);
+        char error_details[256];
+        sprintf(error_details, "category='%s', callable=%s",
+                category_str ? category_str : "<unknown>", callable->ob_type->tp_name);
+        native_log_error(COMPONENT_CORE, "NativeScheduler_submit", __LINE__, "Failed to submit task to thread pool", error_details);
         return NULL;
     }
+
+    /* Log successful task submission to thread pool */
+    const char *category_str = PyUnicode_AsUTF8(category_name);
+    char success_details[256];
+    sprintf(success_details, "category='%s', callable=%s, future=%s",
+            category_str ? category_str : "<unknown>", callable->ob_type->tp_name, future->ob_type->tp_name);
+    native_log_debug(COMPONENT_CORE, "NativeScheduler_submit", __LINE__, "Task successfully queued for execution", success_details);
 
     return future;
 }
@@ -374,10 +448,16 @@ NativeScheduler_shutdown(NativeSchedulerObject *self, PyObject *args, PyObject *
     int wait = 1;
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|p:shutdown", kwlist, &wait)) {
+        native_log_error(COMPONENT_CORE, "NativeScheduler_shutdown", __LINE__, "Failed to parse shutdown arguments", NULL);
         return NULL;
     }
 
+    char shutdown_details[256];
+    sprintf(shutdown_details, "wait=%d", wait);
+    native_log_info(COMPONENT_CORE, "NativeScheduler_shutdown", __LINE__, "Shutting down scheduler", shutdown_details);
+
     if (self->shutting_down) {
+        native_log_warning(COMPONENT_CORE, "NativeScheduler_shutdown", __LINE__, "Scheduler already shutting down", NULL);
         Py_RETURN_NONE;
     }
     self->shutting_down = 1;
@@ -456,9 +536,33 @@ execute_task(PyObject *Py_UNUSED(module), PyObject *args)
         return NULL;
     }
 
+    /* Log task execution start */
+    char exec_start_details[256];
+    sprintf(exec_start_details, "callable=%s, args_count=%zd",
+            callable->ob_type->tp_name, PyTuple_GET_SIZE(call_args));
+    native_log_debug(COMPONENT_CORE, "execute_task", __LINE__, "Starting task execution", exec_start_details);
+
     PyObject *result = PyObject_Call(callable, call_args, call_kwargs);
     if (result == NULL) {
-        PyErr_Print();
+        /* Task execution failed */
+        PyObject *exc_type = NULL, *exc_value = NULL, *exc_tb = NULL;
+        PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+
+        PyObject *exc_str = PyObject_Str(exc_value);
+        const char *exc_msg = exc_str ? PyUnicode_AsUTF8(exc_str) : "Unknown exception";
+        char exec_error_details[512];
+        sprintf(exec_error_details, "callable=%s, exception=%s",
+                callable->ob_type->tp_name, exc_msg);
+        native_log_error(COMPONENT_CORE, "execute_task", __LINE__, "Task execution failed", exec_error_details);
+        Py_XDECREF(exc_str);
+
+        PyErr_Restore(exc_type, exc_value, exc_tb);
+    } else {
+        /* Task execution succeeded */
+        char exec_success_details[256];
+        sprintf(exec_success_details, "callable=%s, result_type=%s",
+                callable->ob_type->tp_name, result->ob_type->tp_name);
+        native_log_debug(COMPONENT_CORE, "execute_task", __LINE__, "Task execution completed successfully", exec_success_details);
     }
     return result;
 }
@@ -506,12 +610,34 @@ static PyMethodDef module_methods[] = {
     {"_execute_task", (PyCFunction)execute_task, METH_VARARGS, PyDoc_STR("Internal executor trampoline")},
     {NULL, NULL, 0, NULL}};
 
+static void
+_native_scheduler_cleanup(void)
+{
+    /* Clean up logging bridge references */
+    Py_XDECREF(g_log_bridge_module);
+    Py_XDECREF(g_log_from_native_func);
+    g_log_bridge_module = NULL;
+    g_log_from_native_func = NULL;
+
+    /* Clean up module-level references */
+    Py_XDECREF(EXECUTE_TASK_FUNC);
+    Py_XDECREF(SUBMIT_STR);
+    Py_XDECREF(SHUTDOWN_STR);
+    EXECUTE_TASK_FUNC = NULL;
+    SUBMIT_STR = NULL;
+    SHUTDOWN_STR = NULL;
+}
+
 static struct PyModuleDef native_scheduler_module = {
     PyModuleDef_HEAD_INIT,
     "_native_scheduler",
     "Native scheduler module",
     -1,
     module_methods,
+    NULL,  /* m_slots */
+    NULL,  /* m_traverse */
+    NULL,  /* m_clear */
+    _native_scheduler_cleanup,  /* m_free */
 };
 
 PyMODINIT_FUNC
@@ -519,12 +645,40 @@ PyInit__native_scheduler(void)
 {
     PyObject *module = NULL;
 
+    /* Initialize logging bridge */
+    g_log_bridge_module = PyImport_ImportModule("backend.infrastructure.native.logging_bridge");
+    if (g_log_bridge_module != NULL) {
+        g_log_from_native_func = PyObject_GetAttrString(g_log_bridge_module, "log_from_native");
+        if (g_log_from_native_func == NULL) {
+            Py_DECREF(g_log_bridge_module);
+            g_log_bridge_module = NULL;
+        }
+    }
+
+    if (g_log_bridge_module != NULL && g_log_from_native_func != NULL) {
+        native_log_info(COMPONENT_CORE, "PyInit__native_scheduler", __LINE__, "Logging bridge initialized successfully", NULL);
+    } else {
+        /* Logging bridge not available, continue without logging */
+        Py_XDECREF(g_log_bridge_module);
+        Py_XDECREF(g_log_from_native_func);
+        g_log_bridge_module = NULL;
+        g_log_from_native_func = NULL;
+    }
+
     if (PyType_Ready(&NativeSchedulerType) < 0) {
+        Py_XDECREF(g_log_bridge_module);
+        Py_XDECREF(g_log_from_native_func);
+        g_log_bridge_module = NULL;
+        g_log_from_native_func = NULL;
         return NULL;
     }
 
     module = PyModule_Create(&native_scheduler_module);
     if (module == NULL) {
+        Py_XDECREF(g_log_bridge_module);
+        Py_XDECREF(g_log_from_native_func);
+        g_log_bridge_module = NULL;
+        g_log_from_native_func = NULL;
         return NULL;
     }
 

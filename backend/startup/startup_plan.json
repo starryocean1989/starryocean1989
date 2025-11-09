@@ -1,0 +1,153 @@
+{
+  "version": "1.0",
+  "nodes": [
+    {
+      "id": "env_setup",
+      "label": "阶段0 环境准备",
+      "category": "stage",
+      "depends_on": [],
+      "metadata": {
+        "stage": 0,
+        "description": "设置环境变量、路径、DPI"
+      }
+    },
+    {
+      "id": "logging_init",
+      "label": "阶段1 日志系统初始化",
+      "category": "stage",
+      "depends_on": [
+        "env_setup"
+      ],
+      "metadata": {
+        "stage": 1,
+        "description": "初始化 LoggingHub、事件日志、OrderedLogQueue"
+      }
+    },
+    {
+      "id": "qt_framework",
+      "label": "阶段2 Qt 框架初始化",
+      "category": "stage",
+      "depends_on": [
+        "logging_init"
+      ],
+      "metadata": {
+        "stage": 2,
+        "description": "创建 QApplication、EventEngine、MainEngine"
+      }
+    },
+    {
+      "id": "backend_init",
+      "label": "阶段3 后端初始化入口",
+      "category": "stage",
+      "depends_on": [
+        "qt_framework"
+      ],
+      "metadata": {
+        "stage": 3,
+        "description": "准备并发后台流程"
+      }
+    },
+    {
+      "id": "backend_init.monitor",
+      "label": "监控进程分支",
+      "category": "branch",
+      "depends_on": [
+        "backend_init"
+      ],
+      "metadata": {
+        "ready_keys": [
+          "backend_init.monitor:level0",
+          "backend_init.monitor:level1",
+          "backend_init.monitor:level2"
+        ]
+      }
+    },
+    {
+      "id": "backend_init.data",
+      "label": "数据进程分支",
+      "category": "branch",
+      "depends_on": [
+        "backend_init"
+      ],
+      "metadata": {
+        "ready_keys": [
+          "backend_init.data:level0",
+          "backend_init.data:level1",
+          "backend_init.data:level2"
+        ]
+      }
+    },
+    {
+      "id": "backend_init.backend",
+      "label": "主进程业务骨架",
+      "category": "branch",
+      "depends_on": [
+        "backend_init"
+      ],
+      "metadata": {
+        "ready_keys": [
+          "backend_init.backend:services",
+          "backend_init.backend:health"
+        ]
+      }
+    },
+    {
+      "id": "backend_init.cache",
+      "label": "缓存验证分支",
+      "category": "branch",
+      "depends_on": [
+        "backend_init"
+      ],
+      "metadata": {
+        "ready_keys": [
+          "backend_init.cache:steps"
+        ]
+      }
+    },
+    {
+      "id": "backend_init.barrier",
+      "label": "阶段3 就绪屏障",
+      "category": "branch",
+      "depends_on": [
+        "backend_init.monitor",
+        "backend_init.data",
+        "backend_init.backend",
+        "backend_init.cache"
+      ],
+      "metadata": {
+        "ready_keys": [
+          "backend_init.monitor:level2",
+          "backend_init.data:level2",
+          "backend_init.backend:health",
+          "backend_init.cache:steps"
+        ]
+      }
+    },
+    {
+      "id": "backend_init.post",
+      "label": "阶段3 后处理",
+      "category": "branch",
+      "depends_on": [
+        "backend_init.barrier"
+      ],
+      "metadata": {
+        "ready_keys": [
+          "backend_init.post:complete"
+        ]
+      }
+    },
+    {
+      "id": "ui_activation",
+      "label": "阶段4 UI 激活",
+      "category": "stage",
+      "depends_on": [
+        "backend_init.post"
+      ],
+      "metadata": {
+        "stage": 4,
+        "description": "创建主窗口并显示"
+      }
+    }
+  ]
+}
+

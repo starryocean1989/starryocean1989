@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 else:  # pragma: no cover
     Task = Any  # type: ignore
 
+from backend.startup.event_bus import EventBus
+from backend.startup.native_support import NativeStartupRuntime, ServiceStartupTracker
+
 logger = logging.getLogger("backend.startup.context")
 
 
@@ -81,9 +84,27 @@ class StartupContext:
         self.log_queue: Optional[Any] = None  # multiprocessing.Queue
         self.log_queue_token: Optional[str] = None  # 序列化的队列代理，供子进程恢复
 
-        # 原生扩展状态
+        # 事件总线 & 原生执行器
+        self._event_bus: EventBus = EventBus()
         self.native_extension_status: Dict[str, bool] = {}
         self.native_log_pipeline_enabled: bool = False
+        self.service_tracker: ServiceStartupTracker = ServiceStartupTracker(event_bus=self._event_bus)
+        self.native_runtime_options: Dict[str, Any] = {
+            "max_workers": 4,
+            "default_timeout": 12.0,
+            "use_scheduler": True,
+            "category_config": {
+                "default": {"queue_capacity": 128, "max_workers": 4},
+                "auxiliary": {"queue_capacity": 256, "max_workers": 3},
+                "io": {"queue_capacity": 512, "max_workers": 4},
+            },
+        }
+        self.native_runtime: NativeStartupRuntime = NativeStartupRuntime(
+            event_bus=self._event_bus,
+            service_tracker=self.service_tracker,
+            **self.native_runtime_options,
+        )
+        self.service_initializer: Optional[Any] = None
 
     def validate(self, required_deps: Optional[list] = None) -> bool:
         """验证所有必需的依赖是否已初始化
@@ -186,3 +207,51 @@ class StartupContext:
             "native_extensions": self.native_extension_status,
             "native_log_pipeline_enabled": self.native_log_pipeline_enabled,
         }
+
+    # ------------------------------------------------------------------
+    # 事件总线 / 原生执行器接口
+    # ------------------------------------------------------------------
+
+    def get_event_bus(self) -> EventBus:
+        """获取启动事件总线."""
+        return self._event_bus
+
+    def set_event_bus(self, bus: EventBus) -> None:
+        """替换事件总线（用于测试或外部注入）。"""
+        prev_runtime = getattr(self, "native_runtime", None)
+        if prev_runtime:
+            try:
+                prev_runtime.shutdown()
+            except Exception:
+                logger.exception("关闭既有 native_runtime 失败")
+        self._event_bus = bus
+        self.service_tracker.bind_bus(bus)
+        if prev_runtime:
+            self.native_runtime_options["default_timeout"] = prev_runtime.default_timeout
+            self.native_runtime_options["max_workers"] = getattr(
+                prev_runtime,
+                "_pool_max_workers",
+                self.native_runtime_options["max_workers"],
+            )
+        self.native_runtime = NativeStartupRuntime(
+            event_bus=bus,
+            service_tracker=self.service_tracker,
+            qt_invoker=getattr(prev_runtime, "_qt_invoker", None) if prev_runtime else None,
+            **self.native_runtime_options,
+        )
+
+    def shutdown_native_runtime(self) -> None:
+        """关闭原生执行器。"""
+        if hasattr(self, "native_runtime") and self.native_runtime:
+            self.native_runtime.shutdown()
+
+    def get_service_status_snapshot(self) -> Dict[str, str]:
+        """获取服务初始化状态快照。"""
+        initializer: Any = getattr(self, "service_initializer", None)
+        if not initializer:
+            return {}
+        try:
+            return initializer.get_service_status_snapshot()
+        except Exception:
+            logger.debug("获取服务状态快照失败", exc_info=True)
+            return {}

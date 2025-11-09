@@ -135,9 +135,10 @@ class LoggingInitStage(StartupStage):
                 context.log_queue = log_collector.get_queue()
                 context.log_queue_token = log_collector.get_bridge_token()
 
+                # 仅写入事件日志文件，Terminal不输出该行（与标准输出规范保持一致）
                 logger.info(
-                    "[LOG-INIT] ✅ MultiProcessLogCollector已启动",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                    "[LOG-INIT] MultiProcessLogCollector已启动",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"},
                 )
                 logger.debug(
                     "[LOG-INIT] 日志队列已保存到context",

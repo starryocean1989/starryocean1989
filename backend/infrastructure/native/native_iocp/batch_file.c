@@ -10,6 +10,9 @@
 #include <stdio.h>
 #include "batch_file.h"
 
+/* Native Log Bridge */
+#include "../native_log_bridge.h"
+
 /* 批量检查文件是否存在 */
 PyObject* batch_file_exists(PyObject *self, PyObject *args) {
     PyObject *file_list;
@@ -196,4 +199,4 @@ PyObject* batch_file_stat(PyObject *self, PyObject *args) {
 
     return result;
 }
-
+

@@ -3,14 +3,40 @@
 #include <Python.h>
 
 #define WIN32_LEAN_AND_MEAN
-#include <mswsock.h>
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mswsock.h>
+#include <stdio.h>
 
+#include "../native_log_bridge.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "Mswsock.lib")
+
+#define NETPROBE_COMPONENT "backend.native.netprobe.core"
+
+static void netprobe_log(
+    int level,
+    const char *function,
+    int line,
+    const char *message,
+    const char *details
+) {
+    native_log_bridge_log(level, NETPROBE_COMPONENT, function, line, message, details);
+}
+
+static void netprobe_log_error(const char *function, int line, const char *message, const char *details) {
+    netprobe_log(NATIVE_LOG_LEVEL_ERROR, function, line, message, details);
+}
+
+static void netprobe_log_warning(const char *function, int line, const char *message, const char *details) {
+    netprobe_log(NATIVE_LOG_LEVEL_WARNING, function, line, message, details);
+}
+
+static void netprobe_log_info(const char *function, int line, const char *message, const char *details) {
+    netprobe_log(NATIVE_LOG_LEVEL_INFO, function, line, message, details);
+}
 
 typedef BOOL(PASCAL *LPFN_CONNECTEX)(SOCKET s, const struct sockaddr *name,
                                      int namelen, PVOID lpSendBuffer,
@@ -66,6 +92,7 @@ static int ensure_connectex(int family, LPFN_CONNECTEX *out_fn) {
   SOCKET temp =
       WSASocket(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
   if (temp == INVALID_SOCKET) {
+    netprobe_log_error(__FUNCTION__, __LINE__, "WSASocket failed while loading ConnectEx", NULL);
     return -1;
   }
 
@@ -76,6 +103,9 @@ static int ensure_connectex(int family, LPFN_CONNECTEX *out_fn) {
                     sizeof(guid), &fn, sizeof(fn), &bytes, NULL, NULL);
   closesocket(temp);
   if (rc != 0 || fn == NULL) {
+    char details[64];
+    snprintf(details, sizeof(details), "family=%d;wsa_error=%d", family, WSAGetLastError());
+    netprobe_log_error(__FUNCTION__, __LINE__, "WSAIoctl failed to resolve ConnectEx", details);
     return -1;
   }
 
@@ -112,6 +142,7 @@ static int prepare_request(ProbeRequest *req, const char *host_utf8,
   size_t host_len = strlen(host_utf8);
   req->host = PyMem_Malloc(host_len + 1);
   if (!req->host) {
+    netprobe_log_error(__FUNCTION__, __LINE__, "PyMem_Malloc failed while copying host", NULL);
     return -1;
   }
   memcpy(req->host, host_utf8, host_len + 1);
@@ -135,6 +166,9 @@ static int prepare_request(ProbeRequest *req, const char *host_utf8,
   Py_END_ALLOW_THREADS
 
       if (gai != 0 || !result) {
+    char details[256];
+    snprintf(details, sizeof(details), "host=%s;port=%u;gai=%d", host_utf8, port, gai);
+    netprobe_log_warning(__FUNCTION__, __LINE__, "getaddrinfo failed for netprobe request", details);
     req->status = -1;
     req->error_code = gai != 0 ? gai : WSAHOST_NOT_FOUND;
     req->completed = 1;
@@ -153,14 +187,27 @@ static int bind_local_address(SOCKET sock, int family) {
     struct sockaddr_in local;
     memset(&local, 0, sizeof(local));
     local.sin_family = AF_INET;
-    return bind(sock, (SOCKADDR *)&local, sizeof(local));
+    int rc = bind(sock, (SOCKADDR *)&local, sizeof(local));
+    if (rc != 0) {
+      char details[64];
+      snprintf(details, sizeof(details), "family=AF_INET;wsa_error=%d", WSAGetLastError());
+      netprobe_log_error(__FUNCTION__, __LINE__, "bind failed for IPv4 socket", details);
+    }
+    return rc;
   }
   if (family == AF_INET6) {
     struct sockaddr_in6 local6;
     memset(&local6, 0, sizeof(local6));
     local6.sin6_family = AF_INET6;
-    return bind(sock, (SOCKADDR *)&local6, sizeof(local6));
+    int rc = bind(sock, (SOCKADDR *)&local6, sizeof(local6));
+    if (rc != 0) {
+      char details[64];
+      snprintf(details, sizeof(details), "family=AF_INET6;wsa_error=%d", WSAGetLastError());
+      netprobe_log_error(__FUNCTION__, __LINE__, "bind failed for IPv6 socket", details);
+    }
+    return rc;
   }
+  netprobe_log_warning(__FUNCTION__, __LINE__, "bind_local_address received unsupported family", NULL);
   return -1;
 }
 
@@ -176,6 +223,7 @@ static int start_request(ProbeRequest *req, HANDLE iocp) {
   SOCKET sock = WSASocket(req->family, SOCK_STREAM, IPPROTO_TCP, NULL, 0,
                           WSA_FLAG_OVERLAPPED);
   if (sock == INVALID_SOCKET) {
+    netprobe_log_error(__FUNCTION__, __LINE__, "WSASocket failed during start_request", NULL);
     req->status = -1;
     req->error_code = WSAGetLastError();
     req->completed = 1;
@@ -184,6 +232,9 @@ static int start_request(ProbeRequest *req, HANDLE iocp) {
   req->socket = sock;
 
   if (!CreateIoCompletionPort((HANDLE)sock, iocp, (ULONG_PTR)req, 0)) {
+    char details[128];
+    snprintf(details, sizeof(details), "error=%lu", (unsigned long)GetLastError());
+    netprobe_log_error(__FUNCTION__, __LINE__, "CreateIoCompletionPort failed", details);
     req->status = -1;
     req->error_code = (int)GetLastError();
     req->completed = 1;
@@ -320,6 +371,7 @@ static PyObject *run_batch(PyObject *server_list, double timeout,
 
   ProbeRequest *requests = PyMem_Calloc((size_t)total, sizeof(ProbeRequest));
   if (!requests) {
+    netprobe_log_error(__FUNCTION__, __LINE__, "PyMem_Calloc failed for ProbeRequest array", NULL);
     PyErr_NoMemory();
     return NULL;
   }
@@ -328,6 +380,7 @@ static PyObject *run_batch(PyObject *server_list, double timeout,
   for (Py_ssize_t i = 0; i < total; ++i) {
     PyObject *item = PyList_GET_ITEM(server_list, i);
     if (!PyTuple_Check(item) || PyTuple_GET_SIZE(item) < 2) {
+      netprobe_log_warning(__FUNCTION__, __LINE__, "Invalid server entry encountered", NULL);
       PyMem_Free(requests);
       PyErr_SetString(PyExc_TypeError, "each server must be (host, port)");
       return NULL;
@@ -338,12 +391,14 @@ static PyObject *run_batch(PyObject *server_list, double timeout,
 
     const char *host_utf8 = PyUnicode_AsUTF8(host_obj);
     if (!host_utf8) {
+      netprobe_log_warning(__FUNCTION__, __LINE__, "Failed to decode server host to UTF-8", NULL);
       PyMem_Free(requests);
       return NULL;
     }
 
     long port_long = PyLong_AsLong(port_obj);
     if (port_long < 0 || port_long > 65535) {
+      netprobe_log_warning(__FUNCTION__, __LINE__, "Server port out of range", NULL);
       PyMem_Free(requests);
       PyErr_SetString(PyExc_ValueError, "port must be between 0 and 65535");
       return NULL;
@@ -359,6 +414,7 @@ static PyObject *run_batch(PyObject *server_list, double timeout,
   if (prepared > 0) {
     iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
     if (!iocp) {
+      netprobe_log_error(__FUNCTION__, __LINE__, "CreateIoCompletionPort failed for batch", NULL);
       PyMem_Free(requests);
       PyErr_SetFromWindowsErr(0);
       return NULL;
@@ -413,6 +469,7 @@ static PyObject *run_batch(PyObject *server_list, double timeout,
           }
         }
       }
+      netprobe_log_warning(__FUNCTION__, __LINE__, "Batch netprobe timed out", NULL);
       break; /* 超时后直接退出循环 */
     }
 
@@ -461,10 +518,14 @@ static PyObject *run_batch(PyObject *server_list, double timeout,
           }
         }
       }
+      netprobe_log_warning(__FUNCTION__, __LINE__, "Netprobe request timeout reached", NULL);
       continue;
     }
 
     if (!ok && err != WAIT_TIMEOUT) {
+      char details[128];
+      snprintf(details, sizeof(details), "err=%lu", (unsigned long)err);
+      netprobe_log_error(__FUNCTION__, __LINE__, "GetQueuedCompletionStatus failed", details);
       PyErr_SetFromWindowsErr(err);
       break;
     }
@@ -480,6 +541,7 @@ static PyObject *run_batch(PyObject *server_list, double timeout,
       cleanup_request(&requests[i]);
     }
     PyMem_Free(requests);
+    netprobe_log_error(__FUNCTION__, __LINE__, "Failed to allocate results list", NULL);
     return NULL;
   }
 
@@ -507,6 +569,7 @@ static PyObject *run_batch(PyObject *server_list, double timeout,
         cleanup_request(&requests[j]);
       }
       PyMem_Free(requests);
+      netprobe_log_error(__FUNCTION__, __LINE__, "build_result returned NULL", NULL);
       return NULL;
     }
     PyList_SET_ITEM(results, i, entry);
@@ -520,6 +583,7 @@ static PyObject *run_batch(PyObject *server_list, double timeout,
   PyObject *summary = PyDict_New();
   if (!summary) {
     Py_DECREF(results);
+    netprobe_log_error(__FUNCTION__, __LINE__, "Failed to allocate summary dictionary", NULL);
     return NULL;
   }
 

@@ -1,0 +1,48 @@
+name: Native Logging Inspection
+
+on:
+  pull_request:
+    paths:
+      - "backend/infrastructure/native/**"
+      - "backend/infrastructure/system_vnpy/**"
+      - "scripts/check_native_logging.py"
+      - ".github/workflows/native_logging.yml"
+  push:
+    branches: [ main, develop ]
+    paths:
+      - "backend/infrastructure/native/**"
+      - "backend/infrastructure/system_vnpy/**"
+      - "scripts/check_native_logging.py"
+      - ".github/workflows/native_logging.yml"
+
+jobs:
+  native-logging-check:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile key native extensions (if setup scripts present)
+        run: |
+          if (Test-Path "backend/infrastructure/native/native_process_metrics/setup.py") {
+            pushd backend/infrastructure/native/native_process_metrics
+            python setup.py build_ext --inplace
+            popd
+          }
+        shell: pwsh
+
+      - name: Run native logging inspection
+        run: |
+          python scripts/check_native_logging.py --verbose

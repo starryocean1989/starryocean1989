@@ -62,8 +62,6 @@ except Exception:  # noqa: BLE001
         NATIVE_QHIGHLIGHTER_AVAILABLE = False
     else:
         NATIVE_QHIGHLIGHTER_AVAILABLE = True
-else:
-    NATIVE_QHIGHLIGHTER_AVAILABLE = True
 
 
 def _should_use_native_highlighter() -> bool:
@@ -325,12 +323,36 @@ class BaseWidget(QWidget):
         self._is_initialized = False
         self._update_timer: Optional[QTimer] = None
 
+        stage_logger = logging.getLogger("startup.stage")
+        is_system_manager = self.__class__.__name__ == "SystemManager"
+
         # 设置窗口标志
         self.setWindowFlags(Qt.WindowType.Widget)
 
         # 初始化UI
+        if is_system_manager:
+            stage_logger.info(
+                "[UI-System] BaseWidget.setup_ui 调用开始",
+                extra={"log_type": "STAGE_NODE"},
+            )
         self.setup_ui()
+        if is_system_manager:
+            stage_logger.info(
+                "[UI-System] BaseWidget.setup_ui 调用结束",
+                extra={"log_type": "STAGE_NODE"},
+            )
+
+        if is_system_manager:
+            stage_logger.info(
+                "[UI-System] BaseWidget.connect_signals 调用开始",
+                extra={"log_type": "STAGE_NODE"},
+            )
         self.connect_signals()
+        if is_system_manager:
+            stage_logger.info(
+                "[UI-System] BaseWidget.connect_signals 调用结束",
+                extra={"log_type": "STAGE_NODE"},
+            )
 
         self._is_initialized = True
         self._logger.info("%s 初始化完成", self.__class__.__name__)

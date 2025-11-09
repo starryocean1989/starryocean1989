@@ -2,13 +2,21 @@
  * 内存池实现
  *
  * 使用Windows临界区实现线程安全的内存池
+ * 阶段11埋点：记录关键内存系统调用的参数与返回码，便于排查权限/资源问题
  */
 
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <structmember.h>
 #include <Windows.h>
+#include <stdio.h>
 #include "memory_pool.h"
+
+/* 包含日志桥接头文件 */
+#include "../native_log_bridge.h"
+
+/* 统一组件命名 */
+#define NATIVE_COMPONENT "backend.native.memory.core"
 
 /* 方法声明 */
 static PyObject* MemoryPool_new(PyTypeObject *type, PyObject *args, PyObject *kwds);
@@ -55,14 +63,28 @@ static PyObject* MemoryPool_new(PyTypeObject *type, PyObject *args, PyObject *kw
 
     self = (MemoryPool *)type->tp_alloc(type, 0);
     if (self != NULL) {
+        /* 阶段11埋点：记录InitializeCriticalSection调用 */
         InitializeCriticalSection(&self->lock);
+        NATIVE_LOG_DEBUG(NATIVE_COMPONENT, "InitializeCriticalSection", __LINE__, "临界区初始化成功");
+
+        /* 阶段11埋点：记录calloc内存分配 */
+        char calloc_msg[256];
+        sprintf(calloc_msg, "开始分配内存池: count=%zd, size=%zd, total_bytes=%zd", count, sizeof(PyObject *), count * sizeof(PyObject *));
+        NATIVE_LOG_DEBUG(NATIVE_COMPONENT, "calloc", __LINE__, calloc_msg);
 
         self->pool = (PyObject **)calloc(count, sizeof(PyObject *));
         if (self->pool == NULL) {
+            /* 阶段11埋点：记录calloc失败 */
+            NATIVE_LOG_ERROR(NATIVE_COMPONENT, "calloc", __LINE__, "内存池分配失败: 返回NULL, 场景=内存池初始化");
             DeleteCriticalSection(&self->lock);
             Py_DECREF(self);
             PyErr_SetString(PyExc_MemoryError, "Failed to allocate memory pool");
             return NULL;
+        } else {
+            /* 阶段11埋点：记录calloc成功 */
+            char success_msg[256];
+            sprintf(success_msg, "内存池分配成功: pool=%p, 场景=内存池初始化", self->pool);
+            NATIVE_LOG_INFO(NATIVE_COMPONENT, "calloc", __LINE__, success_msg);
         }
 
         self->size = 0;
@@ -91,16 +113,29 @@ static PyObject* MemoryPool_new(PyTypeObject *type, PyObject *args, PyObject *kw
 
 /* 清理内存池 */
 static void MemoryPool_dealloc(MemoryPool *self) {
+    /* 阶段11埋点：记录EnterCriticalSection调用 */
     EnterCriticalSection(&self->lock);
+    NATIVE_LOG_DEBUG(NATIVE_COMPONENT, "EnterCriticalSection", __LINE__, "进入临界区进行清理");
 
     /* 释放所有对象 */
     for (Py_ssize_t i = 0; i < self->size; i++) {
         Py_XDECREF(self->pool[i]);
     }
 
+    /* 阶段11埋点：记录free内存释放 */
+    char free_msg[256];
+    sprintf(free_msg, "释放内存池: pool=%p, 场景=内存池清理", self->pool);
+    NATIVE_LOG_INFO(NATIVE_COMPONENT, "free", __LINE__, free_msg);
+
     free(self->pool);
+
+    /* 阶段11埋点：记录临界区清理 */
     LeaveCriticalSection(&self->lock);
+    NATIVE_LOG_DEBUG(NATIVE_COMPONENT, "LeaveCriticalSection", __LINE__, "离开临界区");
+
     DeleteCriticalSection(&self->lock);
+    NATIVE_LOG_DEBUG(NATIVE_COMPONENT, "DeleteCriticalSection", __LINE__, "删除临界区");
+
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 

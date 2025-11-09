@@ -19,7 +19,9 @@ netprobe_module = Extension(
     "netprobe",
     sources=[str(ROOT / "netprobe.c")],
     libraries=["ws2_32", "kernel32", "Mswsock"],
-    extra_compile_args=["/ std:c11", "/W3", "/O2"],
+    define_macros=[('PY_SSIZE_T_CLEAN', None)],
+    extra_compile_args=["/std:c11", "/W3", "/O2"],
+    include_dirs=['..'],
 )
 
 setup(

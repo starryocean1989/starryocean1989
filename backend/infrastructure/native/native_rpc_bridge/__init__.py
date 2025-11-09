@@ -24,6 +24,11 @@ header = create_request_header(method_id, payload_size=1024)
 ```
 """
 
+from backend.infrastructure.native.logging_bridge import (
+    native_call_guard,
+    native_async_call_guard,
+)
+
 from .rpc_methods import (
     RPCMethod,
     get_method_id,
@@ -34,13 +39,30 @@ from .rpc_methods import (
 
 try:
     from .native_rpc_bridge import (
-        create_request_header,
-        serialize_request,
-        batch_decode_requests,
-        batch_encode_responses,
+        create_request_header as _native_create_request_header,
+        serialize_request as _native_serialize_request,
+        batch_decode_requests as _native_batch_decode_requests,
+        batch_encode_responses as _native_batch_encode_responses,
         RPC_BRIDGE_AVAILABLE,
         VERSION,
     )
+
+    # 为native函数添加守卫器
+    @native_call_guard(component="backend.native.rpc_bridge")
+    def create_request_header(method_id: int, payload_size: int) -> dict:
+        return _native_create_request_header(method_id, payload_size)
+
+    @native_call_guard(component="backend.native.rpc_bridge")
+    def serialize_request(method_id: int, payload: object) -> dict:
+        return _native_serialize_request(method_id, payload)
+
+    @native_call_guard(component="backend.native.rpc_bridge")
+    def batch_decode_requests(buffer_sequence, method_resolver=None):
+        return _native_batch_decode_requests(buffer_sequence, method_resolver)
+
+    @native_call_guard(component="backend.native.rpc_bridge")
+    def batch_encode_responses(response_sequence):
+        return _native_batch_encode_responses(response_sequence)
 
     _AVAILABLE = True
     _ERROR = None
@@ -51,6 +73,7 @@ except ImportError as e:
     RPC_BRIDGE_AVAILABLE = False
 
     # 提供降级函数
+    @native_call_guard(component="backend.native.rpc_bridge.fallback")
     def create_request_header(method_id: int, payload_size: int) -> dict:
         return {
             "method_id": method_id,
@@ -59,15 +82,18 @@ except ImportError as e:
             "flags": 0,
         }
 
+    @native_call_guard(component="backend.native.rpc_bridge.fallback")
     def serialize_request(method_id: int, payload: object) -> dict:
         return {"method_id": method_id, "payload": payload}
 
+    @native_call_guard(component="backend.native.rpc_bridge.fallback")
     def batch_decode_requests(buffer_sequence, method_resolver=None):
         results = []
         for raw in buffer_sequence:
             results.append((0, 0, 0, None, raw, None))
         return results
 
+    @native_call_guard(component="backend.native.rpc_bridge.fallback")
     def batch_encode_responses(response_sequence):
         return [bytes(item) if isinstance(item, (bytearray, memoryview)) else item for item in response_sequence]
 

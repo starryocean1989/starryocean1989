@@ -61,6 +61,9 @@ python -m pytest tests/test_native_async_reduce.py -v  # 验证跨模块使用
 
 - 通过 `QUEUE_AVAILABLE` 判断原生扩展是否可用，记录到统一日志。
 - 队列对象实现了 `__repr__`，在日志或调试输出时可直接查看当前 `size` 和 `capacity`。
+- **日志集成**：已集成 NativeLogBridge，支持队列扩容、操作异常的结构化日志记录。
+  - C 层：缓冲区扩容失败等关键事件。
+  - Python 层：使用 `@native_call_guard` 装饰器捕获包装层异常，回退实现提供基础日志。
 
 ---
 

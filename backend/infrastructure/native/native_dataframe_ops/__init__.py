@@ -8,6 +8,15 @@ from typing import Any, Dict, Iterable, List, cast
 
 import pandas as pd
 
+from backend.infrastructure.native.logging_bridge import (
+    NativeLogLevel,
+    log_from_native,
+    native_call_guard,
+)
+
+_COMPONENT_WRAPPER = "backend.native.dataframe_ops.wrapper"
+_COMPONENT_FALLBACK = "backend.native.dataframe_ops.fallback"
+
 __all__ = [
     "DATAFRAME_OPS_AVAILABLE",
     "dataframe_to_records",
@@ -110,6 +119,15 @@ if platform.system() == "Windows":
     try:
         from . import dataframe_ops as _native_ops  # type: ignore[import]
 
+        @native_call_guard(component=_COMPONENT_WRAPPER)
+        def dataframe_to_records(  # type: ignore[override]
+            df: pd.DataFrame,
+            include_index: bool = False,
+            index_field: str | None = None,
+        ) -> Any:
+            return _native_ops.dataframe_to_records(df, include_index, index_field)  # type: ignore[attr-defined]
+
+        @native_call_guard(component=_COMPONENT_WRAPPER)
         def dataframe_quality_counters(  # type: ignore[override]
             df: pd.DataFrame, columns: Iterable[str]
         ) -> Any:
@@ -121,16 +139,75 @@ if platform.system() == "Windows":
                 # 兼容 pandas.DataFrame.any 新签名（额外位置参数会触发 TypeError）
                 if "DataFrame.any" in str(error):
                     stats = _scan_quality_py(df, columns)
+                    log_from_native(
+                        NativeLogLevel.WARNING,
+                        _COMPONENT_WRAPPER,
+                        "dataframe_quality_counters",
+                        0,
+                        "fallback to python implementation due to pandas API change",
+                        details="pandas.DataFrame.any signature mismatch",
+                    )
                     return stats["duplicate_count"], stats["invalid_count"]
                 raise
 
-        dataframe_to_records = _native_ops.dataframe_to_records  # type: ignore[attr-defined]
-        scan_quality = getattr(_native_ops, "scan_quality", _scan_quality_py)
-        validate_numeric = getattr(_native_ops, "validate_numeric", _validate_numeric_py)
-        filter_symbols = getattr(_native_ops, "filter_symbols", _filter_symbols_py)
+        _native_scan_quality = getattr(_native_ops, "scan_quality", None)
+        if _native_scan_quality is not None:
+            @native_call_guard(component=_COMPONENT_WRAPPER)
+            def scan_quality(  # type: ignore[override]
+                df: pd.DataFrame, columns: Iterable[str]
+            ) -> Dict[str, Any]:
+                return cast(Dict[str, Any], _native_scan_quality(df, list(columns)))
+        else:
+            scan_quality = _scan_quality_py  # type: ignore[assignment]
+
+        _native_validate_numeric = getattr(_native_ops, "validate_numeric", None)
+        if _native_validate_numeric is not None:
+            @native_call_guard(component=_COMPONENT_WRAPPER)
+            def validate_numeric(  # type: ignore[override]
+                df: pd.DataFrame,
+                columns: Iterable[str],
+                *,
+                fill_value: float = 0.0,
+            ) -> pd.DataFrame:
+                return cast(
+                    pd.DataFrame,
+                    _native_validate_numeric(df, list(columns), fill_value=fill_value),
+                )
+        else:
+            validate_numeric = _validate_numeric_py  # type: ignore[assignment]
+
+        _native_filter_symbols = getattr(_native_ops, "filter_symbols", None)
+        if _native_filter_symbols is not None:
+            @native_call_guard(component=_COMPONENT_WRAPPER)
+            def filter_symbols(  # type: ignore[override]
+                records: Iterable[Dict[str, Any]],
+                *,
+                deduplicate: bool = True,
+                drop_empty_code: bool = True,
+                require_name: bool = False,
+            ) -> List[Dict[str, Any]]:
+                return cast(
+                    List[Dict[str, Any]],
+                    _native_filter_symbols(
+                        list(records),
+                        deduplicate=deduplicate,
+                        drop_empty_code=drop_empty_code,
+                        require_name=require_name,
+                    ),
+                )
+        else:
+            filter_symbols = _filter_symbols_py  # type: ignore[assignment]
+
         DATAFRAME_OPS_AVAILABLE = True
     except ImportError:  # pragma: no cover - 构建失败
         DATAFRAME_OPS_AVAILABLE = False
+        log_from_native(
+            NativeLogLevel.ERROR,
+            _COMPONENT_FALLBACK,
+            "import_dataframe_ops",
+            0,
+            "native_dataframe_ops extension not available; falling back to Python implementation",
+        )
         dataframe_to_records = _raise_import_error  # type: ignore[assignment]
         dataframe_quality_counters = _raise_import_error  # type: ignore[assignment]
         scan_quality = _scan_quality_py  # type: ignore[assignment]
@@ -138,6 +215,14 @@ if platform.system() == "Windows":
         filter_symbols = _filter_symbols_py  # type: ignore[assignment]
 else:  # pragma: no cover
     DATAFRAME_OPS_AVAILABLE = False
+    log_from_native(
+        NativeLogLevel.WARNING,
+        _COMPONENT_FALLBACK,
+        "platform_guard",
+        0,
+        "native_dataframe_ops only supports Windows; Python fallback in use",
+        details=f"current_platform={platform.system()}",
+    )
     dataframe_to_records = _raise_platform_error  # type: ignore[assignment]
     dataframe_quality_counters = _raise_platform_error  # type: ignore[assignment]
     scan_quality = _scan_quality_py  # type: ignore[assignment]

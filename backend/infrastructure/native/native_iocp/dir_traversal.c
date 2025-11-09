@@ -10,6 +10,9 @@
 #include <string.h>
 #include "dir_traversal.h"
 
+/* Native Log Bridge */
+#include "../native_log_bridge.h"
+
 /* 快速目录遍历 */
 PyObject* fast_dir_walk(PyObject *self, PyObject *args) {
     const char *root_path;
@@ -179,4 +182,4 @@ PyObject* fast_dir_list(PyObject *self, PyObject *args) {
 
     return result;
 }
-
+

@@ -786,11 +786,15 @@ class BackendInitStage(StartupStage):
         initializer = ServiceInitializer(
             service_manager=context.service_manager,
             progress_callback=None,
+            runtime=context.native_runtime,
+            service_tracker=context.service_tracker,
+            event_bus=context.get_event_bus(),
         )
         logger.debug(
             "[BACKEND-INIT] ServiceInitializer已创建",
             extra={"log_type": "SYSTEM", "scenario": "application_startup"},
         )
+        context.service_initializer = initializer
 
         # 设置引擎（ServiceInitializer可能需要）
         if context.event_engine:
@@ -941,24 +945,97 @@ class BackendInitStage(StartupStage):
             "system_manager_service",
         ]
 
-        registered_count = 0
+        tracker_snapshot = context.service_tracker.snapshot()
+        initializer_snapshot = context.get_service_status_snapshot()
+        futures_meta = []
+        initializer = getattr(context, "service_initializer", None)
+        if initializer:
+            try:
+                for future in initializer.get_service_futures():
+                    futures_meta.append(
+                        {
+                            "service": future.service_name,
+                            "category": future.category,
+                            "critical": future.critical,
+                            "done": future.outcome is not None,
+                        }
+                    )
+            except Exception:
+                logger.debug(
+                    "[BACKEND-INIT] 获取服务任务元数据失败",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+                )
+
+        ready_count = 0
+        failed_services = []
+        pending_services = []
+
         for service_name in services_to_check:
-            if context.service_manager.has_service(service_name):
-                registered_count += 1
+            has_service = context.service_manager.has_service(service_name)
+            tracker_status = tracker_snapshot.get(service_name, {}).get("status")
+            initializer_status = initializer_snapshot.get(service_name)
+
+            if has_service:
+                ready_count += 1
                 logger.debug(
                     f"[BACKEND-INIT] ✅ 服务已注册: {service_name}",
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"},
                 )
-            else:
-                logger.warning(
-                    f"[BACKEND-INIT] ⚠️ 服务未注册: {service_name}",
+                continue
+
+            if tracker_status == "failed" or initializer_status == "failed":
+                failed_services.append(service_name)
+                logger.error(
+                    f"[BACKEND-INIT] ❌ 服务初始化失败: {service_name}",
                     extra={"log_type": "ALERT", "scenario": "application_startup"},
+                )
+            else:
+                pending_services.append(service_name)
+                logger.info(
+                    f"[BACKEND-INIT] ⏳ 服务仍在后台初始化: {service_name}",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"},
                 )
 
         logger.info(
-            f"[BACKEND-INIT] 服务注册验证完成: {registered_count}/{len(services_to_check)}个服务已注册",
+            "[BACKEND-INIT] 服务注册状态 -> 就绪: %d, 待定: %d, 失败: %d",
+            ready_count,
+            len(pending_services),
+            len(failed_services),
             extra={"log_type": "SYSTEM", "scenario": "application_startup"},
         )
+        if pending_services:
+            logger.info(
+                "[BACKEND-INIT] 待定服务: %s",
+                ", ".join(pending_services),
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+            )
+        if failed_services:
+            logger.warning(
+                "[BACKEND-INIT] 初始化失败的服务: %s",
+                ", ".join(failed_services),
+                extra={"log_type": "ALERT", "scenario": "application_startup"},
+            )
+        context.stage_results["service_registration"] = {
+            "ready": ready_count,
+            "pending": list(pending_services),
+            "failed": list(failed_services),
+            "tracker": tracker_snapshot,
+            "futures": futures_meta,
+        }
+        try:
+            runtime_stats = context.native_runtime.stats()
+            logger.debug(
+                "[BACKEND-INIT] 原生执行器状态: %s",
+                runtime_stats,
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+            )
+        except Exception:
+            logger.debug(
+                "[BACKEND-INIT] 获取原生执行器状态失败",
+                exc_info=True,
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+            )
 
     def _inject_services_to_main_engine(self, context: StartupContext):
         """将服务注入到MainEngine（供前端使用）

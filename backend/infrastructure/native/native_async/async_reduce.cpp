@@ -6,7 +6,23 @@
 #include <string>
 #include <vector>
 
+#include "../native_log_bridge.h"
+
 namespace py = pybind11;
+
+#define ASYNC_COMPONENT "backend.native.async.core"
+
+#define ASYNC_LOG(level, message, details) \
+    native_log_bridge_log(level, ASYNC_COMPONENT, __FUNCTION__, __LINE__, message, details)
+
+#define ASYNC_LOG_INFO(message, details) \
+    ASYNC_LOG(NATIVE_LOG_LEVEL_INFO, message, details)
+
+#define ASYNC_LOG_WARNING(message, details) \
+    ASYNC_LOG(NATIVE_LOG_LEVEL_WARNING, message, details)
+
+#define ASYNC_LOG_ERROR(message, details) \
+    ASYNC_LOG(NATIVE_LOG_LEVEL_ERROR, message, details)
 
 py::dict reduce_task_results(
     const py::iterable& task_results,
@@ -14,6 +30,18 @@ py::dict reduce_task_results(
     std::size_t progress_stride,
     py::object progress_callback,
     py::object symbols_obj) {
+
+    /* Log function entry */
+    char init_details[256];
+    sprintf(
+        init_details,
+        "total=%zu, progress_stride=%zu, has_symbols=%d, has_callback=%d",
+        total,
+        progress_stride,
+        !symbols_obj.is_none(),
+        !progress_callback.is_none());
+    ASYNC_LOG_INFO("Starting task result reduction", init_details);
+
     py::list normalized_items;
     py::list error_messages;
     py::list error_symbols;
@@ -48,9 +76,10 @@ py::dict reduce_task_results(
 
         if (PyExceptionInstance_Check(entry.ptr())) {
             py::object repr = py::reinterpret_borrow<py::object>(PyObject_Repr(entry.ptr()));
+            std::string symbol_str = symbol.is_none() ? "unknown" : py::str(symbol).cast<std::string>();
+            std::string repr_str = py::str(repr).cast<std::string>();
+
             if (!symbol.is_none()) {
-                std::string symbol_str = py::str(symbol).cast<std::string>();
-                std::string repr_str = py::str(repr).cast<std::string>();
                 error_messages.append(py::str(symbol_str + ": " + repr_str));
                 error_symbols.append(symbol);
             } else {
@@ -59,6 +88,11 @@ py::dict reduce_task_results(
             }
             error_count += 1;
             handled = true;
+
+            /* Log task execution exception */
+            char error_details[512];
+            sprintf(error_details, "index=%zu, symbol=%s, exception=%s", index, symbol_str.c_str(), repr_str.c_str());
+            ASYNC_LOG_ERROR("Task result contains exception", error_details);
         } else if (py::isinstance<py::tuple>(entry) && py::len(entry) == 2) {
             auto tuple_entry = py::reinterpret_borrow<py::tuple>(entry);
             symbol = tuple_entry[0];
@@ -85,10 +119,17 @@ py::dict reduce_task_results(
                     try {
                         progress_callback(completed, total, symbol);
                     } catch (py::error_already_set& err) {
+                        std::string symbol_str = py::str(symbol).cast<std::string>();
                         std::string message = "[progress-callback] ";
                         message += err.what();
                         error_messages.append(py::str(message));
                         error_symbols.append(symbol);
+
+                        /* Log progress callback error */
+                        char callback_error_details[512];
+                        sprintf(callback_error_details, "symbol=%s, error=%s", symbol_str.c_str(), err.what());
+                        ASYNC_LOG_ERROR("Progress callback failed", callback_error_details);
+
                         err.restore();
                         PyErr_Clear();
                     }
@@ -131,6 +172,17 @@ py::dict reduce_task_results(
     result["error_symbols"] = error_symbols;
     result["milestones"] = milestones;
 
+    /* Log function completion */
+    char completion_details[256];
+    sprintf(
+        completion_details,
+        "processed=%zu, success=%zu, null=%zu, errors=%zu",
+        completed,
+        success_count,
+        null_count,
+        error_count);
+    ASYNC_LOG_INFO("Task result reduction completed", completion_details);
+
     return result;
 }
 
@@ -146,6 +198,14 @@ PYBIND11_MODULE(async_reduce, m) {
         py::arg("progress_callback") = py::none(),
         py::arg("symbols") = py::none()
     );
+
+    native_log_bridge_log(
+        NATIVE_LOG_LEVEL_INFO,
+        "backend.native.async.module",
+        "async_reduce_module_init",
+        __LINE__,
+        "async_reduce module initialized",
+        nullptr);
 }
 
 

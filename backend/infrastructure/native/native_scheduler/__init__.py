@@ -6,6 +6,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Callable, Optional
 
+from backend.infrastructure.native.logging_bridge import native_call_guard
+
 try:  # pragma: no cover - 可选原生扩展
     from ._native_scheduler import (
         NativeScheduler as _NativeSchedulerCore,
@@ -45,15 +47,19 @@ class NativeScheduler:
         else:
             self._impl = PyNativeScheduler(executor_factory=executor_factory)
 
+    @native_call_guard(component="backend.native.native_scheduler.wrapper")
     def register_category(self, *args, **kwargs):
         return self._impl.register_category(*args, **kwargs)
 
+    @native_call_guard(component="backend.native.native_scheduler.wrapper")
     def submit(self, *args, **kwargs):
         return self._impl.submit(*args, **kwargs)
 
+    @native_call_guard(component="backend.native.native_scheduler.wrapper")
     def stats(self, *args, **kwargs):
         return self._impl.stats(*args, **kwargs)
 
+    @native_call_guard(component="backend.native.native_scheduler.wrapper")
     def shutdown(self, *args, **kwargs):
         return self._impl.shutdown(*args, **kwargs)
 

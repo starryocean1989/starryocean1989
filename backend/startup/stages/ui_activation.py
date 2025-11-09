@@ -69,21 +69,6 @@ class UIActivationStage(StartupStage):
 
             stage_logger = logging.getLogger("startup.stage")
 
-            # 阶段4标题
-            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
-            stage_logger.info(
-                "【阶段4: UI主窗口】 (90-100%)", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
-            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
-
-            stage_logger.info(
-                "📍 阶段4: UI主窗口创建开始", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-
             # 创建MainWindow
             from ui.main_window import MainWindow
 
@@ -97,50 +82,18 @@ class UIActivationStage(StartupStage):
                 "[UI-ACTIVATION] MainWindow已创建并存储到context",
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
+            logger.info(
+                "[UI-ACTIVATION] MainWindow创建完成",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
 
-            stage_logger.info(
-                "✅ MainWindow创建完成", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+            logger.info(
+                "[UI-ACTIVATION] 六大功能模块注册完成",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
-            stage_logger.info(
-                "✅ 六大功能模块注册完成", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info(
-                "  ├─ DataCenterView ✅", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info(
-                "  ├─ MarketBoardView ✅", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info(
-                "  ├─ TradingGatewayView ✅", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info(
-                "  ├─ PortfolioView ✅", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info(
-                "  ├─ StrategyCenterView ✅", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info(
-                "  └─ SystemManagerView ✅", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info(
-                "✅ 快捷键系统注册完成", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info(
-                "  - 全局快捷键: 15个", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
-            stage_logger.info(
-                "✅ 增强状态栏初始化完成", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+            logger.info(
+                "[UI-ACTIVATION] 增强状态栏初始化完成",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
 
             # 显示主窗口
@@ -155,10 +108,9 @@ class UIActivationStage(StartupStage):
                 "[UI-ACTIVATION] 主窗口已显示并激活",
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
-
-            stage_logger.info(
-                "✅ 主窗口显示", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+            logger.info(
+                "[UI-ACTIVATION] 主窗口显示完成",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
 
             # 初始化功能界面（等待后端就绪）
@@ -172,18 +124,10 @@ class UIActivationStage(StartupStage):
                     "[UI-ACTIVATION] 后端已就绪，开始初始化功能界面",
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"}
                 )
-                stage_logger.info(
-                    "📍 阶段4.1: 初始化功能界面", 
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
                 main_window.initialize_function_interfaces_after_backend()
                 logger.debug(
                     "[UI-ACTIVATION] 功能界面初始化完成",
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
-                stage_logger.info(
-                    "✅ 功能界面初始化完成", 
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
                 )
             else:
                 # 后端未就绪（理论上不应该发生，因为阶段4在阶段3之后）
@@ -191,16 +135,12 @@ class UIActivationStage(StartupStage):
                     "[UI-ACTIVATION] ⚠️ 后端未就绪，功能界面将延迟初始化",
                     extra={"log_type": "ALERT", "scenario": "application_startup"}
                 )
-                stage_logger.warning(
-                    "⚠️ 后端未就绪，功能界面将延迟初始化", 
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
-                )
 
             # 关闭启动画面（如果有的话）
             # 注意：实际启动画面可能在MainWindow创建时自动关闭
-            stage_logger.info(
-                "✅ 启动画面关闭", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+            logger.info(
+                "[UI-ACTIVATION] 启动画面关闭",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
 
             # 标记UI已初始化
@@ -218,10 +158,7 @@ class UIActivationStage(StartupStage):
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
 
-            stage_logger.info(
-                f"✅ UI就绪 ({elapsed_ms:.0f}ms)", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-            )
+            self._emit_stage_four_template(stage_logger, elapsed_ms)
 
             return StageResult(
                 success=True,
@@ -250,4 +187,24 @@ class UIActivationStage(StartupStage):
                 elapsed_ms=elapsed_ms,
                 error=e,
             )
+
+    def _emit_stage_four_template(self, stage_logger: logging.Logger, elapsed_ms: float) -> None:
+        """输出阶段4的固定终端模板（收尾耗时使用实时值）."""
+        scenario = "application_startup"
+        extra = {"log_type": "STAGE_NODE", "scenario": scenario}
+        lines = [
+            "",
+            "=" * 70,
+            "【阶段4: UI主窗口】 (90-100%)",
+            "=" * 70,
+            "",
+            "📍 阶段4: UI主窗口创建开始",
+            "✅ MainWindow创建完成",
+            "✅ 六大功能模块注册完成",
+            "✅ 增强状态栏初始化完成",
+            "✅ 主窗口显示",
+            f"✅ UI就绪 ({elapsed_ms/1000:.1f}s)",
+        ]
+        for line in lines:
+            stage_logger.info(line, extra=extra)
 

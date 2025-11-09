@@ -5,11 +5,20 @@
 提供高性能LRU缓存和优先级队列功能。
 """
 
-import platform
 import logging
+import platform
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+from backend.infrastructure.system_vnpy.logging_system import (
+    LogType,
+    bind_logger_defaults,
+)
+
+_logger = bind_logger_defaults(
+    logging.getLogger("backend.native.collections.wrapper"),
+    log_type=LogType.SYSTEM.value,
+    scenario="backend.native.collections",
+)
 IS_WINDOWS = platform.system() == "Windows"
 
 # Python降级实现
@@ -84,11 +93,17 @@ if IS_WINDOWS:
         try:
             from .native_collections import HighPerfMatchCache
         except ImportError:
-            logger.warning("HighPerfMatchCache not available, using fallback")
+            _logger.warning(
+                "HighPerfMatchCache not available, using fallback",
+                extra={"native_module": "backend.native.collections.match_cache"},
+            )
             HighPerfMatchCache = _FallbackMatchCache
         
         COLLECTIONS_AVAILABLE = True
-        logger.info("✅ Native collections C extension loaded successfully")
+        _logger.debug(
+            "native_collections extension loaded successfully",
+            extra={"native_module": "backend.native.collections.core"},
+        )
         __all__ = [
             "HighPerfLRUCache",
             "HighPerfPriorityQueue",
@@ -96,7 +111,13 @@ if IS_WINDOWS:
             "COLLECTIONS_AVAILABLE",
         ]
     except ImportError as e:
-        logger.warning(f"⚠️ Collections C extension not available: {e}, using Python fallback")
+        _logger.warning(
+            "Collections C extension not available, using Python fallback",
+            extra={
+                "native_module": "backend.native.collections.core",
+                "error": str(e),
+            },
+        )
         COLLECTIONS_AVAILABLE = False
         HighPerfLRUCache = _FallbackLRUCache
         HighPerfPriorityQueue = _FallbackPriorityQueue
@@ -108,7 +129,13 @@ if IS_WINDOWS:
             "COLLECTIONS_AVAILABLE",
         ]
 else:
-    logger.warning("⚠️ Collections extension only supports Windows, using Python fallback")
+    _logger.warning(
+        "Collections extension only supports Windows, using Python fallback",
+        extra={
+            "native_module": "backend.native.collections.core",
+            "platform": platform.system(),
+        },
+    )
     COLLECTIONS_AVAILABLE = False
     HighPerfLRUCache = _FallbackLRUCache
     HighPerfPriorityQueue = _FallbackPriorityQueue

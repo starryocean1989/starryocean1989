@@ -21,7 +21,7 @@ native_rpc_bridge_module = Extension(
     define_macros=[('PY_SSIZE_T_CLEAN', None)],
     extra_compile_args=['/std:c11', '/W3', '/O2'],
     extra_link_args=[],
-    include_dirs=[],
+    include_dirs=['..'],
 )
 
 setup(

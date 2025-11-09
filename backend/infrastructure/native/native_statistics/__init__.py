@@ -4,8 +4,15 @@
 from __future__ import annotations
 
 import math
+import logging
 from bisect import bisect_left
 from typing import Dict, Iterable, List, Optional
+
+from backend.infrastructure.native.logging_bridge import log_from_native, NativeLogLevel
+from backend.infrastructure.system_vnpy.logging_system import (
+    LogType,
+    bind_logger_defaults,
+)
 
 __all__ = [
     "STATISTICS_AVAILABLE",
@@ -21,17 +28,40 @@ try:  # pragma: no cover - native 导入失败时自动回退
 except Exception:  # pragma: no cover
     STATISTICS_AVAILABLE = False
 
+    _fallback_logger = bind_logger_defaults(
+        logging.getLogger("backend.native.native_statistics.fallback"),
+        log_type=LogType.SYSTEM.value,
+        scenario="backend.native.native_statistics.fallback",
+    )
+    _FALLBACK_COMPONENT = "backend.native.native_statistics.fallback"
+
     class StreamingMetricHandle:
         """纯 Python 版本的滑动窗口统计实现."""
 
         def __init__(self, window_size: int = 1440) -> None:
             if window_size <= 0:
+                log_from_native(
+                    NativeLogLevel.ERROR,
+                    _FALLBACK_COMPONENT,
+                    "StreamingMetricHandle.__init__",
+                    0,
+                    "Invalid window_size for fallback StreamingMetricHandle",
+                    str({"window_size": window_size}),
+                )
                 raise ValueError("window_size must be positive")
             self._window_size = int(window_size)
             self._values: List[float] = []
             self._sorted: List[float] = []
             self._sum: float = 0.0
             self._sumsq: float = 0.0
+            log_from_native(
+                NativeLogLevel.WARNING,
+                _FALLBACK_COMPONENT,
+                "StreamingMetricHandle.__init__",
+                0,
+                "using Python fallback implementation for streaming statistics",
+                str({"window_size": self._window_size}),
+            )
 
         @property
         def window_size(self) -> int:
@@ -71,16 +101,39 @@ except Exception:  # pragma: no cover
             self._sorted.insert(insert_pos, value)
             self._sum += value
             self._sumsq += value * value
+            _fallback_logger.debug(
+                "fallback update applied",
+                extra={
+                    "log_type": LogType.SYSTEM.value,
+                    "scenario": "backend.native.native_statistics.fallback",
+                    "value": value,
+                },
+            )
 
         def extend(self, values: Iterable[float]) -> None:
             for item in values:
                 self.update(float(item))
+            _fallback_logger.debug(
+                "fallback extend applied",
+                extra={
+                    "log_type": LogType.SYSTEM.value,
+                    "scenario": "backend.native.native_statistics.fallback",
+                },
+            )
 
         def reset(self) -> None:
             self._values.clear()
             self._sorted.clear()
             self._sum = 0.0
             self._sumsq = 0.0
+            log_from_native(
+                NativeLogLevel.INFO,
+                _FALLBACK_COMPONENT,
+                "StreamingMetricHandle.reset",
+                0,
+                "fallback metrics reset",
+                None,
+            )
 
         def snapshot(self) -> Dict[str, Optional[float]]:
             count = len(self._values)
@@ -112,6 +165,14 @@ except Exception:  # pragma: no cover
             return self._sorted[index]
 
     def create_streaming_metric(window_size: int = 1440) -> StreamingMetricHandle:
+        log_from_native(
+            NativeLogLevel.WARNING,
+            _FALLBACK_COMPONENT,
+            "create_streaming_metric",
+            0,
+            "creating streaming metric via Python fallback",
+            str({"window_size": window_size}),
+        )
         return StreamingMetricHandle(window_size=window_size)
 
 else:  # 导入成功，直接导出原生实现

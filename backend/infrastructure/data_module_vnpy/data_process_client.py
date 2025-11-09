@@ -329,7 +329,7 @@ class DataProcessClient:
                 logger.debug("base64 数据解析失败，保持原样", exc_info=True)
         return result
 
-    async def connect_async(self) -> bool:
+    async def connect_async(self, timeout: Optional[float] = None) -> bool:
         """异步连接到数据进程.
 
         Returns:
@@ -342,10 +342,16 @@ class DataProcessClient:
             pass
 
         if running_loop is self._loop:
-            return await self._connect_internal()
+            connect_coro = self._connect_internal()
+            if timeout is not None:
+                return await asyncio.wait_for(connect_coro, timeout=timeout)
+            return await connect_coro
 
         future = self._submit_coroutine(self._connect_internal())
-        return await asyncio.wrap_future(future)
+        wrapped_future = asyncio.wrap_future(future)
+        if timeout is not None:
+            return await asyncio.wait_for(wrapped_future, timeout=timeout)
+        return await wrapped_future
 
     def connect(self) -> bool:
         """同步连接到数据进程（内部使用异步方法）.

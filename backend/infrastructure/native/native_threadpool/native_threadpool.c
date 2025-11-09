@@ -4,6 +4,54 @@
 #include <windows.h>
 #include <process.h>
 
+/* NativeLogBridge declarations */
+static PyObject *g_log_bridge_module = NULL;
+static PyObject *g_log_from_native_func = NULL;
+
+/* Log level constants matching Python side */
+#define NATIVE_LOG_DEBUG 10
+#define NATIVE_LOG_INFO 20
+#define NATIVE_LOG_WARNING 30
+#define NATIVE_LOG_ERROR 40
+#define NATIVE_LOG_CRITICAL 50
+
+/* Logging utility functions */
+static void native_log(int level, const char *component, const char *function, int line, const char *message, const char *details) {
+    if (!g_log_from_native_func) {
+        return;  /* Silent fail if logging not initialized */
+    }
+
+    PyGILState_STATE gstate = PyGILState_Ensure();
+
+    PyObject *result = PyObject_CallFunction(g_log_from_native_func, "ississs",
+        level, component, function, line, message, details ? details : "");
+
+    if (result) {
+        Py_DECREF(result);
+    } else {
+        /* Log the logging failure, but avoid recursion */
+        PyErr_Clear();
+    }
+
+    PyGILState_Release(gstate);
+}
+
+static void native_log_error(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_ERROR, component, function, line, message, details);
+}
+
+static void native_log_warning(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_WARNING, component, function, line, message, details);
+}
+
+static void native_log_info(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_INFO, component, function, line, message, details);
+}
+
+static void native_log_debug(const char *component, const char *function, int line, const char *message, const char *details) {
+    native_log(NATIVE_LOG_DEBUG, component, function, line, message, details);
+}
+
 typedef struct {
     PyObject_HEAD
     PyThread_type_lock lock;
@@ -283,8 +331,15 @@ worker_main(void *arg)
         kwargs = PyTuple_GET_ITEM(task, 2);
         future = (NativeFutureObject *)PyTuple_GET_ITEM(task, 3);
 
+        /* Log task execution start */
+        char task_start_details[256];
+        sprintf(task_start_details, "callable=%s, args_count=%zd",
+                callable->ob_type->tp_name, PyTuple_GET_SIZE(args));
+        native_log_debug("native_threadpool", "worker_main", __LINE__, "Starting task execution", task_start_details);
+
         PyObject *result = PyObject_Call(callable, args, kwargs);
         if (result == NULL) {
+            /* Task execution failed */
             PyObject *exc_type = NULL, *exc_value = NULL, *exc_tb = NULL;
             PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
             if (exc_value == NULL && exc_type != NULL) {
@@ -294,11 +349,27 @@ worker_main(void *arg)
                 exc_value = PyExc_RuntimeError;
                 Py_INCREF(exc_value);
             }
+
+            /* Log task failure */
+            PyObject *exc_str = PyObject_Str(exc_value);
+            const char *exc_msg = exc_str ? PyUnicode_AsUTF8(exc_str) : "Unknown exception";
+            char task_error_details[512];
+            sprintf(task_error_details, "callable=%s, exception=%s",
+                    callable->ob_type->tp_name, exc_msg);
+            native_log_error("native_threadpool", "worker_main", __LINE__, "Task execution failed", task_error_details);
+            Py_XDECREF(exc_str);
+
             NativeFuture_set_exception(future, exc_value);
             Py_XDECREF(exc_type);
             Py_XDECREF(exc_value);
             Py_XDECREF(exc_tb);
         } else {
+            /* Task execution succeeded */
+            char task_success_details[256];
+            sprintf(task_success_details, "callable=%s, result_type=%s",
+                    callable->ob_type->tp_name, result->ob_type->tp_name);
+            native_log_debug("native_threadpool", "worker_main", __LINE__, "Task execution completed successfully", task_success_details);
+
             NativeFuture_set_result(future, result);
             Py_DECREF(result);
         }
@@ -317,22 +388,29 @@ NativeThreadPool_init(NativeThreadPoolObject *self, PyObject *args, PyObject *kw
 {
     static char *kwlist[] = {"max_workers", NULL};
     Py_ssize_t max_workers = 4;
+    char init_details[256];
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|n", kwlist, &max_workers)) {
+        native_log_error("native_threadpool", "NativeThreadPool_init", __LINE__, "Failed to parse arguments", NULL);
         return -1;
     }
     if (max_workers <= 0) {
         max_workers = 1;
     }
 
+    sprintf(init_details, "max_workers=%zd", max_workers);
+    native_log_info("native_threadpool", "NativeThreadPool_init", __LINE__, "Initializing thread pool", init_details);
+
     self->queue_lock = PyThread_allocate_lock();
     if (self->queue_lock == NULL) {
+        native_log_error("native_threadpool", "NativeThreadPool_init", __LINE__, "Failed to allocate queue lock", NULL);
         PyErr_SetString(PyExc_RuntimeError, "failed to allocate queue lock");
         return -1;
     }
 
     self->queue_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (self->queue_event == NULL) {
+        native_log_error("native_threadpool", "NativeThreadPool_init", __LINE__, "Failed to create queue event", NULL);
         PyThread_free_lock(self->queue_lock);
         self->queue_lock = NULL;
         PyErr_SetFromWindowsErr(0);
@@ -341,6 +419,7 @@ NativeThreadPool_init(NativeThreadPoolObject *self, PyObject *args, PyObject *kw
 
     self->task_queue = PyList_New(0);
     if (self->task_queue == NULL) {
+        native_log_error("native_threadpool", "NativeThreadPool_init", __LINE__, "Failed to create task queue", NULL);
         CloseHandle(self->queue_event);
         self->queue_event = NULL;
         PyThread_free_lock(self->queue_lock);
@@ -352,6 +431,7 @@ NativeThreadPool_init(NativeThreadPoolObject *self, PyObject *args, PyObject *kw
     self->shutting_down = 0;
     self->worker_handles = PyMem_Calloc((size_t)self->worker_count, sizeof(HANDLE));
     if (self->worker_handles == NULL) {
+        native_log_error("native_threadpool", "NativeThreadPool_init", __LINE__, "Failed to allocate worker handles array", NULL);
         Py_DECREF(self->task_queue);
         self->task_queue = NULL;
         CloseHandle(self->queue_event);
@@ -367,6 +447,9 @@ NativeThreadPool_init(NativeThreadPoolObject *self, PyObject *args, PyObject *kw
         unsigned long thread_id;
         uintptr_t handle = _beginthreadex(NULL, 0, (unsigned (__stdcall *)(void *))worker_main, self, 0, &thread_id);
         if (handle == 0) {
+            char error_details[256];
+            sprintf(error_details, "Failed to create worker thread %zd", i);
+            native_log_error("native_threadpool", "NativeThreadPool_init", __LINE__, error_details, NULL);
             Py_DECREF(self);
             PyErr_SetFromWindowsErr(0);
             for (Py_ssize_t j = 0; j < i; ++j) {
@@ -380,8 +463,12 @@ NativeThreadPool_init(NativeThreadPoolObject *self, PyObject *args, PyObject *kw
             return -1;
         }
         self->worker_handles[i] = (HANDLE)handle;
+        char success_details[256];
+        sprintf(success_details, "Created worker thread %zd, handle=%p", i, (void*)handle);
+        native_log_debug("native_threadpool", "NativeThreadPool_init", __LINE__, "Worker thread created successfully", success_details);
     }
 
+    native_log_info("native_threadpool", "NativeThreadPool_init", __LINE__, "Thread pool initialization completed", init_details);
     return 0;
 }
 
@@ -418,13 +505,34 @@ NativeThreadPool_submit(NativeThreadPoolObject *self, PyObject *args, PyObject *
     PyObject *call_kwargs = NULL;
 
     if (!PyArg_ParseTuple(args, "O|OO", &callable, &call_args, &call_kwargs)) {
+        native_log_error("native_threadpool", "NativeThreadPool_submit", __LINE__, "Failed to parse submit arguments", NULL);
         return NULL;
     }
 
     if (!PyCallable_Check(callable)) {
+        native_log_error("native_threadpool", "NativeThreadPool_submit", __LINE__, "Submitted object is not callable", NULL);
         PyErr_SetString(PyExc_TypeError, "callable argument must be callable");
         return NULL;
     }
+
+    /* Check if pool is shutting down */
+    Py_BEGIN_ALLOW_THREADS
+    PyThread_acquire_lock(self->queue_lock, 1);
+    Py_END_ALLOW_THREADS
+    int shutting_down = self->shutting_down;
+    int queue_size = (int)PyList_GET_SIZE(self->task_queue);
+    PyThread_release_lock(self->queue_lock);
+
+    if (shutting_down) {
+        native_log_warning("native_threadpool", "NativeThreadPool_submit", __LINE__, "Attempted to submit task to shutting down pool", NULL);
+        PyErr_SetString(PyExc_RuntimeError, "cannot submit task to shutting down thread pool");
+        return NULL;
+    }
+
+    /* Log task submission with queue status */
+    char submit_details[256];
+    sprintf(submit_details, "queue_size=%d, callable=%s", queue_size, callable->ob_type->tp_name);
+    native_log_debug("native_threadpool", "NativeThreadPool_submit", __LINE__, "Task submitted to thread pool", submit_details);
 
     NativeFutureObject *future = (NativeFutureObject *)PyObject_CallObject((PyObject *)&NativeFutureType, NULL);
     if (future == NULL) {
@@ -453,8 +561,13 @@ NativeThreadPool_shutdown(NativeThreadPoolObject *self, PyObject *args, PyObject
     int wait = 1;
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|p", kwlist, &wait)) {
+        native_log_error("native_threadpool", "NativeThreadPool_shutdown", __LINE__, "Failed to parse shutdown arguments", NULL);
         return NULL;
     }
+
+    char shutdown_details[256];
+    sprintf(shutdown_details, "wait=%d", wait);
+    native_log_info("native_threadpool", "NativeThreadPool_shutdown", __LINE__, "Shutting down thread pool", shutdown_details);
 
     PyThread_acquire_lock(self->queue_lock, 1);
     self->shutting_down = 1;
@@ -488,9 +601,25 @@ NativeThreadPool_shutdown(NativeThreadPoolObject *self, PyObject *args, PyObject
     Py_RETURN_NONE;
 }
 
+static PyObject *
+NativeThreadPool_enter(NativeThreadPoolObject *self, PyObject *Py_UNUSED(ignored))
+{
+    Py_INCREF(self);
+    return (PyObject *)self;
+}
+
+static PyObject *
+NativeThreadPool_exit(NativeThreadPoolObject *self, PyObject *args)
+{
+    NativeThreadPool_shutdown(self, PyTuple_New(0), NULL);
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef NativeThreadPool_methods[] = {
     {"submit", (PyCFunction)NativeThreadPool_submit, METH_VARARGS | METH_KEYWORDS, PyDoc_STR("submit(callable, *args, **kwargs) -> NativeFuture")},
     {"shutdown", (PyCFunction)NativeThreadPool_shutdown, METH_VARARGS | METH_KEYWORDS, PyDoc_STR("shutdown(wait=True) -> None")},
+    {"__enter__", (PyCFunction)NativeThreadPool_enter, METH_NOARGS, PyDoc_STR("__enter__() -> self")},
+    {"__exit__", (PyCFunction)NativeThreadPool_exit, METH_VARARGS, PyDoc_STR("__exit__(exc_type, exc_val, exc_tb) -> None")},
     {NULL, NULL, 0, NULL}};
 
 static PyTypeObject NativeThreadPoolType = {
@@ -509,12 +638,26 @@ static PyTypeObject NativeThreadPoolType = {
 
 static PyMethodDef module_methods[] = { {NULL, NULL, 0, NULL} };
 
+static void
+_native_threadpool_cleanup(void)
+{
+    /* Clean up logging bridge references */
+    Py_XDECREF(g_log_bridge_module);
+    Py_XDECREF(g_log_from_native_func);
+    g_log_bridge_module = NULL;
+    g_log_from_native_func = NULL;
+}
+
 static struct PyModuleDef native_threadpool_module = {
     PyModuleDef_HEAD_INIT,
     "_native_threadpool",
     "Native thread pool implementation",
     -1,
     module_methods,
+    NULL,  /* m_slots */
+    NULL,  /* m_traverse */
+    NULL,  /* m_clear */
+    _native_threadpool_cleanup,  /* m_free */
 };
 
 PyMODINIT_FUNC
@@ -522,15 +665,47 @@ PyInit__native_threadpool(void)
 {
     PyObject *m;
 
+    /* Initialize logging bridge */
+    g_log_bridge_module = PyImport_ImportModule("backend.infrastructure.native.logging_bridge");
+    if (g_log_bridge_module != NULL) {
+        g_log_from_native_func = PyObject_GetAttrString(g_log_bridge_module, "log_from_native");
+        if (g_log_from_native_func == NULL) {
+            Py_DECREF(g_log_bridge_module);
+            g_log_bridge_module = NULL;
+        }
+    }
+
+    if (g_log_bridge_module != NULL && g_log_from_native_func != NULL) {
+        native_log_info("native_threadpool", "PyInit__native_threadpool", __LINE__, "Logging bridge initialized successfully", NULL);
+    } else {
+        /* Logging bridge not available, continue without logging */
+        Py_XDECREF(g_log_bridge_module);
+        Py_XDECREF(g_log_from_native_func);
+        g_log_bridge_module = NULL;
+        g_log_from_native_func = NULL;
+    }
+
     if (PyType_Ready(&NativeThreadPoolType) < 0) {
+        Py_XDECREF(g_log_bridge_module);
+        Py_XDECREF(g_log_from_native_func);
+        g_log_bridge_module = NULL;
+        g_log_from_native_func = NULL;
         return NULL;
     }
     if (PyType_Ready(&NativeFutureType) < 0) {
+        Py_XDECREF(g_log_bridge_module);
+        Py_XDECREF(g_log_from_native_func);
+        g_log_bridge_module = NULL;
+        g_log_from_native_func = NULL;
         return NULL;
     }
 
     m = PyModule_Create(&native_threadpool_module);
     if (m == NULL) {
+        Py_XDECREF(g_log_bridge_module);
+        Py_XDECREF(g_log_from_native_func);
+        g_log_bridge_module = NULL;
+        g_log_from_native_func = NULL;
         return NULL;
     }
 

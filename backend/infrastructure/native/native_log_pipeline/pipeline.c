@@ -1,6 +1,9 @@
 /* -*- coding: utf-8 -*- */
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#include "../native_log_bridge.h"
+
+#define NATIVE_COMPONENT "backend.native.log_pipeline.core"
 
 /*
  * pipeline.c - 高性能日志原生缓冲区
@@ -50,6 +53,9 @@ typedef struct {
     Py_ssize_t total_sqlite_errors;
 
     int closed;
+
+    /* 日志桥接配置 */
+    int enable_logging;          /* 是否启用C层日志输出 */
 } PipelineObject;
 
 /* -------------------- 工具函数 -------------------- */
@@ -416,6 +422,7 @@ Pipeline_init(PipelineObject *self, PyObject *args, PyObject *kwargs)
         "fallback",
         "event_callback",
         "sqlite_path",
+        "enable_logging",
         NULL
     };
 
@@ -424,17 +431,19 @@ Pipeline_init(PipelineObject *self, PyObject *args, PyObject *kwargs)
     PyObject *fallback = Py_None;
     PyObject *event_callback = Py_None;
     PyObject *sqlite_path = Py_None;
+    int enable_logging = 1;  /* 默认启用日志 */
 
     if (!PyArg_ParseTupleAndKeywords(
             args,
             kwargs,
-            "|ndOOO",
+            "|ndOOOp",
             kwlist,
             &batch_size,
             &flush_ms,
             &fallback,
             &event_callback,
-            &sqlite_path)) {
+            &sqlite_path,
+            &enable_logging)) {
         return -1;
     }
 
@@ -480,6 +489,7 @@ Pipeline_init(PipelineObject *self, PyObject *args, PyObject *kwargs)
     self->total_fallback_errors = 0;
     self->total_sqlite_errors = 0;
     self->closed = 0;
+    self->enable_logging = enable_logging;
 
     return 0;
 }
@@ -691,12 +701,54 @@ Pipeline_flush_internal(PipelineObject *self, int force)
             self->total_fallback_errors += 1;
         }
         Py_DECREF(batch);
+
+        /* 记录错误日志 */
+        if (self->enable_logging) {
+            char msg[256];
+            if (fallback_failed) {
+                snprintf(msg, sizeof(msg), "Flush failed: fallback callback error, batch_size=%zd", batch_size);
+                native_log_bridge_log(
+                    NATIVE_LOG_LEVEL_ERROR,
+                    NATIVE_COMPONENT,
+                    "flush_internal",
+                    __LINE__,
+                    msg,
+                    msg
+                );
+            } else {
+                snprintf(msg, sizeof(msg), "Flush failed: SQLite or callback error, batch_size=%zd", batch_size);
+                native_log_bridge_log(
+                    NATIVE_LOG_LEVEL_ERROR,
+                    NATIVE_COMPONENT,
+                    "flush_internal",
+                    __LINE__,
+                    msg,
+                    msg
+                );
+            }
+        }
         return NULL;
     }
 
     self->total_flushed += PyList_GET_SIZE(batch);
     self->total_flush_calls += 1;
     Py_DECREF(batch);
+
+    /* 记录成功flush的统计日志 */
+    if (self->enable_logging) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Flush completed: batch_size=%zd, total_flushed=%zd, flush_calls=%zd",
+                 batch_size, self->total_flushed, self->total_flush_calls);
+        native_log_bridge_log(
+            NATIVE_LOG_LEVEL_INFO,
+            NATIVE_COMPONENT,
+            "flush_internal",
+            __LINE__,
+            msg,
+            msg
+        );
+    }
+
     Py_RETURN_TRUE;
 }
 
@@ -863,6 +915,12 @@ static struct PyModuleDef module_def = {
 PyMODINIT_FUNC
 PyInit_pipeline(void)
 {
+    /* 初始化日志桥接 */
+    if (native_log_bridge_init() < 0) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to initialize native log bridge");
+        return NULL;
+    }
+
     if (PyType_Ready(&PipelineType) < 0) {
         return NULL;
     }

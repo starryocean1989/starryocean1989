@@ -8,10 +8,12 @@
 import logging
 import time
 
-from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
+from backend.startup.workers.base import StartupWorker, WorkerResult
 
 logger = logging.getLogger("backend.startup.workers.backend_initializer")
+
+BACKEND_NODE_ID = "backend_init.backend"
 
 
 class BackendInitializerWorker(StartupWorker):
@@ -31,45 +33,42 @@ class BackendInitializerWorker(StartupWorker):
         )
 
     async def _run(self, context: StartupContext) -> WorkerResult:
-        """执行后端初始化逻辑 - 只初始化数据服务
-
-        Args:
-            context: 启动上下文
-
-        Returns:
-            WorkerResult: Worker执行结果
-        """
+        """执行后端初始化逻辑 - 只初始化数据服务"""
         start_time = time.time()
 
         try:
-            # 注意：日志输出统一由BackendInitStage管理，这里记录详细的DEBUG级别日志
             self.logger.debug(
                 "=" * 70,
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
             )
             self.logger.debug(
                 "[BACKEND-INIT-WORKER] 🔧 后端初始化Worker开始执行",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
             )
             self.logger.debug(
                 "=" * 70,
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
             )
 
-            # 1. 从context获取已初始化的引擎（阶段3已经初始化）
             event_engine = context.event_engine
             main_engine = context.main_engine
 
             self.logger.debug(
                 f"[BACKEND-INIT-WORKER] 检查引擎状态: event_engine={'存在' if event_engine else '不存在'}, "
                 f"main_engine={'存在' if main_engine else '不存在'}",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
             )
 
             if not event_engine or not main_engine:
                 self.logger.error(
                     "[BACKEND-INIT-WORKER] ❌ EventEngine或MainEngine未初始化",
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
+                    extra={"log_type": "ALERT", "scenario": "application_startup"},
+                )
+                self._mark_failure(
+                    context,
+                    BACKEND_NODE_ID,
+                    "主进程核心引擎缺失",
+                    extra={"ready_key": f"{BACKEND_NODE_ID}:services"},
                 )
                 return WorkerResult(
                     success=False,
@@ -77,28 +76,39 @@ class BackendInitializerWorker(StartupWorker):
                     elapsed_ms=(time.time() - start_time) * 1000,
                 )
 
-            # 2. 根据三进程架构迁移方案步骤5，ChinaStockEngine和DataCenterService
-            # 已迁移到数据进程中，主进程不再初始化这些服务
-            self.logger.info(
-                "[BACKEND-INIT-WORKER] ℹ️ ChinaStockEngine和DataCenterService已迁移到数据进程，主进程不再初始化",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            self._mark_ready(
+                context,
+                BACKEND_NODE_ID,
+                level="services",
+                message="主进程服务骨架已确认",
+                extra={"event_engine": True, "main_engine": True},
             )
 
-            # 3. 返回结果 - 成功（因为没有需要初始化的数据服务）
-            success = True
+            self.logger.info(
+                "[BACKEND-INIT-WORKER] ℹ️ ChinaStockEngine和DataCenterService已迁移到数据进程，主进程不再初始化",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+            )
+
             elapsed_ms = (time.time() - start_time) * 1000
 
             self.logger.debug(
                 f"[BACKEND-INIT-WORKER] ✅ 后端服务初始化成功 ({elapsed_ms:.0f}ms)",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
             )
             self.logger.info(
                 "[BACKEND-INIT-WORKER] ✅ 后端服务初始化完成（三进程架构）",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+            )
+            self._mark_ready(
+                context,
+                BACKEND_NODE_ID,
+                level="health",
+                message="主进程健康检查基线已建立",
+                extra={"elapsed_ms": elapsed_ms},
             )
 
             return WorkerResult(
-                success=success,
+                success=True,
                 message="后端服务初始化完成（三进程架构）",
                 elapsed_ms=elapsed_ms,
                 data={
@@ -113,7 +123,13 @@ class BackendInitializerWorker(StartupWorker):
             self.logger.critical(
                 f"[BACKEND-INIT-WORKER] 🔥 后端初始化Worker发生严重异常: {e}",
                 exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "application_startup"}
+                extra={"log_type": "ALERT", "scenario": "application_startup"},
+            )
+            self._mark_failure(
+                context,
+                BACKEND_NODE_ID,
+                f"后端初始化异常: {e}",
+                extra={"ready_key": f"{BACKEND_NODE_ID}:health"},
             )
 
             return WorkerResult(
@@ -122,4 +138,10 @@ class BackendInitializerWorker(StartupWorker):
                 elapsed_ms=elapsed_ms,
                 error=e,
             )
+# -*- coding: utf-8 -*-
+"""
+后端初始化Worker - 执行后端服务初始化逻辑
+
+负责调用ServiceInitializer初始化所有后端服务。
+"""
 

@@ -7,15 +7,38 @@ native_async - 异步任务结果归约模块。
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from backend.infrastructure.native.logging_bridge import native_call_guard
+from backend.infrastructure.system_vnpy.logging_system import (
+    LogType,
+    bind_logger_defaults,
+)
+
+_logger = bind_logger_defaults(
+    logging.getLogger("backend.native.async.wrapper"),
+    log_type=LogType.SYSTEM.value,
+    scenario="backend.native.async",
+)
 
 try:
     from .async_reduce import reduce_task_results  # type: ignore
 
     ASYNC_REDUCE_AVAILABLE = True
+    _logger.debug(
+        "native_async extension loaded",
+        extra={"native_module": "backend.native.async.core"},
+    )
 except ImportError:
     ASYNC_REDUCE_AVAILABLE = False
 
+    _logger.warning(
+        "native_async extension unavailable, using Python fallback",
+        extra={"native_module": "backend.native.async.core"},
+    )
+
+    @native_call_guard(component="backend.native.async.wrapper")
     def reduce_task_results(  # type: ignore[misc]
         task_results: Iterable[Any],
         *,

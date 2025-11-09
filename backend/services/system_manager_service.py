@@ -1500,7 +1500,20 @@ class AlertDatabase:
         self.logger.info("告警数据库使用统一database：%s", db_path)
 
     def save_alert(self, alert: Alert) -> None:
-        """保存告警记录（使用统一database）."""
+        """保存告警记录（使用统一database）.
+
+        阶段11埋点：记录告警持久化上下文，包括场景、接收端（数据库）、重试策略等
+        """
+        import time
+        start_time = time.time()
+
+        # 记录告警保存开始
+        self.logger.debug(
+            "[ALERT-PERSIST] 开始保存告警: alert_id=%s, rule_id=%s, severity=%s, 场景=数据库持久化, 接收端=database_adapter",
+            alert.alert_id, alert.rule.rule_id, alert.severity.value,
+            extra={"log_type": "SYSTEM", "scenario": "alert_persistence"}
+        )
+
         try:
             # 使用database_adapter保存
             self.db_manager.execute_update(
@@ -1536,9 +1549,22 @@ class AlertDatabase:
                 ),
             )
 
+            # 记录保存成功
+            persist_time = time.time() - start_time
+            self.logger.info(
+                "[ALERT-PERSIST] 告警保存成功: alert_id=%s, rule_id=%s, 耗时=%.3fms, 场景=数据库持久化, 接收端=database_adapter",
+                alert.alert_id, alert.rule.rule_id, persist_time * 1000,
+                extra={"log_type": "SYSTEM", "scenario": "alert_persistence"}
+            )
+
         except Exception as e:
+            persist_time = time.time() - start_time
+            # 记录持久化失败，包含重试策略信息
             self.logger.error(
-                "告警数据库保存失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+                "[ALERT-PERSIST] 告警保存失败: alert_id=%s, rule_id=%s, 耗时=%.3fms, 错误=%s, 场景=数据库持久化, 接收端=database_adapter, 重试策略=无（单次尝试）",
+                alert.alert_id, alert.rule.rule_id, persist_time * 1000, str(e),
+                extra={"log_type": "SYSTEM", "scenario": "alert_persistence"},
+                exc_info=True
             )
 
     def get_alerts(
@@ -3116,16 +3142,38 @@ class SystemManagerService(BaseService):
 
         # 服务状态推送定时器（QTimer在主线程）
         self._status_push_timer = None
+        self._startup_runtime = None
 
         # 告警接收线程
         self._alert_receiver_thread = None
         self._alert_receiver_running = False
+
+        # 后台初始化状态
+        self._async_init_thread: Optional[threading.Thread] = None
+        self._async_init_future = None
+        self._async_init_done = threading.Event()
+        self._async_init_success = False
 
         # 🔄 设置日志阶段为启动阶段
         self.logging_hub.set_stage("startup")
         self.logger.info("📍 日志阶段切换: startup（启动阶段）")
 
         self.logger.info("系统管理服务已创建")
+
+    def set_startup_runtime(self, runtime: Any) -> None:
+        """注入启动运行时，用于在 Qt 主线程执行收尾逻辑."""
+        try:
+            from backend.startup.native_support import NativeStartupRuntime  # type: ignore
+
+            if not isinstance(runtime, NativeStartupRuntime):
+                self.logger.debug("传入的启动运行时类型不匹配，忽略")
+                return
+        except Exception:
+            # 运行时类型检查失败，仍然记录引用以备后续使用
+            pass
+
+        self._startup_runtime = runtime
+        self.logger.debug("SystemManagerService 已绑定启动运行时")
 
     def _check_admin_privileges(self) -> bool:
         """检查是否有管理员权限."""
@@ -3137,25 +3185,39 @@ class SystemManagerService(BaseService):
             return False
 
     def _do_initialize(self) -> bool:
-        """初始化系统管理服务（无后台线程，Qt线程安全）."""
+        """初始化系统管理服务（最小阻塞，耗时逻辑改为后台执行）."""
+        stage_logger = logging.getLogger("startup.stage")
+        stage_extra = {"log_type": "STAGE_NODE", "scenario": "backend_services_init"}
+
+        # 如果后台初始化已完成，则复用结果
+        if self._async_init_done.is_set():
+            return self._async_init_success
+
+        # 如果后台初始化正在进行，直接返回True
+        if self._async_init_future and not self._async_init_future.done():
+            self.logger.info("系统管理服务后台初始化仍在进行中")
+            return True
+
         try:
             self.logger.info("=" * 60)
             self.logger.info("正在初始化系统管理服务...")
             self.logger.info("=" * 60)
 
-            # 检查 EventEngine 是否可用
             if not self.event_engine:
                 self.logger.error("❌ EventEngine不可用", extra={"log_type": "SYSTEM"})
                 self.logger.error("这通常意味着VNPy核心初始化失败", extra={"log_type": "SYSTEM"})
                 self.logger.error(
-                    "SystemManagerService需要EventEngine用于事件通信", extra={"log_type": "SYSTEM"}
+                    "SystemManagerService需要EventEngine用于事件通信",
+                    extra={"log_type": "SYSTEM"},
                 )
-                # 🎯 不再尝试创建，因为EventEngine应该已在主线程创建
+                stage_logger.error(
+                    "❌ SystemManagerService 初始化失败：EventEngine 不可用",
+                    extra=stage_extra,
+                )
                 return False
 
             self.logger.info("✅ EventEngine可用")
 
-            # 初始化日志管理系统（注入EventEngine）
             try:
                 self.logger.info("正在初始化日志管理系统...")
                 self.log_manager = get_log_manager(
@@ -3164,93 +3226,109 @@ class SystemManagerService(BaseService):
                 self.logger.info("✅ 日志管理系统初始化完成（已注入EventEngine）")
             except Exception as e:
                 self.logger.error(
-                    "❌ 日志管理系统初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    "❌ 日志管理系统初始化失败：%s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
-                # 不中断启动流程
 
-            # 初始化native_ipc通信管道
             if not self._ipc_available:
                 self.logger.error(
                     "❌ native_ipc不可用，监控功能将受限", extra={"log_type": "SYSTEM"}
+                )
+                stage_logger.error(
+                    "❌ SystemManagerService 初始化失败：Native IPC 不可用",
+                    extra=stage_extra,
                 )
                 return False
 
             from PySide6.QtCore import QTimer
 
-            # 等待监控进程就绪（读取就绪信号文件）
-            # 🔧 修复：使用项目根目录拼接，避免工作目录变化导致路径失效
-            max_wait = 15.0
-            wait_start = time.time()
-            def _get_root() -> Path:
-                current_file = Path(__file__).resolve()
-                return current_file.parent.parent.parent
-            signal_file = _get_root() / "logs" / "monitor_ready.signal"
-
-            while not signal_file.exists() and (time.time() - wait_start) < max_wait:
-                time.sleep(0.5)
-
-            if not signal_file.exists():
-                self.logger.warning(
-                    "⚠️ 监控进程未就绪（未找到就绪信号文件），将继续尝试初始化",
-                    extra={"log_type": "SYSTEM"},
-                )
-
             # 启动asyncio事件循环（在后台线程中）
             self._start_ipc_event_loop()
 
-            # 初始化native_ipc管道（异步）
-            # 使用run_coroutine_threadsafe在线程中运行
+            self._async_init_done.clear()
+            self._async_init_success = False
+
             loop = self._ipc_loop
             if loop:
-                # 创建monitor_alerts服务端（等待监控进程连接）
-                alerts_task = asyncio.run_coroutine_threadsafe(
-                    self._initialize_alerts_server(), loop
+                future = asyncio.run_coroutine_threadsafe(
+                    self._async_initialize_ipc(stage_extra), loop
                 )
+                self._async_init_future = future
 
-                # 创建monitor_query客户端（连接到监控进程）
-                query_task = asyncio.run_coroutine_threadsafe(self._initialize_query_client(), loop)
+                def _on_complete(fut):
+                    try:
+                        success = fut.result()
+                    except Exception:
+                        success = False
+                    self._async_init_success = success
+                    self._async_init_done.set()
 
-                # 创建monitor_status客户端（连接到监控进程）
-                status_task = asyncio.run_coroutine_threadsafe(
-                    self._initialize_status_client(), loop
+                future.add_done_callback(_on_complete)
+
+                stage_logger.info(
+                    "  └─ 系统管理服务后台初始化任务已启动（监控管道将异步建立）",
+                    extra=stage_extra,
                 )
-
-                # 等待管道初始化（最多等待30秒，兼容监控进程延迟）
-                try:
-                    alerts_task.result(timeout=30.0)
-                    query_task.result(timeout=30.0)
-                    status_task.result(timeout=30.0)
-                    self.logger.info("✅ native_ipc管道初始化完成")
-                    self._ipc_mode = "native"
-                except TimeoutError:
-                    self.logger.warning("⚠️ native_ipc管道初始化超时，继续等待后台线程异步重试")
-                    self._ipc_mode = "native_pending"
-                    self._ipc_available = False
-                    # 后台线程会继续重试，不立即降级
-                except Exception as e:
-                    self.logger.warning(
-                        "⚠️ native_ipc管道初始化失败，降级到基础模式: %s",
-                        e,
-                        extra={"log_type": "SYSTEM"},
-                    )
-                    self._ipc_mode = "fallback"
-                    self._ipc_available = False
-                    self._schedule_ipc_reconnect()
             else:
                 self.logger.warning(
                     "⚠️ asyncio事件循环未启动，降级到基础模式", extra={"log_type": "SYSTEM"}
                 )
                 self._ipc_mode = "fallback"
                 self._ipc_available = False
+                self._async_init_success = False
+                self._async_init_done.set()
+                stage_logger.warning(
+                    "  └─ 系统管理服务后台初始化失败（事件循环未启动）",
+                    extra=stage_extra,
+                )
 
-            # 使用QTimer在主线程定时推送服务状态
-            self._status_push_timer = QTimer()
-            self._status_push_timer.timeout.connect(self._push_service_status)
-            self._status_push_timer.start(self._monitoring_interval * 1000)
-            self.logger.info("✅ 服务状态推送定时器已启动（Qt主线程）")
+            def _start_qt_components() -> None:
+                from PySide6.QtCore import QTimer
+                self.logger.debug("准备在 Qt 主线程启动服务状态推送定时器")
+                self._status_push_timer = QTimer()
+                self._status_push_timer.timeout.connect(self._push_service_status)
+                self._status_push_timer.start(self._monitoring_interval * 1000)
+                self.logger.info("✅ 服务状态推送定时器已启动（Qt主线程）")
+
+            if self._startup_runtime is not None:
+                try:
+                    if not self._startup_runtime.run_on_qt_main(_start_qt_components):
+                        self.logger.debug("Qt 主线程不可用，定时器在当前线程启动")
+                except Exception as exc:  # pragma: no cover - 防御性
+                    self.logger.error(
+                        "在 Qt 主线程调度服务状态定时器失败：%s", exc, extra={"log_type": "SYSTEM"}, exc_info=True
+                    )
+                    _start_qt_components()
+            else:
+                _start_qt_components()
 
             # 启动监控数据推送线程（事件驱动架构）
             self._start_monitoring_push_thread()
+
+            return True
+
+        except Exception as e:
+            self._log_error("初始化", e)
+            self._async_init_success = False
+            self._async_init_done.set()
+            stage_logger.error(
+                "❌ SystemManagerService 初始化失败：%s", e, extra=stage_extra
+            )
+            return False
+
+    async def _async_initialize_ipc(self, stage_extra: Dict[str, Any]) -> bool:
+        """后台执行的native IPC初始化流程."""
+        stage_logger = logging.getLogger("startup.stage")
+        try:
+            await self._initialize_alerts_server()
+            await self._initialize_query_client()
+            await self._initialize_status_client()
+
+            self.logger.info("✅ native_ipc管道初始化完成")
+            self._ipc_mode = "native"
+            self._ipc_available = True
 
             self.logger.info("=" * 60)
             self.logger.info("✅ 系统管理服务初始化完成（native_ipc通信已就绪）")
@@ -3260,10 +3338,38 @@ class SystemManagerService(BaseService):
             self.logging_hub.set_stage("sensing")
             self.logger.info("📍 日志阶段切换: sensing（数据感知阶段）")
 
+            stage_logger.info(
+                "  └─ 系统管理服务后台初始化完成",
+                extra=stage_extra,
+            )
             return True
-
-        except Exception as e:
-            self._log_error("初始化", e)
+        except TimeoutError as exc:
+            self.logger.warning(
+                "⚠️ native_ipc管道初始化超时，后台将继续重试: %s",
+                exc,
+                extra={"log_type": "SYSTEM"},
+            )
+            self._ipc_mode = "native_pending"
+            self._ipc_available = False
+            self._schedule_ipc_reconnect()
+            stage_logger.warning(
+                "  └─ 系统管理服务后台初始化超时，已进入降级模式",
+                extra=stage_extra,
+            )
+            return False
+        except Exception as exc:
+            self.logger.error(
+                "❌ 系统管理服务初始化失败：%s",
+                exc,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
+            self._ipc_mode = "fallback"
+            self._ipc_available = False
+            stage_logger.warning(
+                "  └─ 系统管理服务后台初始化失败（已降级）",
+                extra=stage_extra,
+            )
             return False
 
     def _schedule_ipc_reconnect(self, delay_seconds: float = 5.0) -> None:

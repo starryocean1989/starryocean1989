@@ -7,6 +7,8 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include "batch_convert.h"
+/* 日志桥接宏 */
+#include "../native_log_bridge.h"
 
 /* 批量类型转换函数 */
 PyObject* batch_convert_func(PyObject *self, PyObject *args) {
@@ -16,10 +18,12 @@ PyObject* batch_convert_func(PyObject *self, PyObject *args) {
     const char *type_name = NULL;
 
     if (!PyArg_ParseTuple(args, "OO", &objects, &target_type)) {
+        NATIVE_LOG_ERROR("backend.native.conversion.core", "batch_convert", __LINE__, "invalid arguments to batch_convert");
         return NULL;
     }
 
     if (!PyList_Check(objects)) {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.conversion.core", "batch_convert", __LINE__, "objects must be a list", NULL);
         PyErr_SetString(PyExc_TypeError, "objects must be a list");
         return NULL;
     }
@@ -39,17 +43,20 @@ PyObject* batch_convert_func(PyObject *self, PyObject *args) {
             Py_DECREF(type_name_obj);
         }
     } else {
+        NATIVE_LOG_ERROR_DETAILS("backend.native.conversion.core", "batch_convert", __LINE__, "target_type must be a type or string", NULL);
         PyErr_SetString(PyExc_TypeError, "target_type must be a type or string");
         return NULL;
     }
 
     if (type_name == NULL) {
+        NATIVE_LOG_ERROR("backend.native.conversion.core", "batch_convert", __LINE__, "failed to resolve target type name");
         return NULL;
     }
 
     /* 创建结果列表 */
     result = PyList_New(count);
     if (result == NULL) {
+        NATIVE_LOG_CRITICAL("backend.native.conversion.core", "batch_convert", __LINE__, "failed to allocate result list");
         return NULL;
     }
 
@@ -85,6 +92,7 @@ PyObject* batch_convert_func(PyObject *self, PyObject *args) {
                     Py_DECREF(args_tuple);
                 }
             } else {
+                NATIVE_LOG_ERROR_DETAILS("backend.native.conversion.core", "batch_convert", __LINE__, "Unsupported target type", type_name);
                 PyErr_SetString(PyExc_TypeError, "Unsupported target type");
                 Py_DECREF(result);
                 return NULL;
@@ -92,6 +100,7 @@ PyObject* batch_convert_func(PyObject *self, PyObject *args) {
         }
 
         if (converted == NULL) {
+            NATIVE_LOG_ERROR("backend.native.conversion.core", "batch_convert", __LINE__, "failed to convert item");
             Py_DECREF(result);
             return NULL;
         }

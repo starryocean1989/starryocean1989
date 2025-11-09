@@ -4,6 +4,10 @@
 #include <string.h>
 
 #include "rpc_bridge.h"
+#include "../native_log_bridge.h"
+
+#define RPC_COMPONENT_CORE "backend.native.rpc_bridge.core"
+#define RPC_COMPONENT_WRAPPER "backend.native.rpc_bridge.wrapper"
 
 #pragma pack(push, 1)
 typedef struct {
@@ -193,24 +197,41 @@ static PyObject*
 decode_single_request(PyObject* raw_buffer_obj, PyObject* method_resolver) {
     Py_buffer buffer_view;
     if (PyObject_GetBuffer(raw_buffer_obj, &buffer_view, PyBUF_CONTIG_RO) != 0) {
+        NATIVE_LOG_ERROR(RPC_COMPONENT_CORE, "decode_single_request", __LINE__,
+                        "Failed to get buffer from input object");
         return NULL;
     }
 
     if (buffer_view.len < (Py_ssize_t)RPC_BRIDGE_HEADER_SIZE) {
+        char details[128];
+        snprintf(details, sizeof(details), "buffer_size=%zd, required=%d",
+                 buffer_view.len, RPC_BRIDGE_HEADER_SIZE);
+        NATIVE_LOG_ERROR_DETAILS_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "RPC buffer too small", details);
         PyBuffer_Release(&buffer_view);
         PyErr_SetString(PyExc_ValueError, "RPC buffer too small");
         return NULL;
     }
 
+    NATIVE_LOG_DEBUG(RPC_COMPONENT_CORE, "decode_single_request", __LINE__,
+                    "Decoding RPC request buffer");
+
     RPCNativeHeader header;
     memcpy(&header, buffer_view.buf, sizeof(RPCNativeHeader));
 
     if (header.magic != RPC_BRIDGE_MAGIC) {
+        char details[128];
+        snprintf(details, sizeof(details), "expected_magic=0x%08x, actual_magic=0x%08x",
+                 RPC_BRIDGE_MAGIC, header.magic);
+        NATIVE_LOG_ERROR_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "Invalid RPC magic number - protocol mismatch", details);
         PyBuffer_Release(&buffer_view);
         PyErr_SetString(PyExc_ValueError, "Invalid RPC magic number");
         return NULL;
     }
     if (header.version != RPC_BRIDGE_VERSION || header.header_size != RPC_BRIDGE_HEADER_SIZE) {
+        char details[128];
+        snprintf(details, sizeof(details), "expected_version=%d, actual_version=%d, expected_header_size=%d, actual_header_size=%d",
+                 RPC_BRIDGE_VERSION, header.version, RPC_BRIDGE_HEADER_SIZE, header.header_size);
+        NATIVE_LOG_ERROR_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "Unsupported RPC header version - protocol mismatch", details);
         PyBuffer_Release(&buffer_view);
         PyErr_SetString(PyExc_ValueError, "Unsupported RPC header version");
         return NULL;
@@ -221,16 +242,28 @@ decode_single_request(PyObject* raw_buffer_obj, PyObject* method_resolver) {
     Py_ssize_t payload_size = (Py_ssize_t)header.payload_size;
     Py_ssize_t total_size = metadata_offset + metadata_size + payload_size;
     if (buffer_view.len < total_size) {
+        char details[256];
+        snprintf(details, sizeof(details),
+                 "buffer_size=%zd, required_total=%zd, metadata_offset=%zd, metadata_size=%zd, payload_size=%zd",
+                 buffer_view.len, total_size, metadata_offset, metadata_size, payload_size);
+        NATIVE_LOG_ERROR_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "Incomplete RPC message payload - buffer error", details);
         PyBuffer_Release(&buffer_view);
         PyErr_SetString(PyExc_ValueError, "Incomplete RPC message payload");
         return NULL;
     }
+
+    char header_details[128];
+    snprintf(header_details, sizeof(header_details),
+             "method_id=%u, request_id=%u, flags=0x%x, metadata_size=%zd, payload_size=%zd",
+             header.method_id, header.request_id, header.flags, metadata_size, payload_size);
+    NATIVE_LOG_INFO_DETAILS_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "RPC header parsed successfully", header_details);
 
     PyObject* metadata_bytes = PyBytes_FromStringAndSize(
         (const char*)buffer_view.buf + metadata_offset,
         metadata_size
     );
     if (metadata_bytes == NULL) {
+        NATIVE_LOG_ERROR(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "Failed to create metadata bytes object");
         PyBuffer_Release(&buffer_view);
         return NULL;
     }
@@ -238,9 +271,12 @@ decode_single_request(PyObject* raw_buffer_obj, PyObject* method_resolver) {
     PyObject* metadata_obj = PyObject_CallFunctionObjArgs(g_loads_func, metadata_bytes, NULL);
     Py_DECREF(metadata_bytes);
     if (metadata_obj == NULL) {
+        NATIVE_LOG_ERROR(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "Failed to deserialize metadata - protocol error");
         PyBuffer_Release(&buffer_view);
         return NULL;
     }
+
+    NATIVE_LOG_DEBUG_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "Metadata deserialized successfully");
 
     if (!PyDict_Check(metadata_obj)) {
         PyObject* metadata_dict = PyDict_New();
@@ -358,6 +394,16 @@ py_batch_decode_requests(PyObject* self, PyObject* args) {
         return NULL;
     }
 
+    // 获取序列长度用于日志
+    Py_ssize_t seq_len = 0;
+    if (PySequence_Check(buffer_sequence)) {
+        seq_len = PySequence_Size(buffer_sequence);
+    }
+
+    char details[128];
+    snprintf(details, sizeof(details), "batch_size=%zd", seq_len);
+    NATIVE_LOG_INFO_DETAILS(RPC_COMPONENT_CORE, "batch_decode_requests", __LINE__, "Starting batch decode of RPC requests", details);
+
     PyObject* iterator = PyObject_GetIter(buffer_sequence);
     if (iterator == NULL) {
         PyErr_SetString(PyExc_TypeError, "batch_decode_requests expects an iterable of buffers");
@@ -407,6 +453,16 @@ py_batch_encode_responses(PyObject* self, PyObject* args) {
     if (ensure_rpc_helpers() != 0) {
         return NULL;
     }
+
+    // 获取序列长度用于日志
+    Py_ssize_t seq_len = 0;
+    if (PySequence_Check(response_sequence)) {
+        seq_len = PySequence_Size(response_sequence);
+    }
+
+    char details[128];
+    snprintf(details, sizeof(details), "batch_size=%zd", seq_len);
+    NATIVE_LOG_INFO_DETAILS(RPC_COMPONENT_CORE, "batch_encode_responses", __LINE__, "Starting batch encode of RPC responses", details);
 
     PyObject* iterator = PyObject_GetIter(response_sequence);
     if (iterator == NULL) {
@@ -471,6 +527,11 @@ py_batch_encode_responses(PyObject* self, PyObject* args) {
 
         PyObject* metadata_bytes = PyObject_CallFunctionObjArgs(g_dumps_func, metadata_obj, NULL);
         if (metadata_bytes == NULL) {
+            char error_details[256];
+            snprintf(error_details, sizeof(error_details),
+                     "method_id=%u, request_id=%u, flags=0x%x",
+                     method_id, request_id, flags);
+            NATIVE_LOG_ERROR_DETAILS(RPC_COMPONENT_CORE, "batch_encode_responses", __LINE__, "Failed to serialize metadata - callback error", error_details);
             Py_DECREF(entry);
             Py_DECREF(iterator);
             Py_DECREF(result_list);
@@ -478,6 +539,7 @@ py_batch_encode_responses(PyObject* self, PyObject* args) {
         }
 
         if (!PyBytes_Check(metadata_bytes)) {
+            NATIVE_LOG_ERROR_DETAILS(RPC_COMPONENT_CORE, "batch_encode_responses", __LINE__, "_dumps function must return bytes - protocol error");
             PyErr_SetString(PyExc_TypeError, "_dumps must return bytes");
             Py_DECREF(metadata_bytes);
             Py_DECREF(entry);
@@ -494,6 +556,11 @@ py_batch_encode_responses(PyObject* self, PyObject* args) {
         int has_payload = payload_obj != Py_None;
         if (has_payload) {
             if (PyObject_GetBuffer(payload_obj, &payload_buffer, PyBUF_CONTIG_RO) != 0) {
+                char error_details[256];
+                snprintf(error_details, sizeof(error_details),
+                         "method_id=%u, request_id=%u - payload buffer access failed",
+                         method_id, request_id);
+                NATIVE_LOG_ERROR_DETAILS(RPC_COMPONENT_CORE, "batch_encode_responses", __LINE__, "Failed to get payload buffer - buffer error", error_details);
                 Py_DECREF(metadata_bytes);
                 Py_DECREF(entry);
                 Py_DECREF(iterator);
@@ -553,9 +620,15 @@ py_batch_encode_responses(PyObject* self, PyObject* args) {
 
     Py_DECREF(iterator);
     if (PyErr_Occurred()) {
+        NATIVE_LOG_ERROR(RPC_COMPONENT_CORE, "batch_encode_responses", __LINE__, "Iterator error during batch encoding");
         Py_DECREF(result_list);
         return NULL;
     }
+
+    char success_details[128];
+    Py_ssize_t result_count = PyList_Size(result_list);
+    snprintf(success_details, sizeof(success_details), "encoded_count=%zd", result_count);
+    NATIVE_LOG_INFO_DETAILS(RPC_COMPONENT_CORE, "batch_encode_responses", __LINE__, "Batch encode of RPC responses completed successfully", success_details);
 
     return result_list;
 }
@@ -594,6 +667,8 @@ PyInit_native_rpc_bridge(void) {
 
     PyModule_AddIntConstant(module, "RPC_BRIDGE_AVAILABLE", 1);
     PyModule_AddStringConstant(module, "VERSION", "1.1.0");
+
+    NATIVE_LOG_INFO(RPC_COMPONENT_WRAPPER, "PyInit_native_rpc_bridge", __LINE__, "native_rpc_bridge module initialised");
 
     return module;
 }

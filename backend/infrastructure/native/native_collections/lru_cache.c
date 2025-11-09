@@ -9,6 +9,18 @@
 #include <Windows.h>
 #include <structmember.h>
 #include "lru_cache.h"
+#include "../native_log_bridge.h"
+
+#define COLLECTIONS_COMPONENT "backend.native.collections.core"
+
+#define LRU_LOG(level, message, details) \
+    native_log_bridge_log(level, COLLECTIONS_COMPONENT, __FUNCTION__, __LINE__, message, details)
+
+#define LRU_LOG_ERROR(message, details) \
+    LRU_LOG(NATIVE_LOG_LEVEL_ERROR, message, details)
+
+#define LRU_LOG_WARNING(message, details) \
+    LRU_LOG(NATIVE_LOG_LEVEL_WARNING, message, details)
 
 /* 使用头文件中定义的HighPerfLRUCache结构 */
 
@@ -54,6 +66,7 @@ static PyObject* HighPerfLRUCache_new(PyTypeObject *type, PyObject *args, PyObje
     Py_ssize_t maxsize = 128;
 
     if (!PyArg_ParseTuple(args, "|n", &maxsize)) {
+        LRU_LOG_ERROR("invalid arguments when creating HighPerfLRUCache", NULL);
         return NULL;
     }
 
@@ -71,6 +84,7 @@ static PyObject* HighPerfLRUCache_new(PyTypeObject *type, PyObject *args, PyObje
         self->cache = PyDict_New();
         if (self->cache == NULL) {
             DeleteCriticalSection(&self->lock);
+            LRU_LOG_ERROR("failed to allocate cache dictionary", NULL);
             Py_DECREF(self);
             return NULL;
         }
@@ -106,6 +120,7 @@ static PyObject* HighPerfLRUCache_get(HighPerfLRUCache *self, PyObject *args) {
     PyObject *value = NULL;
 
     if (!PyArg_ParseTuple(args, "O", &key)) {
+        LRU_LOG_ERROR("invalid arguments for LRUCache.get", NULL);
         return NULL;
     }
 
@@ -114,6 +129,7 @@ static PyObject* HighPerfLRUCache_get(HighPerfLRUCache *self, PyObject *args) {
     node_obj = PyDict_GetItem(self->cache, key);
     if (node_obj == NULL) {
         LeaveCriticalSection(&self->lock);
+        LRU_LOG_WARNING("LRUCache miss on get", NULL);
         PyErr_SetString(PyExc_KeyError, "Key not found");
         return NULL;
     }
@@ -155,6 +171,7 @@ static PyObject* HighPerfLRUCache_set(HighPerfLRUCache *self, PyObject *args) {
     LRUNode *node = NULL;
 
     if (!PyArg_ParseTuple(args, "OO", &key, &value)) {
+        LRU_LOG_ERROR("invalid arguments for LRUCache.set", NULL);
         return NULL;
     }
 
@@ -192,6 +209,7 @@ static PyObject* HighPerfLRUCache_set(HighPerfLRUCache *self, PyObject *args) {
         node = (LRUNode *)malloc(sizeof(LRUNode));
         if (node == NULL) {
             LeaveCriticalSection(&self->lock);
+            LRU_LOG_ERROR("failed to allocate LRU node", NULL);
             PyErr_SetString(PyExc_MemoryError, "Failed to allocate LRU node");
             return NULL;
         }
@@ -217,6 +235,7 @@ static PyObject* HighPerfLRUCache_set(HighPerfLRUCache *self, PyObject *args) {
         if (PyDict_SetItem(self->cache, key, node_obj) < 0) {
             Py_DECREF(node_obj);
             LeaveCriticalSection(&self->lock);
+            LRU_LOG_ERROR("failed to insert node into cache dictionary", NULL);
             return NULL;
         }
         Py_DECREF(node_obj);
@@ -232,7 +251,10 @@ static PyObject* HighPerfLRUCache_set(HighPerfLRUCache *self, PyObject *args) {
                     self->tail->next = NULL;
                 }
 
-                PyDict_DelItem(self->cache, oldest->key);
+                if (PyDict_DelItem(self->cache, oldest->key) < 0) {
+                    LRU_LOG_WARNING("failed to delete evicted key from cache dictionary", NULL);
+                    PyErr_Clear();
+                }
                 Py_XDECREF(oldest->key);
                 Py_XDECREF(oldest->value);
                 free(oldest);

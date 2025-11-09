@@ -3114,11 +3114,28 @@ class MonitoringProcessV2:
             if isinstance(smart_data, dict) and smart_data.get("alerts"):
                 alerts = smart_data.get("alerts", [])
                 for alert in alerts:
-                    logger_alert.warning(
-                        "[SMART-ALERT] %s - %s",
-                        alert.get("disk", "unknown"),
-                        alert.get("message", ""),
-                    )
+                    disk = alert.get("disk", "unknown")
+                    message = alert.get("message", "")
+                    level = str(alert.get("level", "WARNING")).upper()
+
+                    if level == "CRITICAL":
+                        logger_alert.error(
+                            "[SMART-ALERT] %s - %s",
+                            disk,
+                            message,
+                        )
+                    elif level == "WARNING":
+                        logger_alert.info(
+                            "[SMART-ALERT] %s - %s",
+                            disk,
+                            message,
+                        )
+                    else:
+                        logger_alert.debug(
+                            "[SMART-ALERT] %s - %s",
+                            disk,
+                            message,
+                        )
         except Exception as e:
             logger.error("[SMART] 采集失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
@@ -4319,13 +4336,28 @@ class MonitoringProcessV2:
         }
 
     async def _push_alert(self, alert: Dict[str, Any]):
-        """推送告警到主进程（native_ipc客户端，懒加载连接）."""
+        """推送告警到主进程（native_ipc客户端，懒加载连接）.
+
+        阶段11埋点：记录告警推送上下文，包括场景（IPC推送）、接收端（native_ipc管道）、重试策略等
+        """
+        import time
+        start_time = time.time()
+        alert_id = alert.get("alert_id", "unknown")
+
+        logger.debug(
+            "[ALERT-PUSH] 开始推送告警: alert_id=%s, severity=%s, 场景=IPC推送, 接收端=native_ipc管道",
+            alert_id, alert.get("severity", "unknown"),
+            extra={"log_type": "SYSTEM", "scenario": "alert_push"}
+        )
+
         # 🔧 优化：懒加载连接，避免启动时握手失败
         if not self.alerts_pipe:
             if AsyncIPCPipe is None:
-                logger.debug(
-                    "[ALERT] native_ipc 不可用，降级为本地文件告警",
-                    extra={"log_type": "SYSTEM"},
+                push_time = time.time() - start_time
+                logger.warning(
+                    "[ALERT-PUSH] native_ipc不可用，降级为本地文件告警: alert_id=%s, 耗时=%.3fms, 场景=IPC推送, 接收端=native_ipc管道, 重试策略=无（native_ipc不可用）",
+                    alert_id, push_time * 1000,
+                    extra={"log_type": "SYSTEM", "scenario": "alert_push"}
                 )
                 await self._write_alert_to_file(alert)
                 return
@@ -4333,18 +4365,23 @@ class MonitoringProcessV2:
             current_time = time.time()
             if self._alerts_pipe_retry_count >= self._alerts_pipe_max_retries:
                 # 超过最大重试次数，降级为本地文件告警
-                logger.debug(
-                    "[ALERT] 告警管道连接失败次数过多，降级为本地文件告警",
-                    extra={"log_type": "SYSTEM"}
+                push_time = time.time() - start_time
+                logger.warning(
+                    "[ALERT-PUSH] 告警管道连接失败次数过多，降级为本地文件告警: alert_id=%s, 耗时=%.3fms, 重试次数=%d/%d, 场景=IPC推送, 接收端=native_ipc管道, 重试策略=达到最大重试次数，降级到文件",
+                    alert_id, push_time * 1000, self._alerts_pipe_retry_count, self._alerts_pipe_max_retries,
+                    extra={"log_type": "SYSTEM", "scenario": "alert_push"}
                 )
                 await self._write_alert_to_file(alert)
                 return
 
             # 限制重试频率（每5秒最多1次）
-            if current_time - self._alerts_pipe_last_retry_time < 5.0:
+            cooldown_remaining = 5.0 - (current_time - self._alerts_pipe_last_retry_time)
+            if cooldown_remaining > 0:
+                push_time = time.time() - start_time
                 logger.debug(
-                    "[ALERT] 告警管道连接重试冷却中，降级为本地文件告警",
-                    extra={"log_type": "SYSTEM"}
+                    "[ALERT-PUSH] 告警管道连接重试冷却中，降级为本地文件告警: alert_id=%s, 耗时=%.3fms, 冷却剩余=%.1fs, 场景=IPC推送, 接收端=native_ipc管道, 重试策略=频率限制",
+                    alert_id, push_time * 1000, cooldown_remaining,
+                    extra={"log_type": "SYSTEM", "scenario": "alert_push"}
                 )
                 await self._write_alert_to_file(alert)
                 return
@@ -4356,26 +4393,32 @@ class MonitoringProcessV2:
                 self.alerts_pipe = await ipc_cls.client("monitor_alerts")
                 logger.info("[IPC] ✅ 告警客户端管道已连接: monitor_alerts")
                 self._alerts_pipe_retry_count = 0  # 重置重试计数
+
+                logger.debug(
+                    "[ALERT-PUSH] 告警管道连接建立成功: alert_id=%s, 管道=monitor_alerts, 场景=IPC推送, 接收端=native_ipc管道",
+                    alert_id,
+                    extra={"log_type": "SYSTEM", "scenario": "alert_push"}
+                )
+
             except FileNotFoundError:
                 self._alerts_pipe_retry_count += 1
                 self._alerts_pipe_last_retry_time = current_time
+                push_time = time.time() - start_time
                 logger.warning(
-                    "[IPC] 告警服务端管道未就绪（尝试 %d/%d），降级为本地文件告警",
-                    self._alerts_pipe_retry_count,
-                    self._alerts_pipe_max_retries,
-                    extra={"log_type": "SYSTEM"}
+                    "[ALERT-PUSH] 告警服务端管道未就绪，降级为本地文件告警: alert_id=%s, 耗时=%.3fms, 重试次数=%d/%d, 场景=IPC推送, 接收端=native_ipc管道, 重试策略=连接失败重试",
+                    alert_id, push_time * 1000, self._alerts_pipe_retry_count, self._alerts_pipe_max_retries,
+                    extra={"log_type": "SYSTEM", "scenario": "alert_push"}
                 )
                 await self._write_alert_to_file(alert)
                 return
             except Exception as e:
                 self._alerts_pipe_retry_count += 1
                 self._alerts_pipe_last_retry_time = current_time
+                push_time = time.time() - start_time
                 logger.warning(
-                    "[IPC] 创建告警客户端管道失败（尝试 %d/%d）: %s，降级为本地文件告警",
-                    self._alerts_pipe_retry_count,
-                    self._alerts_pipe_max_retries,
-                    e,
-                    extra={"log_type": "SYSTEM"}
+                    "[ALERT-PUSH] 创建告警客户端管道失败，降级为本地文件告警: alert_id=%s, 耗时=%.3fms, 重试次数=%d/%d, 错误=%s, 场景=IPC推送, 接收端=native_ipc管道, 重试策略=连接异常重试",
+                    alert_id, push_time * 1000, self._alerts_pipe_retry_count, self._alerts_pipe_max_retries, str(e),
+                    extra={"log_type": "SYSTEM", "scenario": "alert_push"}
                 )
                 await self._write_alert_to_file(alert)
                 return
@@ -4385,12 +4428,31 @@ class MonitoringProcessV2:
             alert_data = json.dumps(alert).encode()
             alerts_pipe = self.alerts_pipe
             if alerts_pipe is None:
+                push_time = time.time() - start_time
+                logger.warning(
+                    "[ALERT-PUSH] 告警管道为空，降级为本地文件告警: alert_id=%s, 耗时=%.3fms, 场景=IPC推送, 接收端=native_ipc管道, 重试策略=管道为空降级",
+                    alert_id, push_time * 1000,
+                    extra={"log_type": "SYSTEM", "scenario": "alert_push"}
+                )
                 await self._write_alert_to_file(alert)
                 return
             await alerts_pipe.write(alert_data)
-            logger.info("[ALERT] 推送告警: %s", alert["message"])
+
+            push_time = time.time() - start_time
+            logger.info(
+                "[ALERT-PUSH] 告警推送成功: alert_id=%s, 耗时=%.3fms, 场景=IPC推送, 接收端=native_ipc管道, 消息=%s",
+                alert_id, push_time * 1000, alert.get("message", ""),
+                extra={"log_type": "SYSTEM", "scenario": "alert_push"}
+            )
+
         except Exception as e:
-            logger.exception("[ALERT] 推送失败: %s，降级为本地文件告警", e)
+            push_time = time.time() - start_time
+            logger.error(
+                "[ALERT-PUSH] 告警推送失败，降级为本地文件告警: alert_id=%s, 耗时=%.3fms, 错误=%s, 场景=IPC推送, 接收端=native_ipc管道, 重试策略=推送失败降级",
+                alert_id, push_time * 1000, str(e),
+                extra={"log_type": "SYSTEM", "scenario": "alert_push"},
+                exc_info=True
+            )
             # 推送失败，关闭管道并降级
             try:
                 alerts_pipe = self.alerts_pipe
@@ -4402,26 +4464,41 @@ class MonitoringProcessV2:
             await self._write_alert_to_file(alert)
 
     async def _write_alert_to_file(self, alert: Dict[str, Any]):
-        """将告警写入本地文件（降级方案）."""
+        """将告警写入本地文件（降级方案）.
+
+        阶段11埋点：记录告警文件持久化上下文，包括场景（文件持久化）、接收端（本地文件）、重试策略等
+        """
+        import time
+        start_time = time.time()
+
         try:
             alert_file = get_root() / "logs" / "monitor_alerts.jsonl"
             alert_file.parent.mkdir(parents=True, exist_ok=True)
+
+            logger.debug(
+                "[ALERT-FILE-PERSIST] 开始写入告警到本地文件: alert_id=%s, 文件=%s, 场景=文件持久化, 接收端=本地文件系统",
+                alert.get("alert_id", "unknown"), str(alert_file),
+                extra={"log_type": "SYSTEM", "scenario": "alert_file_persistence"}
+            )
 
             with open(alert_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(alert, ensure_ascii=False) + "\n")
                 f.flush()
 
-            logger.debug(
-                "[ALERT] 告警已写入本地文件: %s",
-                alert["message"],
-                extra={"log_type": "SYSTEM"}
+            write_time = time.time() - start_time
+            logger.info(
+                "[ALERT-FILE-PERSIST] 告警写入本地文件成功: alert_id=%s, 耗时=%.3fms, 文件=%s, 场景=文件持久化, 接收端=本地文件系统",
+                alert.get("alert_id", "unknown"), write_time * 1000, str(alert_file),
+                extra={"log_type": "SYSTEM", "scenario": "alert_file_persistence"}
             )
+
         except Exception as e:
+            write_time = time.time() - start_time
             logger.error(
-                "[ALERT] 写入本地告警文件失败: %s",
-                e,
-                exc_info=True,
-                extra={"log_type": "SYSTEM"}
+                "[ALERT-FILE-PERSIST] 告警写入本地文件失败: alert_id=%s, 耗时=%.3fms, 文件=%s, 错误=%s, 场景=文件持久化, 接收端=本地文件系统, 重试策略=无（单次尝试）",
+                alert.get("alert_id", "unknown"), write_time * 1000, str(alert_file), str(e),
+                extra={"log_type": "SYSTEM", "scenario": "alert_file_persistence"},
+                exc_info=True
             )
 
     async def stop(self):
@@ -8846,7 +8923,7 @@ def main():
             except (OSError, ValueError):
                 pass
 
-        # 手动配置root logger的降级输出，避免basicConfig破坏统一日志托管
+        # 手动配置root logger的降级输出，限制为阶段节点和WARNING+
         stream_handler = logging.StreamHandler(sys.stdout)
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -8854,11 +8931,27 @@ def main():
         stream_handler.setLevel(logging.INFO)
         stream_handler.setFormatter(formatter)
 
+        # 添加过滤器：仅允许STAGE_NODE或WARNING/ERROR/CRITICAL到控制台
+        class StageOnlyConsoleFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                # 兼容带默认绑定的log_type字段
+                log_type = getattr(record, "log_type", None)
+                if log_type == "STAGE_NODE":
+                    return True
+                return record.levelno >= logging.WARNING
+
+        stream_handler.addFilter(StageOnlyConsoleFilter())
+
         root_logger = logging.getLogger()
         for h in root_logger.handlers[:]:
             root_logger.removeHandler(h)
+            try:
+                h.close()
+            except Exception:
+                pass
         root_logger.setLevel(logging.INFO)
         root_logger.addHandler(stream_handler)
+        root_logger.propagate = True
         logger = bind_logger_defaults(
             logging.getLogger("MonitorProcess"),
             scenario="monitor_process.entry",

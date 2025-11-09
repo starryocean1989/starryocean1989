@@ -5,6 +5,12 @@
 #include <ntdddisk.h>
 #include <wchar.h>
 #include <stdint.h>
+#include <stdio.h>
+
+/* 包含日志桥接头文件 */
+#include "../native_log_bridge.h"
+
+#define COMPONENT_CORE "backend.native.native_smart_monitor.core"
 
 #ifndef CAP_SMART_CMD
 #define CAP_SMART_CMD 0x0001
@@ -268,6 +274,15 @@ issue_smart_read_attributes(HANDLE handle, int physical_drive_number, SMART_SUMM
     GETVERSIONINPARAMS version_params;
     ZeroMemory(&version_params, sizeof(version_params));
 
+    /* 阶段11埋点：记录DeviceIoControl SMART_GET_VERSION调用 */
+    native_log_bridge_log(
+        NATIVE_LOG_LEVEL_DEBUG,
+        COMPONENT_CORE,
+        "DeviceIoControl",
+        __LINE__,
+        "SMART_GET_VERSION start",
+        NULL);
+
     if (!DeviceIoControl(
             handle,
             SMART_GET_VERSION,
@@ -277,7 +292,39 @@ issue_smart_read_attributes(HANDLE handle, int physical_drive_number, SMART_SUMM
             sizeof(version_params),
             &bytes_returned,
             NULL)) {
+        DWORD err = GetLastError();
+        /* 阶段11埋点：记录DeviceIoControl失败 */
+        char error_details[256];
+        snprintf(
+            error_details,
+            sizeof(error_details),
+            "{\"handle\":\"0x%p\",\"error_code\":%lu,\"scenario\":\"smart_version\"}",
+            handle,
+            err);
+        native_log_bridge_log(
+            NATIVE_LOG_LEVEL_WARNING,
+            COMPONENT_CORE,
+            "DeviceIoControl",
+            __LINE__,
+            "SMART_GET_VERSION failed",
+            error_details);
         return 0;  /* SMART 不支持 */
+    } else {
+        /* 阶段11埋点：记录DeviceIoControl成功 */
+        char success_details[256];
+        snprintf(
+            success_details,
+            sizeof(success_details),
+            "{\"handle\":\"0x%p\",\"capabilities\":%u,\"scenario\":\"smart_version\"}",
+            handle,
+            version_params.fCapabilities);
+        native_log_bridge_log(
+            NATIVE_LOG_LEVEL_INFO,
+            COMPONENT_CORE,
+            "DeviceIoControl",
+            __LINE__,
+            "SMART_GET_VERSION succeeded",
+            success_details);
     }
 
     if (!(version_params.fCapabilities & CAP_SMART_CMD)) {
@@ -664,6 +711,21 @@ native_get_drive_temperature_data(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED
         wchar_t device_path[64];
         build_physical_drive_path(drive_index, device_path, sizeof(device_path) / sizeof(device_path[0]));
 
+        /* 阶段11埋点：记录CreateFileW系统调用 */
+        char start_details[128];
+        snprintf(
+            start_details,
+            sizeof(start_details),
+            "{\"drive_index\":%d,\"scenario\":\"open_handle\"}",
+            drive_index);
+        native_log_bridge_log(
+            NATIVE_LOG_LEVEL_DEBUG,
+            COMPONENT_CORE,
+            "CreateFileW",
+            __LINE__,
+            "Attempting to open physical drive handle",
+            start_details);
+
         HANDLE handle = CreateFileW(
             device_path,
             GENERIC_READ | GENERIC_WRITE,
@@ -674,7 +736,39 @@ native_get_drive_temperature_data(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED
             NULL);
 
         if (handle == INVALID_HANDLE_VALUE) {
+            DWORD err = GetLastError();
+            /* 阶段11埋点：记录CreateFileW失败 */
+            char error_details[256];
+            snprintf(
+                error_details,
+                sizeof(error_details),
+                "{\"drive_index\":%d,\"error_code\":%lu,\"scenario\":\"open_handle\"}",
+                drive_index,
+                err);
+            native_log_bridge_log(
+                NATIVE_LOG_LEVEL_ERROR,
+                COMPONENT_CORE,
+                "CreateFileW",
+                __LINE__,
+                "CreateFileW failed",
+                error_details);
             continue;
+        } else {
+            /* 阶段11埋点：记录CreateFileW成功 */
+            char success_details[256];
+            snprintf(
+                success_details,
+                sizeof(success_details),
+                "{\"drive_index\":%d,\"handle\":\"0x%p\",\"scenario\":\"open_handle\"}",
+                drive_index,
+                handle);
+            native_log_bridge_log(
+                NATIVE_LOG_LEVEL_INFO,
+                COMPONENT_CORE,
+                "CreateFileW",
+                __LINE__,
+                "CreateFileW succeeded",
+                success_details);
         }
 
         PyObject *entry = build_drive_entry(drive_index, handle);

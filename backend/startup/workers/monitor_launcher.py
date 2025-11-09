@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
@@ -20,7 +20,6 @@ from backend.infrastructure.system_vnpy.logging_system import (
     alert_log,
     get_alert_logger,
     get_configured_logger,
-    stage_log,
 )
 
 
@@ -48,6 +47,7 @@ alert_logger = get_alert_logger(
 )
 
 STARTUP_SCENARIO = "application_startup"
+MONITOR_NODE_ID = "backend_init.monitor"
 
 # 全局变量用于进程清理
 _global_monitor_worker: Optional['MonitorLauncherWorker'] = None
@@ -92,13 +92,7 @@ class MonitorLauncherWorker(StartupWorker):
         start_time = time.time()
 
         try:
-            stage_log("", scenario=STARTUP_SCENARIO, stacklevel=3)
-            stage_log("┌" + "─" * 66 + "┐", scenario=STARTUP_SCENARIO, stacklevel=3)
-            stage_log("│ 分支A: 监控进程                                                   │", scenario=STARTUP_SCENARIO, stacklevel=3)
-            stage_log("└" + "─" * 66 + "┘", scenario=STARTUP_SCENARIO, stacklevel=3)
-            stage_log("", scenario=STARTUP_SCENARIO, stacklevel=3)
-            stage_log("📍 监控进程启动开始", scenario=STARTUP_SCENARIO, stacklevel=3)
-
+            stage_data: dict[str, Any] = {}
             # 启动监控进程
             monitor_info = await self._launch_monitor_process(context)
 
@@ -107,18 +101,20 @@ class MonitorLauncherWorker(StartupWorker):
                 context.set_monitor_process(self.monitor_process_handle)
 
             elapsed_ms = (time.time() - start_time) * 1000
-
-            stage_log(
-                f"✅ 监控进程完全就绪 ({elapsed_ms/1000:.1f}s)",
-                scenario=STARTUP_SCENARIO,
-                stacklevel=3,
+            stage_data.update(
+                {
+                    "monitor_info": monitor_info,
+                    "watchdog_started": self.watchdog_running,
+                    "log_collector_attached": bool(getattr(context, "log_queue_token", None)),
+                    "elapsed_ms": elapsed_ms,
+                }
             )
 
             return WorkerResult(
                 success=True,
                 message="监控进程启动完成",
                 elapsed_ms=elapsed_ms,
-                data={"monitor_info": monitor_info},
+                data=stage_data,
             )
 
         except Exception as e:
@@ -127,6 +123,12 @@ class MonitorLauncherWorker(StartupWorker):
             self._alert_logger.error(
                 f"❌ [MonitorLauncherWorker] 监控进程启动Worker异常: {e}",
                 exc_info=True,
+            )
+            self._mark_failure(
+                context,
+                MONITOR_NODE_ID,
+                f"监控进程启动异常: {e}",
+                extra={"elapsed_ms": elapsed_ms},
             )
 
             return WorkerResult(
@@ -137,20 +139,9 @@ class MonitorLauncherWorker(StartupWorker):
             )
 
     async def _launch_monitor_process(self, context: StartupContext) -> dict:
-        """启动监控进程
+        """启动监控进程并等待其多级就绪."""
 
-        Args:
-            context: 启动上下文
-
-        Returns:
-            dict: 监控进程信息 {"pid": int, "ports": dict, "elapsed": float}
-
-        Raises:
-            RuntimeError: 监控进程启动失败
-        """
         start_time = time.time()
-        stage_scenario = "monitor_launch"
-
         monitor_script = (
             context.project_root
             / "backend"
@@ -158,11 +149,9 @@ class MonitorLauncherWorker(StartupWorker):
             / "system_vnpy"
             / "monitor_system.py"
         )
-
         if not monitor_script.exists():
             raise RuntimeError(f"监控进程脚本不存在: {monitor_script}")
 
-        # 清理可能遗留的就绪信号文件，避免误判
         signal_file = context.project_root / "logs" / "monitor_ready.signal"
         if signal_file.exists():
             try:
@@ -174,20 +163,14 @@ class MonitorLauncherWorker(StartupWorker):
                     cleanup_error,
                 )
 
-        # 启动监控进程（指定工作目录为项目根目录）
-        # 在Windows上确保权限传递
         creation_flags = 0
         if sys.platform == "win32":
             creation_flags = subprocess.CREATE_NO_WINDOW
-            # 检查当前是否有管理员权限
             try:
                 import ctypes
 
-                if ctypes.windll.shell32.IsUserAnAdmin():
-                    # 如果有管理员权限，确保子进程也有
-                    self.logger.info(
-                        "[MONITOR-PROCESS] 检测到管理员权限，将传递给监控进程"
-                    )
+                if ctypes.windll.shell32.IsUserAnAdmin():  # type: ignore[attr-defined]
+                    logger.info("[MONITOR-PROCESS] 以管理员权限启动")
             except Exception:
                 pass
 
@@ -200,76 +183,79 @@ class MonitorLauncherWorker(StartupWorker):
         else:
             alert_log(
                 "⚠️ 未检测到日志队列令牌，监控进程日志将回退至本地输出",
-                scenario=stage_scenario,
+                scenario="monitor_launch",
                 stacklevel=3,
             )
 
-        # 🔧 修复：重定向stderr以便捕获调试信息
         import tempfile
-        stderr_file = tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.log', prefix='monitor_process_stderr_')
+
+        stderr_file = tempfile.NamedTemporaryFile(
+            mode="w+",
+            delete=False,
+            suffix=".log",
+            prefix="monitor_process_stderr_",
+        )
         stderr_file.close()
         stderr_path = stderr_file.name
-        
+
         self.monitor_process_handle = subprocess.Popen(
             [sys.executable, str(monitor_script)],
-            stdout=None,  # 不重定向，使用默认输出
-            stderr=open(stderr_path, 'w'),  # 重定向stderr到文件以便调试
-            cwd=str(context.project_root),  # 确保监控进程在项目根目录工作
+            stdout=subprocess.DEVNULL,
+            stderr=open(stderr_path, "w"),
+            cwd=str(context.project_root),
             creationflags=creation_flags,
             env=env,
         )
-        
-        # 保存stderr文件路径以便后续读取
         self.monitor_process_stderr_path = stderr_path
-
-        # 获取PID并显示
         pid = self.monitor_process_handle.pid
-        stage_log(
-            f"✅ monitor_system.py进程已启动 (PID: {pid})",
-            scenario=stage_scenario,
-            stacklevel=3,
+        logger.info("[MONITOR-PROCESS] 进程已启动 (PID: %s)", pid)
+        self._mark_ready(
+            context,
+            MONITOR_NODE_ID,
+            level="level0",
+            message=f"监控进程已启动 (PID: {pid})",
+            extra={"pid": pid},
         )
 
-        # 注册清理函数
         atexit.register(self.cleanup_monitor)
-
-        # 启动看门狗线程
         self._start_watchdog(context)
-        stage_log(
-            "✅ 监控进程看门狗启动（2s 轮询）",
-            scenario=stage_scenario,
-            stacklevel=3,
-        )
+        logger.info("[MONITOR-PROCESS] 看门狗线程已启动 (2s 轮询)")
 
-        # 等待监控进程Level 1就绪（管道就绪）
-        # 正常2-3秒，设置15秒超时（已非常宽松）
         level1_ports = await self._wait_monitor_ready(max_wait=15.0, wait_for_level=1)
+        port_names: list[str] = []
         if isinstance(level1_ports, dict) and level1_ports:
-            port_names = ", ".join(level1_ports.keys())
-            stage_log(
-                f"✅ Level 1就绪 (IPC管道: {port_names})",
-                scenario=stage_scenario,
-                stacklevel=3,
+            port_names = list(level1_ports.keys())
+            logger.info(
+                "[MONITOR-PROCESS] Level 1 就绪 (IPC: %s)", " / ".join(port_names)
             )
         else:
-            stage_log("✅ Level 1就绪 (IPC管道准备完成)", scenario=stage_scenario, stacklevel=3)
-
-        # 等待监控进程Level 2就绪（功能完整）
-        # 硬件监控初始化可能需要30-60秒，设置90秒超时
-        await self._wait_monitor_ready(max_wait=90.0, wait_for_level=2)
-
-        stage_log(
-            "✅ Level 2就绪 (监控能力完整)",
-            scenario=stage_scenario,
-            stacklevel=3,
+            logger.info("[MONITOR-PROCESS] Level 1 就绪 (IPC 管道准备完成)")
+        self._mark_ready(
+            context,
+            MONITOR_NODE_ID,
+            level="level1",
+            message="监控进程 IPC 管道已就绪",
+            extra={"ports": port_names},
         )
 
+        await self._wait_monitor_ready(max_wait=90.0, wait_for_level=2)
+        logger.info("[MONITOR-PROCESS] Level 2 就绪 (监控能力完整)")
         elapsed = time.time() - start_time
+        self._mark_ready(
+            context,
+            MONITOR_NODE_ID,
+            level="level2",
+            message="监控能力已激活",
+            extra={"elapsed": elapsed},
+        )
 
         return {
-            "pid": self.monitor_process_handle.pid,
-            "ports": level1_ports,
+            "pid": pid,
+            "ipc_ports": port_names,
+            "level1_ports": level1_ports,
             "elapsed": elapsed,
+            "stderr": stderr_path,
+            "signal_file": str(signal_file),
         }
 
     async def _wait_monitor_ready(self, max_wait: float = 15.0, wait_for_level: int = 1) -> dict:

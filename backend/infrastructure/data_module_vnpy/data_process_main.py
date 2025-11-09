@@ -429,10 +429,13 @@ class DataProcess:
                 if current_time - last_attempt < 1.0:  # 未连接时，每1秒尝试一次
                     return
                 self._pipe_last_attempt[pipe_name] = current_time
-                # 如果超过10秒未连接，记录警告
-                if current_time - self._pipe_last_attempt.get(f"{pipe_name}_warning_ts", 0) > 10.0:
+                warning_key = f"{pipe_name}_warning_ts"
+                last_warning_ts = self._pipe_last_attempt.get(warning_key)
+                if last_warning_ts is None:
+                    self._pipe_last_attempt[warning_key] = current_time
+                elif current_time - last_warning_ts > 10.0:
                     logger.warning(f"IPC管道 '{pipe_name}' 超过10秒未连接", extra={"log_type": "SYSTEM"})
-                    self._pipe_last_attempt[f"{pipe_name}_warning_ts"] = current_time
+                    self._pipe_last_attempt[warning_key] = current_time
 
             # 批量读取请求
             batch_requests = []
@@ -708,10 +711,13 @@ class DataProcess:
                 if current_time - last_attempt < 1.0:  # 未连接时，每1秒尝试一次
                     return
                 self._pipe_last_attempt[pipe_name] = current_time
-                # 如果超过10秒未连接，记录警告
-                if current_time - self._pipe_last_attempt.get(f"{pipe_name}_warning_ts", 0) > 10.0:
+                warning_key = f"{pipe_name}_warning_ts"
+                last_warning_ts = self._pipe_last_attempt.get(warning_key)
+                if last_warning_ts is None:
+                    self._pipe_last_attempt[warning_key] = current_time
+                elif current_time - last_warning_ts > 10.0:
                     logger.warning(f"IPC管道 '{pipe_name}' 超过10秒未连接", extra={"log_type": "SYSTEM"})
-                    self._pipe_last_attempt[f"{pipe_name}_warning_ts"] = current_time
+                    self._pipe_last_attempt[warning_key] = current_time
 
             # 读取请求（非阻塞）
             try:

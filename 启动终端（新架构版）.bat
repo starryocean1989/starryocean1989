@@ -6,6 +6,11 @@ REM ========================================
 REM 星辰金融终端 - 新架构版启动脚本
 REM ========================================
 
+REM 默认启用静默模式，避免在Python阶段日志输出前刷屏
+set "QUIET_MODE=1"
+
+if defined QUIET_MODE goto :quiet_mode_entry
+
 REM 🔧 优化控制台显示：设置窗口大小、缓冲区与字体大小，重点改善行间距
 REM 设置窗口大小：140列，50行（提供更大的显示区域）
 mode con: cols=140 lines=50 >nul 2>&1
@@ -238,6 +243,19 @@ if %EXIT_CODE% equ 0 (
 REM ========================================
 REM 错误退出处理
 REM ========================================
+
+:quiet_mode_entry
+cd /d "%~dp0"
+set "PROJECT_ROOT=%CD%"
+set "PYTHON_EXE=%PROJECT_ROOT%\venv310\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
+
+REM 静默执行进程清理和端口检测
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; $cleaned = 0; Get-Process python -ErrorAction SilentlyContinue | ForEach-Object { try { $cmdline = (Get-WmiObject Win32_Process -Filter \"ProcessId = $($_.Id)\").CommandLine; if ($cmdline) { if ($cmdline -match 'monitor_system\.py') { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; if ($?) { $cleaned = 1 } } elseif ($cmdline -match 'start_new\.py|start_async_fixed\.py') { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; if ($?) { $cleaned = 1 } } } } catch { } }; if ($cleaned -ne 0) { Start-Sleep -Seconds 2 }" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 5557,5558,5559 -and $_.State -eq 'Listen' } | ForEach-Object { try { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue } catch { } }" >nul 2>&1
+
+"%PYTHON_EXE%" start_new.py
+exit /b %ERRORLEVEL%
 
 :error_exit
 echo.

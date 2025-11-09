@@ -7,6 +7,8 @@ ROOT = Path(__file__).resolve().parent
 module = Extension(
     name="pipeline",
     sources=[str(ROOT / "pipeline.c")],
+    define_macros=[('PY_SSIZE_T_CLEAN', None)],
+    include_dirs=['..'],
 )
 
 setup(

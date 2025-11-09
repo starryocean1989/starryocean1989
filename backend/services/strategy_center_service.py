@@ -29,6 +29,7 @@ from backend.infrastructure.system_vnpy.logging_system import (
 
 # 直接使用native序列化优化
 from backend.infrastructure.native.native_serialization import zero_copy_serialize
+from backend.services.backtest_optimizer import BacktestOptimizer
 
 # 尝试导入native_iocp的高性能目录遍历功能
 try:
@@ -531,9 +532,9 @@ class StrategyCenterService(BaseService, LoggerMixin):
     管理策略文件和回测功能，提供：
     1. 策略文件管理 - 创建、读取、更新、删除、移动
     2. 策略分类识别 - 识别6种vnpy策略模板类型
-    3. 代码验证 - Python语法检查、策略规范检查
-    4. 回测服务 - 回测配置、执行、结果分析
-    """
+        3. 代码验证 - Python语法检查、策略规范检查
+        4. 回测服务 - 回测配置、执行、结果分析
+        """
 
     def __init__(self):
         """初始化策略中心服务."""
@@ -1581,6 +1582,7 @@ class MyPortfolioStrategy(StrategyTemplate):
 
                     # ✅ 开始事件日志流程（实际回测执行）
                     ai_log_started_backtest = False
+                    event_log_closed = False
                     try:
                         ai_log_file = start_event_process(
                             "backtest_run",
@@ -1946,6 +1948,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                                     success=True,
                                     summary=f"回测完成 - 总收益: {total_return:.2%}, 夏普比率: {sharpe_ratio:.2f}, 最大回撤: {max_drawdown:.2%}, 交易次数: {total_trades}",
                                 )
+                                event_log_closed = True
 
                         except ImportError as e:
                             total_elapsed_ms = (time.time() - start_time) * 1000
@@ -1985,6 +1988,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 end_event_process(
                                     success=False, summary=f"vnpy_ctabacktester包未安装: {str(e)}"
                                 )
+                                event_log_closed = True
 
                     except Exception as e:
                         total_duration = (time.time() - start_time) * 1000
@@ -2026,11 +2030,13 @@ class MyPortfolioStrategy(StrategyTemplate):
                         # ✅ 结束事件日志流程（异常）
                         if ai_log_started_backtest:
                             end_event_process(success=False, summary=f"回测失败: {str(e)}")
+                            event_log_closed = True
                     finally:
                         # ✅ 确保事件日志流程结束（兜底）
-                        if ai_log_started_backtest:
+                        if ai_log_started_backtest and not event_log_closed:
                             try:
                                 end_event_process(success=False, summary="回测流程异常结束")
+                                event_log_closed = True
                             except Exception:
                                 pass
 
@@ -2151,6 +2157,182 @@ class MyPortfolioStrategy(StrategyTemplate):
         except Exception as e:
             self._log_error("获取回测状态", e, task_id=task_id)
             return {}
+
+    def optimize_parameters(
+        self,
+        strategy_file: str,
+        symbol: str,
+        exchange: str,
+        start_date: str,
+        end_date: str,
+        interval: str,
+        param_grid: Dict[str, List[Any]],
+    ) -> Dict[str, Any]:
+        """使用原生优化器对策略参数进行网格优化。
+
+        - 动态加载策略类（继承自`vnpy_ctastrategy.CtaTemplate`）。
+        - 通过数据中心服务拉取本地OHLCV记录。
+        - 调用`BacktestOptimizer`进行参数组合评估并返回结果。
+
+        Args:
+            strategy_file: 策略文件（相对`strategies/user_strategies`路径）。
+            symbol: 标的代码（如`000001`）。
+            exchange: 交易所（如`SZSE`）。
+            start_date: 起始日期（`YYYY-MM-DD`）。
+            end_date: 结束日期（`YYYY-MM-DD`）。
+            interval: K线周期（如`1d`、`1m`）。
+            param_grid: 参数网格，键为参数名，值为候选列表。
+
+        Returns:
+            Dict: `{success, results, best}`，其中`results`为各组合评估结果列表。
+        """
+        try:
+            # 事件日志流程
+            ai_log_started = False
+            try:
+                event_file = start_event_process(
+                    "optimization_run",
+                    metadata={
+                        "strategy_file": strategy_file,
+                        "symbol": symbol,
+                        "exchange": exchange,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "interval": interval,
+                        "param_grid_keys": list(param_grid.keys()),
+                    },
+                )
+                ai_log_started = True
+                self.logger.info("优化事件日志文件: %s", event_file)
+            except Exception as e:
+                self.logger.warning("启动优化事件日志流程失败: %s", e, extra={"log_type": "SYSTEM"})
+
+            # 参数校验
+            if not param_grid or not all(isinstance(v, list) and v for v in param_grid.values()):
+                return {"success": False, "message": "参数网格为空或非法"}
+
+            # 定位策略文件
+            strategy_path = self.strategy_root / strategy_file
+            if not strategy_path.exists():
+                return {"success": False, "message": "策略文件不存在"}
+
+            # 场景阶段日志
+            stage_node(
+                "strategy.optimize",
+                f"📍 启动参数优化: {strategy_file}, {symbol}.{exchange}, {start_date}~{end_date}",
+                scenario="optimization",
+            )
+
+            # 动态加载策略类
+            import importlib.util
+            import sys
+            try:
+                strategy_module_name = f"strategy_opt_{Path(strategy_file).stem}"
+                spec = importlib.util.spec_from_file_location(strategy_module_name, str(strategy_path))
+                if spec is None or spec.loader is None:
+                    return {"success": False, "message": f"无法加载策略文件: {strategy_path}"}
+                strategy_module = importlib.util.module_from_spec(spec)
+                sys.modules[strategy_module_name] = strategy_module
+                spec.loader.exec_module(strategy_module)  # type: ignore
+
+                from vnpy_ctastrategy import CtaTemplate  # type: ignore
+                strategy_class = None
+                for name in dir(strategy_module):
+                    obj = getattr(strategy_module, name)
+                    if (
+                        isinstance(obj, type)
+                        and issubclass(obj, CtaTemplate)  # type: ignore
+                        and obj is not CtaTemplate  # type: ignore
+                    ):
+                        strategy_class = obj
+                        break
+                if strategy_class is None:
+                    return {"success": False, "message": "策略文件中未找到有效的CtaTemplate子类"}
+                self.logger.info("参数优化-策略类加载成功: %s", strategy_class.__name__)
+            except Exception as e:
+                alert("ERROR", "strategy.optimize", f"❌ 策略类加载失败: {e}")
+                return {"success": False, "message": f"策略类加载失败: {str(e)}"}
+
+            # 拉取本地数据记录
+            try:
+                from backend.core.base import get_service_manager
+                svc = get_service_manager()
+                data_service = svc.get_service("data_center_service")
+                if not data_service:
+                    return {"success": False, "message": "数据中心服务不可用"}
+                data_result = data_service.query_local_data(
+                    symbol=symbol, start_date=start_date, end_date=end_date, interval=interval
+                )
+                if not data_result.get("success"):
+                    return {"success": False, "message": data_result.get("message", "数据查询失败")}
+                records = data_result.get("data") or []
+                if not records:
+                    return {"success": False, "message": "无可用历史数据"}
+                self.logger.info("参数优化-加载历史数据条数: %d", len(records))
+            except Exception as e:
+                alert("ERROR", "strategy.optimize", f"❌ 数据加载失败: {e}")
+                return {"success": False, "message": f"数据加载失败: {str(e)}"}
+
+            # 执行优化
+            try:
+                optimizer = BacktestOptimizer()
+                start_ts = time.time()
+                results_objs = optimizer.optimize_parameters(
+                    strategy_cls=strategy_class,
+                    data_records=records,
+                    symbol=symbol,
+                    exchange=exchange,
+                    param_grid=param_grid,
+                )
+                elapsed_ms = (time.time() - start_ts) * 1000
+                self.logger.info("参数优化完成，耗时: %.0fms，组合数: %d", elapsed_ms, len(results_objs))
+
+                # 转为字典并选择最佳（按夏普比率降序）
+                results = [r.to_dict() for r in results_objs]
+                best = max(results, key=lambda x: x.get("sharpe", 0.0)) if results else None
+
+                # 业务指标埋点（简化版）
+                try:
+                    throughput = (len(records) / (elapsed_ms / 1000.0)) if elapsed_ms > 0 else 0.0
+                    self.metrics_collector.record_metric(
+                        "backtest_throughput", throughput, {"mode": "optimize", "combos": len(results)}
+                    )
+                except Exception:
+                    pass
+
+                # 阶段节点
+                stage_node(
+                    "strategy.optimize",
+                    (
+                        f"✅ 参数优化完成: 组合={len(results)}, 最优夏普={best['sharpe']:.2f}"
+                        if best else f"✅ 参数优化完成: 组合={len(results)}"
+                    ),
+                    scenario="optimization",
+                )
+
+                if ai_log_started:
+                    try:
+                        end_event_process(success=True, summary="参数优化完成")
+                    except Exception:
+                        pass
+
+                return {"success": True, "results": results, "best": best}
+            except Exception as e:
+                total_elapsed_ms = (time.time() - start_ts) * 1000 if 'start_ts' in locals() else 0
+                alert(
+                    "ERROR",
+                    "strategy.optimize",
+                    f"❌ 参数优化失败: {str(e)}, 耗时={total_elapsed_ms:.0f}ms",
+                )
+                if ai_log_started:
+                    try:
+                        end_event_process(success=False, summary=f"参数优化失败: {str(e)}")
+                    except Exception:
+                        pass
+                return {"success": False, "message": str(e)}
+        except Exception as e:
+            self._log_error("参数优化", e)
+            return {"success": False, "message": str(e)}
 
     def _stop_all_backtests(self):
         """停止所有回测任务."""

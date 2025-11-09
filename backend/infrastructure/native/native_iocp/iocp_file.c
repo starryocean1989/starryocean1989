@@ -3,6 +3,12 @@
 #include <Windows.h>
 #include <structmember.h>
 
+/* Native Log Bridge */
+#include "../native_log_bridge.h"
+
+/* 统一组件命名，符合统一日志规范 */
+#define NATIVE_COMPONENT "backend.native.iocp.core"
+
 /* Windows IOCP 常量（检查是否已定义） */
 #ifndef FILE_FLAG_OVERLAPPED
 #define FILE_FLAG_OVERLAPPED 0x40000000
@@ -135,8 +141,15 @@ static PyObject *IOCPFile_open(IOCPFileObject *self, PyObject *args) {
     DWORD create = OPEN_EXISTING;
 
     if (!PyArg_ParseTuple(args, "s|s", &filename, &mode)) {
+        NATIVE_LOG_ERROR(NATIVE_COMPONENT, "IOCPFile_open", __LINE__,
+                        "Failed to parse arguments for file open");
         return NULL;
     }
+
+    char open_details[256];
+    snprintf(open_details, sizeof(open_details), "filename=%s, mode=%s", filename, mode);
+    NATIVE_LOG_INFO_DETAILS(NATIVE_COMPONENT, "IOCPFile_open", __LINE__,
+                   "Opening file with IOCP", open_details);
 
     /* 解析模式 */
     if (strchr(mode, 'w') != NULL) {
@@ -163,9 +176,18 @@ static PyObject *IOCPFile_open(IOCPFileObject *self, PyObject *args) {
     );
 
     if (self->hFile == INVALID_HANDLE_VALUE) {
-        PyErr_SetFromWindowsErr(0);
+        DWORD error = GetLastError();
+        char error_details[256];
+        snprintf(error_details, sizeof(error_details),
+                "filename=%s, error_code=%lu", filename, error);
+        NATIVE_LOG_ERROR_DETAILS(NATIVE_COMPONENT, "IOCPFile_open", __LINE__,
+                        "Failed to open file", error_details);
+        PyErr_SetFromWindowsErr(error);
         return NULL;
     }
+
+    NATIVE_LOG_DEBUG_DETAILS(NATIVE_COMPONENT, "IOCPFile_open", __LINE__,
+                    "File opened successfully", filename);
 
     /* 创建IOCP */
     self->hIOCP = CreateIoCompletionPort(
@@ -238,18 +260,29 @@ static PyObject *IOCPFile_read_async(IOCPFileObject *self, PyObject *args) {
     Py_ssize_t size = 4096;
 
     if (!PyArg_ParseTuple(args, "|n", &size)) {
+        NATIVE_LOG_ERROR(NATIVE_COMPONENT, "IOCPFile_read_async", __LINE__,
+                        "Failed to parse arguments for async read");
         return NULL;
     }
 
     if (self->hFile == INVALID_HANDLE_VALUE) {
+        NATIVE_LOG_ERROR(NATIVE_COMPONENT, "IOCPFile_read_async", __LINE__,
+                        "Attempted to read from unopened file");
         PyErr_SetString(PyExc_ValueError, "File not opened");
         return NULL;
     }
 
     if (self->ext_overlapped == NULL) {
+        NATIVE_LOG_ERROR(NATIVE_COMPONENT, "IOCPFile_read_async", __LINE__,
+                        "OVERLAPPED structure not initialized");
         PyErr_SetString(PyExc_ValueError, "OVERLAPPED structure not initialized");
         return NULL;
     }
+
+    char size_details[64];
+    snprintf(size_details, sizeof(size_details), "size=%zd", size);
+    NATIVE_LOG_DEBUG_DETAILS(NATIVE_COMPONENT, "IOCPFile_read_async", __LINE__,
+                    "Initiating async file read operation", size_details);
 
     /* 分配缓冲区 */
     if (self->buffer == NULL || self->buffer_size < (size_t)size) {

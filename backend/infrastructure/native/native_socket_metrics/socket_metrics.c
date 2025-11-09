@@ -4,6 +4,12 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
+#include <stdio.h>
+
+/* 包含日志桥接头文件 */
+#include "../native_log_bridge.h"
+
+#define COMPONENT_CORE "backend.native.native_socket_metrics.core"
 
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -26,11 +32,50 @@ typedef struct {
 static int ensure_wsa_started(void) {
     static int initialized = 0;
     if (!initialized) {
+        /* 阶段11埋点：记录WSAStartup调用 */
+        native_log_bridge_log(
+            NATIVE_LOG_LEVEL_DEBUG,
+            COMPONENT_CORE,
+            "WSAStartup",
+            __LINE__,
+            "WSAStartup invoked",
+            "{\"scenario\":\"socket_metrics_init\"}");
+
         WSADATA wsaData;
         int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
         if (result != 0) {
+            /* 阶段11埋点：记录WSAStartup失败 */
+            char error_details[160];
+            snprintf(
+                error_details,
+                sizeof(error_details),
+                "{\"result\":%d,\"scenario\":\"socket_metrics_init\"}",
+                result);
+            native_log_bridge_log(
+                NATIVE_LOG_LEVEL_ERROR,
+                COMPONENT_CORE,
+                "WSAStartup",
+                __LINE__,
+                "WSAStartup failed",
+                error_details);
             PyErr_Format(PyExc_RuntimeError, "WSAStartup failed: %d", result);
             return 0;
+        } else {
+            /* 阶段11埋点：记录WSAStartup成功 */
+            char success_details[160];
+            snprintf(
+                success_details,
+                sizeof(success_details),
+                "{\"version\":\"%d.%d\",\"scenario\":\"socket_metrics_init\"}",
+                LOBYTE(wsaData.wVersion),
+                HIBYTE(wsaData.wVersion));
+            native_log_bridge_log(
+                NATIVE_LOG_LEVEL_INFO,
+                COMPONENT_CORE,
+                "WSAStartup",
+                __LINE__,
+                "WSAStartup succeeded",
+                success_details);
         }
         initialized = 1;
     }
@@ -132,14 +177,75 @@ static int increment_pid_count(PyObject *pid_counts, DWORD pid) {
 }
 
 static int collect_tcp_table(int family, tcp_snapshot_t *snapshot, PyObject *state_counts, PyObject *pid_counts) {
+    /* 阶段11埋点：记录GetExtendedTcpTable预调用 */
+    char preflight_details[200];
+    snprintf(
+        preflight_details,
+        sizeof(preflight_details),
+        "{\"family\":%d,\"phase\":\"preflight\",\"scenario\":\"socket_metrics_collect\"}",
+        family);
+    native_log_bridge_log(
+        NATIVE_LOG_LEVEL_DEBUG,
+        COMPONENT_CORE,
+        "GetExtendedTcpTable",
+        __LINE__,
+        "Querying TCP table size",
+        preflight_details);
+
     DWORD size = 0;
     DWORD result = GetExtendedTcpTable(NULL, &size, FALSE, (ULONG)family, TCP_TABLE_OWNER_PID_ALL, 0);
     if (result != ERROR_INSUFFICIENT_BUFFER) {
         if (result == ERROR_NOT_SUPPORTED || result == ERROR_INVALID_PARAMETER) {
+            /* 阶段11埋点：记录不支持的情况 */
+            char unsupported_details[200];
+            snprintf(
+                unsupported_details,
+                sizeof(unsupported_details),
+                "{\"family\":%d,\"result\":%lu,\"scenario\":\"socket_metrics_collect\"}",
+                family,
+                result);
+            native_log_bridge_log(
+                NATIVE_LOG_LEVEL_INFO,
+                COMPONENT_CORE,
+                "GetExtendedTcpTable",
+                __LINE__,
+                "TCP table query not supported",
+                unsupported_details);
             return 1;
         }
+        /* 阶段11埋点：记录预调用失败 */
+        char error_details[200];
+        snprintf(
+            error_details,
+            sizeof(error_details),
+            "{\"family\":%d,\"result\":%lu,\"phase\":\"preflight\",\"scenario\":\"socket_metrics_collect\"}",
+            family,
+            result);
+        native_log_bridge_log(
+            NATIVE_LOG_LEVEL_ERROR,
+            COMPONENT_CORE,
+            "GetExtendedTcpTable",
+            __LINE__,
+            "GetExtendedTcpTable preflight failed",
+            error_details);
         PyErr_Format(PyExc_RuntimeError, "GetExtendedTcpTable pre-call failed (family=%d): %lu", family, result);
         return 0;
+    } else {
+        /* 阶段11埋点：记录预调用成功 */
+        char info_details[200];
+        snprintf(
+            info_details,
+            sizeof(info_details),
+            "{\"family\":%d,\"size\":%lu,\"scenario\":\"socket_metrics_collect\"}",
+            family,
+            size);
+        native_log_bridge_log(
+            NATIVE_LOG_LEVEL_INFO,
+            COMPONENT_CORE,
+            "GetExtendedTcpTable",
+            __LINE__,
+            "GetExtendedTcpTable preflight succeeded",
+            info_details);
     }
 
     BYTE *buffer = (BYTE *)PyMem_Malloc(size);

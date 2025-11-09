@@ -9,6 +9,18 @@
 #include <Windows.h>
 #include <structmember.h>
 #include "priority_queue.h"
+#include "../native_log_bridge.h"
+
+#define PRIORITY_QUEUE_COMPONENT "backend.native.collections.priority"
+
+#define PQ_LOG(level, message, details) \
+    native_log_bridge_log(level, PRIORITY_QUEUE_COMPONENT, __FUNCTION__, __LINE__, message, details)
+
+#define PQ_LOG_ERROR(message, details) \
+    PQ_LOG(NATIVE_LOG_LEVEL_ERROR, message, details)
+
+#define PQ_LOG_WARNING(message, details) \
+    PQ_LOG(NATIVE_LOG_LEVEL_WARNING, message, details)
 
 /* 使用头文件中定义的HighPerfPriorityQueue结构 */
 
@@ -87,12 +99,14 @@ static PyObject* HighPerfPriorityQueue_put(HighPerfPriorityQueue *self, PyObject
     PriorityNode *prev = NULL;
 
     if (!PyArg_ParseTuple(args, "Ol", &item, &priority)) {
+        PQ_LOG_ERROR("invalid arguments for PriorityQueue.put", NULL);
         return NULL;
     }
 
     /* 创建节点 */
     node = (PriorityNode *)malloc(sizeof(PriorityNode));
     if (node == NULL) {
+        PQ_LOG_ERROR("failed to allocate priority queue node", NULL);
         PyErr_SetString(PyExc_MemoryError, "Failed to allocate priority node");
         return NULL;
     }
@@ -136,6 +150,7 @@ static PyObject* HighPerfPriorityQueue_get(HighPerfPriorityQueue *self, PyObject
 
     if (self->head == NULL) {
         LeaveCriticalSection(&self->lock);
+        PQ_LOG_WARNING("attempted to get item from empty priority queue", NULL);
         PyErr_SetString(PyExc_IndexError, "Queue is empty");
         return NULL;
     }

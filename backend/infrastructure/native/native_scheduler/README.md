@@ -69,6 +69,9 @@ python setup.py build_ext --inplace
 - `SCHEDULER_AVAILABLE`：始终为 `True`，表示至少存在回退实现。
 - `USING_NATIVE_CORE`：指示当前是否运行在原生扩展上，建议记录至统一日志。
 - `NativeScheduler.stats()`：返回每个类别的队列长度与并发限制，可用于定时采样。
+- **日志集成**：已集成 NativeLogBridge，支持任务提交、执行、调度失败的结构化日志记录。
+  - C 层：类别注册失败、任务提交异常、线程池调度失败、任务执行错误等关键事件。
+  - Python 层：使用 `@native_call_guard` 装饰器捕获包装层异常，统一接口层提供结构化日志。
 
 ---
 

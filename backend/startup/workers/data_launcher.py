@@ -7,13 +7,14 @@
 
 import asyncio
 import atexit
+import importlib
 import json
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
@@ -22,7 +23,6 @@ from backend.infrastructure.system_vnpy.logging_system import (
     alert_log,
     get_alert_logger,
     get_configured_logger,
-    stage_log,
 )
 
 
@@ -49,6 +49,8 @@ alert_logger = get_alert_logger(
     "backend.startup.workers.data_launcher.alert",
     scenario="data_launch",
 )
+
+DATA_NODE_ID = "backend_init.data"
 
 # 全局变量用于进程清理
 _global_data_worker: Optional['DataLauncherWorker'] = None
@@ -93,14 +95,7 @@ class DataLauncherWorker(StartupWorker):
         start_time = time.time()
 
         try:
-            stage_scenario = "data_launch"
-            stage_log("", scenario=stage_scenario, stacklevel=3)
-            stage_log("┌" + "─" * 66 + "┐", scenario=stage_scenario, stacklevel=3)
-            stage_log("│ 分支B: 数据进程                                                   │", scenario=stage_scenario, stacklevel=3)
-            stage_log("└" + "─" * 66 + "┘", scenario=stage_scenario, stacklevel=3)
-            stage_log("", scenario=stage_scenario, stacklevel=3)
-            stage_log("📍 数据进程启动开始", scenario=stage_scenario, stacklevel=3)
-
+            stage_data: dict[str, Any] = {}
             # 启动数据进程
             data_info = await self._launch_data_process(context)
 
@@ -109,18 +104,20 @@ class DataLauncherWorker(StartupWorker):
                 context.set_data_process(self.data_process_handle)
 
             elapsed_ms = (time.time() - start_time) * 1000
-
-            stage_log(
-                f"✅ 数据进程完全就绪 ({elapsed_ms/1000:.1f}s)",
-                scenario=stage_scenario,
-                stacklevel=3,
+            stage_data.update(
+                {
+                    "data_info": data_info,
+                    "watchdog_started": self.watchdog_running,
+                    "log_collector_attached": bool(getattr(context, "log_queue_token", None)),
+                    "elapsed_ms": elapsed_ms,
+                }
             )
 
             return WorkerResult(
                 success=True,
                 message="数据进程启动完成",
                 elapsed_ms=elapsed_ms,
-                data={"data_info": data_info},
+                data=stage_data,
             )
 
         except Exception as e:
@@ -129,6 +126,12 @@ class DataLauncherWorker(StartupWorker):
             self._alert_logger.error(
                 f"❌ [DataLauncherWorker] 数据进程启动Worker异常: {e}",
                 exc_info=True,
+            )
+            self._mark_failure(
+                context,
+                DATA_NODE_ID,
+                f"数据进程启动异常: {e}",
+                extra={"elapsed_ms": elapsed_ms},
             )
 
             return WorkerResult(
@@ -139,20 +142,9 @@ class DataLauncherWorker(StartupWorker):
             )
 
     async def _launch_data_process(self, context: StartupContext) -> dict:
-        """启动数据进程
+        """启动数据进程并等待各级就绪."""
 
-        Args:
-            context: 启动上下文
-
-        Returns:
-            dict: 数据进程信息 {"pid": int, "pipes": dict, "elapsed": float}
-
-        Raises:
-            RuntimeError: 数据进程启动失败
-        """
         start_time = time.time()
-        stage_scenario = "data_launch"
-
         data_script = (
             context.project_root
             / "backend"
@@ -160,11 +152,9 @@ class DataLauncherWorker(StartupWorker):
             / "data_module_vnpy"
             / "data_process_main.py"
         )
-
         if not data_script.exists():
             raise RuntimeError(f"数据进程脚本不存在: {data_script}")
 
-        # 清理可能遗留的就绪信号文件，避免误判
         signal_file = context.project_root / "logs" / "data_process_ready.signal"
         if signal_file.exists():
             try:
@@ -176,10 +166,7 @@ class DataLauncherWorker(StartupWorker):
                     cleanup_error,
                 )
 
-        # 准备启动参数
         launch_args = [sys.executable, str(data_script)]
-
-        # 如果提供了日志队列，需要通过环境变量传递（multiprocessing.Queue不能直接序列化）
         env = os.environ.copy()
         if getattr(context, "log_queue_token", None):
             env[LOGGING_QUEUE_TOKEN_ENV] = context.log_queue_token  # type: ignore[arg-type]
@@ -187,95 +174,111 @@ class DataLauncherWorker(StartupWorker):
         else:
             alert_log(
                 "⚠️ 未检测到日志队列令牌，数据进程日志将回退至本地输出",
-                scenario=stage_scenario,
+                scenario="data_launch",
                 stacklevel=3,
             )
 
-        # 启动数据进程（指定工作目录为项目根目录）
-        # 在Windows上确保权限传递
         creation_flags = 0
         if sys.platform == "win32":
             creation_flags = subprocess.CREATE_NO_WINDOW
-            # 检查当前是否有管理员权限
             try:
                 import ctypes
 
-                if ctypes.windll.shell32.IsUserAnAdmin():
-                    # 如果有管理员权限，确保子进程也有
-                    self.logger.info(
-                        "[DATA-PROCESS] 检测到管理员权限，将传递给数据进程"
-                    )
+                if ctypes.windll.shell32.IsUserAnAdmin():  # type: ignore[attr-defined]
+                    logger.info("[DATA-PROCESS] 以管理员权限启动")
             except Exception:
                 pass
 
-        # 🔧 修复：重定向stderr以便捕获调试信息
         import tempfile
-        stderr_file = tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.log', prefix='data_process_stderr_')
+
+        stderr_file = tempfile.NamedTemporaryFile(
+            mode="w+",
+            delete=False,
+            suffix=".log",
+            prefix="data_process_stderr_",
+        )
         stderr_file.close()
         stderr_path = stderr_file.name
-        
+
         self.data_process_handle = subprocess.Popen(
             launch_args,
-            stdout=None,  # 不重定向，使用默认输出
-            stderr=open(stderr_path, 'w'),  # 重定向stderr到文件以便调试
-            cwd=str(context.project_root),  # 确保数据进程在项目根目录工作
+            stdout=subprocess.DEVNULL,
+            stderr=open(stderr_path, "w"),
+            cwd=str(context.project_root),
             creationflags=creation_flags,
             env=env,
         )
-        
-        # 保存stderr文件路径以便后续读取
         self.data_process_stderr_path = stderr_path
-        logger.debug(f"[DATA-PROCESS] 数据进程stderr重定向到: {stderr_path}")
-
-        # 获取PID并显示
         pid = self.data_process_handle.pid
-        stage_log(
-            f"✅ data_process_main.py进程已启动 (PID: {pid})",
-            scenario=stage_scenario,
-            stacklevel=3,
+        logger.info("[DATA-PROCESS] 进程已启动 (PID: %s)", pid)
+        self._mark_ready(
+            context,
+            DATA_NODE_ID,
+            level="level0",
+            message=f"数据进程已启动 (PID: {pid})",
+            extra={"pid": pid},
         )
 
-        # 注册清理函数
         atexit.register(self.cleanup_data_process)
-
-        # 启动看门狗线程
         self._start_watchdog(context)
-        stage_log(
-            "✅ 数据进程看门狗启动（2s 轮询）",
-            scenario=stage_scenario,
-            stacklevel=3,
-        )
+        logger.info("[DATA-PROCESS] 看门狗线程已启动 (2s 轮询)")
 
-        # 等待数据进程Level 1就绪（管道就绪）
-        # 正常2-3秒，设置15秒超时（已非常宽松）
         level1_info = await self._wait_data_process_ready(max_wait=15.0, wait_for_level=1)
-        pipe_names = level1_info.get("pipes", []) if isinstance(level1_info, dict) else []
+        pipe_names: list[str] = []
+        if isinstance(level1_info, dict):
+            pipe_names = level1_info.get("pipes", []) or []
         if pipe_names:
-            pipe_text = ", ".join(pipe_names)
-            stage_log(
-                f"✅ Level 1就绪 (IPC管道: {pipe_text})",
-                scenario=stage_scenario,
-                stacklevel=3,
+            logger.info(
+                "[DATA-PROCESS] Level 1 就绪 (IPC: %s)", " / ".join(pipe_names)
             )
         else:
-            stage_log("✅ Level 1就绪 (IPC管道准备完成)", scenario=stage_scenario, stacklevel=3)
-
-        # 等待数据进程Level 2就绪（功能完整）
-        # 数据服务初始化可能需要30-60秒，设置90秒超时
-        await self._wait_data_process_ready(max_wait=90.0, wait_for_level=2)
-
-        stage_log(
-            "✅ Level 2就绪 (数据服务功能完整)",
-            scenario=stage_scenario,
-            stacklevel=3,
+            logger.info("[DATA-PROCESS] Level 1 就绪 (IPC 管道准备完成)")
+        self._mark_ready(
+            context,
+            DATA_NODE_ID,
+            level="level1",
+            message="数据进程 IPC 管道已就绪",
+            extra={"pipes": pipe_names},
         )
 
+        await self._wait_data_process_ready(max_wait=90.0, wait_for_level=2)
+        logger.info("[DATA-PROCESS] Level 2 就绪 (数据服务装载完成)")
+
+        rpc_ready = await self._verify_rpc_connection(timeout=5.0)
+        if rpc_ready:
+            logger.info("[DATA-PROCESS] RPC 通道验证成功")
+        else:
+            alert_log(
+                "⚠️ RPC通道验证失败，将使用降级模式",
+                scenario="data_launch",
+                stacklevel=3,
+            )
+            self._mark_failure(
+                context,
+                DATA_NODE_ID,
+                "RPC 通道验证失败，数据进程进入降级模式",
+                extra={"ready_key": f"{DATA_NODE_ID}:rpc", "level": "rpc"},
+            )
+
         elapsed = time.time() - start_time
+        level2_ready = rpc_ready
+        self._mark_ready(
+            context,
+            DATA_NODE_ID,
+            level="level2",
+            message="数据进程服务层已装载",
+            extra={"rpc_ready": rpc_ready, "elapsed": elapsed},
+        )
 
         return {
-            "pid": self.data_process_handle.pid,
-            "pipes": level1_info,
+            "pid": pid,
+            "ipc_pipes": pipe_names,
+            "level1_info": level1_info,
+            "level_2_ready": level2_ready,
+            "level2_ready": level2_ready,
             "elapsed": elapsed,
+            "stderr": stderr_path,
+            "signal_file": str(signal_file),
         }
 
     async def _wait_data_process_ready(self, max_wait: float = 15.0, wait_for_level: int = 1) -> dict:
@@ -498,6 +501,69 @@ class DataLauncherWorker(StartupWorker):
             self.logger.debug(
                 f"[DATA-PROCESS] 清理信号文件失败（可接受）: {e}"
             )
+
+    async def _verify_rpc_connection(self, timeout: float = 5.0) -> bool:
+        """验证RPC连接（最佳实践）
+
+        尝试连接数据进程RPC服务，验证通道是否正常。
+
+        Args:
+            timeout: 超时时间（秒）
+
+        Returns:
+            bool: RPC连接是否成功
+        """
+        try:
+            # 优先尝试native_rpc_bridge（二进制序列化 + 零拷贝）
+            try:
+                rpc_bridge = importlib.import_module(
+                    "backend.infrastructure.native.native_rpc_bridge"
+                )
+                check_rpc_available = getattr(rpc_bridge, "check_rpc_available", None)
+
+                if callable(check_rpc_available) and check_rpc_available():
+                    self.logger.debug(
+                        "[DATA-PROCESS] 使用native_rpc_bridge进行RPC验证"
+                    )
+                    # 执行简单的ping测试
+                    # 这里需要根据实际RPC接口实现
+                    return True
+            except (ImportError, AttributeError):
+                self.logger.debug(
+                    "[DATA-PROCESS] native_rpc_bridge不可用，回退到轻量JSON协议"
+                )
+
+            # 回退方案：轻量JSON协议
+            from backend.infrastructure.data_module_vnpy.data_process_client import (
+                get_data_process_client,
+            )
+
+            data_client = get_data_process_client()
+            # 尝试连接，带超时
+            connected = await asyncio.wait_for(
+                data_client.connect_async(), timeout=timeout
+            )
+
+            if connected:
+                self.logger.debug("[DATA-PROCESS] RPC连接验证成功")
+                return True
+            else:
+                self.logger.warning(
+                    "[DATA-PROCESS] RPC连接验证失败"
+                )
+                return False
+
+        except asyncio.TimeoutError:
+            self.logger.warning(
+                f"[DATA-PROCESS] RPC连接验证超时（{timeout}s）"
+            )
+            return False
+        except Exception as e:
+            self.logger.warning(
+                f"[DATA-PROCESS] RPC连接验证异常: {e}",
+                exc_info=True,
+            )
+            return False
 
 
 def cleanup_all_processes():

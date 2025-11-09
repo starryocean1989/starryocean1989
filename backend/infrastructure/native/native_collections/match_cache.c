@@ -11,6 +11,18 @@
 #include <stdbool.h>
 
 #include "match_cache.h"
+#include "../native_log_bridge.h"
+
+#define MATCH_CACHE_COMPONENT "backend.native.collections.match_cache"
+
+#define MATCH_LOG(level, message, details) \
+    native_log_bridge_log(level, MATCH_CACHE_COMPONENT, __FUNCTION__, __LINE__, message, details)
+
+#define MATCH_LOG_ERROR(message, details) \
+    MATCH_LOG(NATIVE_LOG_LEVEL_ERROR, message, details)
+
+#define MATCH_LOG_WARNING(message, details) \
+    MATCH_LOG(NATIVE_LOG_LEVEL_WARNING, message, details)
 
 /* ==================== 工具函数声明 ==================== */
 static PyObject* ensure_unicode(PyObject *value);
@@ -152,14 +164,17 @@ static PyObject* get_or_create_dict(PyObject *mapping, PyObject *key) {
         return dict;
     }
     if (PyErr_Occurred()) {
+        MATCH_LOG_ERROR("failed to access dictionary entry", NULL);
         return NULL;
     }
     dict = PyDict_New();
     if (!dict) {
+        MATCH_LOG_ERROR("failed to allocate nested dictionary", NULL);
         return NULL;
     }
     if (PyDict_SetItem(mapping, key, dict) < 0) {
         Py_DECREF(dict);
+        MATCH_LOG_ERROR("failed to insert nested dictionary", NULL);
         return NULL;
     }
     return dict;
@@ -762,6 +777,7 @@ static PyObject* HighPerfMatchCache_upsert_trade(HighPerfMatchCache *self, PyObj
         Py_XDECREF(trade_id_key);
         Py_XDECREF(symbol_key);
         Py_XDECREF(direction_key);
+        MATCH_LOG_ERROR("trade object missing required attributes", NULL);
         PyErr_SetString(PyExc_ValueError, "Trade object missing required attributes");
         return NULL;
     }
@@ -775,6 +791,7 @@ static PyObject* HighPerfMatchCache_upsert_trade(HighPerfMatchCache *self, PyObj
         Py_DECREF(trade_id_key);
         Py_DECREF(symbol_key);
         Py_DECREF(direction_key);
+        MATCH_LOG_ERROR("failed to resolve gateway trade dictionary", NULL);
         return NULL;
     }
 
@@ -800,6 +817,7 @@ static PyObject* HighPerfMatchCache_upsert_trade(HighPerfMatchCache *self, PyObj
                 Py_DECREF(trade_id_key);
                 Py_DECREF(symbol_key);
                 Py_DECREF(direction_key);
+                MATCH_LOG_ERROR("failed to rollback statistics for existing trade", NULL);
                 return NULL;
             }
         }
@@ -814,6 +832,7 @@ static PyObject* HighPerfMatchCache_upsert_trade(HighPerfMatchCache *self, PyObj
         Py_DECREF(trade_id_key);
         Py_DECREF(symbol_key);
         Py_DECREF(direction_key);
+        MATCH_LOG_ERROR("failed to insert trade into gateway cache", NULL);
         return NULL;
     }
 
@@ -824,6 +843,7 @@ static PyObject* HighPerfMatchCache_upsert_trade(HighPerfMatchCache *self, PyObj
         Py_DECREF(trade_id_key);
         Py_DECREF(symbol_key);
         Py_DECREF(direction_key);
+        MATCH_LOG_ERROR("failed to update aggregated trade statistics", NULL);
         return NULL;
     }
 

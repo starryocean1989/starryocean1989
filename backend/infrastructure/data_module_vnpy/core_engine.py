@@ -688,7 +688,7 @@ class DailyCacheManager:
 
             # 🔧 修复：添加详细的调试日志（WARNING级别，确保Terminal可见）
             # 同时输出到详细日志（DEBUG级别）
-            logger.warning(
+            logger.info(
                 f"📅 日期验证: {Path(read_path).name} "
                 f"(缓存日期: {cache_date}, 真实日期: {real_date}, 系统日期: {system_date}, "
                 f"is_valid: {is_valid})",
@@ -718,7 +718,7 @@ class DailyCacheManager:
                 )
                 # 🔧 修复：如果缓存日期等于系统日期，说明网络时间同步可能有问题，使用系统日期
                 if cache_date == system_date:
-                    logger.warning(
+                    logger.info(
                         f"⚠️ 缓存日期与系统日期一致，但与网络时间不一致，使用系统日期验证: "
                         f"文件路径={cache_file_path}",
                         extra={"log_type": "SYSTEM"},
@@ -2096,11 +2096,14 @@ class ChinaStockEngine:
         hub.set_stage("data_engine")
 
         scenario = "application_startup"
-        stage_logger = bind_logger_defaults(
-            logging.getLogger("startup.stage.data_engine"),
-            log_type="STAGE_NODE",
-            scenario=scenario,
-        )
+        class _StageLoggerAdapter(logging.LoggerAdapter):
+            def process(self, msg, kwargs):
+                extra = kwargs.setdefault("extra", {})
+                extra["log_type"] = "SYSTEM"
+                extra.setdefault("scenario", scenario)
+                return msg, kwargs
+
+        stage_logger = _StageLoggerAdapter(logging.getLogger("startup.stage.data_engine"), {})
 
         # 🔍 详细埋点：记录流程开始
         logger.debug(

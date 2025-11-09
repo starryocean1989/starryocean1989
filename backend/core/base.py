@@ -222,6 +222,20 @@ class ServiceManager:
             服务实例，如果不存在则返回None
         """
         try:
+            # 诊断埋点：记录服务获取调用（限关键服务）
+            if name in {
+                "trading_gateway_service",
+                "strategy_center_service",
+                "ai_assistant_service",
+                "portfolio_service",
+                "market_board_service",
+                "system_manager_service",
+            }:
+                self.logger.debug(
+                    "[ServiceManager] get_service(%s) called (thread=%s)",
+                    name,
+                    threading.current_thread().name,
+                )
             if name not in self.services:
                 if not silent:
                     # 🎯 架构修复：在快速启动模式下，查询可选服务是正常行为
@@ -235,6 +249,18 @@ class ServiceManager:
                 return None
 
             service = self.services[name]
+            # 诊断埋点：记录服务返回（含类型）
+            if name in {
+                "trading_gateway_service",
+                "strategy_center_service",
+                "ai_assistant_service",
+                "portfolio_service",
+                "market_board_service",
+                "system_manager_service",
+            }:
+                self.logger.debug(
+                    "[ServiceManager] get_service(%s) -> %s", name, type(service).__name__ if service else None
+                )
             if service is None:
                 if not silent:
                     self.record_error(

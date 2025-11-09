@@ -351,6 +351,18 @@ except ImportError:
     VNPY_CONVERSION_AVAILABLE = False  # type: ignore
     vnpy_batch_convert = vnpy_convert_one = None  # type: ignore
 
+# 日志管道 - native_log_pipeline
+try:
+    from . import native_log_pipeline as log_pipeline  # type: ignore
+    LOG_PIPELINE_AVAILABLE = True
+    __all__.extend([
+        'log_pipeline',
+        'LOG_PIPELINE_AVAILABLE',
+    ])
+except ImportError:
+    LOG_PIPELINE_AVAILABLE = False  # type: ignore
+    log_pipeline = None  # type: ignore
+
 # 技术指标 - native_indicator
 try:
     from .native_indicator import (  # type: ignore

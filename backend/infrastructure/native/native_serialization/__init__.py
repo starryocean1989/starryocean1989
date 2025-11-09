@@ -11,6 +11,11 @@ import logging
 import platform
 from typing import Any, Optional
 
+from backend.infrastructure.native.logging_bridge import (
+    native_call_guard,
+    native_async_call_guard,
+)
+
 logger = logging.getLogger(__name__)
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -35,8 +40,15 @@ if IS_WINDOWS:
             break
 
     if module is not None:
-        batch_serialize = module.batch_serialize  # type: ignore[attr-defined]
-        batch_deserialize = module.batch_deserialize  # type: ignore[attr-defined]
+        # 为native函数添加守卫器
+        @native_call_guard(component="backend.native.native_serialization.wrapper")
+        def batch_serialize(*args, **kwargs):
+            return module.batch_serialize(*args, **kwargs)  # type: ignore[attr-defined]
+
+        @native_call_guard(component="backend.native.native_serialization.wrapper")
+        def batch_deserialize(*args, **kwargs):
+            return module.batch_deserialize(*args, **kwargs)  # type: ignore[attr-defined]
+
         _native_zero_copy = module.zero_copy_serialize  # type: ignore[attr-defined]
         SERIALIZATION_AVAILABLE = True
         __all__ = [
@@ -49,6 +61,7 @@ if IS_WINDOWS:
         SERIALIZATION_AVAILABLE = False
         __all__ = ["SERIALIZATION_AVAILABLE"]
 
+        @native_call_guard(component="backend.native.native_serialization.fallback")
         def _raise_import_error(*_args, **_kwargs):
             raise ImportError("Serialization C extension not compiled")
 
@@ -57,6 +70,7 @@ else:
     SERIALIZATION_AVAILABLE = False
     __all__ = ["SERIALIZATION_AVAILABLE"]
 
+    @native_call_guard(component="backend.native.native_serialization.platform")
     def _raise_platform_error(*_args, **_kwargs):
         raise RuntimeError("Serialization extension only supports Windows platform")
 
@@ -69,6 +83,7 @@ if _native_zero_copy is not None:
     except ImportError:  # pragma: no cover - pandas 不可用时回退
         _pd = None
 
+    @native_call_guard(component="backend.native.native_serialization.wrapper")
     def zero_copy_serialize(obj):  # type: ignore[assignment]
         """包装原生零拷贝函数，提供 DataFrame 兼容回退."""
 

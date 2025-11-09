@@ -19,15 +19,18 @@ from backend.infrastructure.system_vnpy.logging_system import (
     LogType,
 )
 
+# 导入native_call_guard装饰器
+from backend.infrastructure.native.logging_bridge import native_call_guard
+
 # 创建logger并绑定默认属性
 logger = bind_logger_defaults(
     logging.getLogger("backend.native.ipc"),
     log_type=LogType.SYSTEM.value,
-    scenario="native.ipc"
+    scenario="backend.native.ipc"
 )
 
 # 创建告警logger
-alert_logger = get_alert_logger("backend.native.ipc.alert", scenario="native.ipc")
+alert_logger = get_alert_logger("backend.native.ipc.alert", scenario="backend.native.ipc")
 
 T = TypeVar('T', bound=Callable[..., Any])
 
@@ -44,6 +47,8 @@ def log_alert_on_error(func: T) -> T:
                     "error_type": type(e).__name__,
                     "module": func.__module__,
                     "function": func.__name__,
+                    "scenario": "backend.native.ipc",
+                    "log_type": LogType.ALERT.value,
                 },
             )
             raise
@@ -63,6 +68,13 @@ if IS_WINDOWS:
             setup_ipc_loop,
         )
         IPC_AVAILABLE = True
+        logger.debug(
+            "native_ipc C 扩展已加载",
+            extra={
+                "scenario": "backend.native.ipc",
+                "native_module": "backend.native.ipc.core",
+            },
+        )
         __all__ = [
             "AsyncIPCPipe",
             "aopen_server",
@@ -76,6 +88,15 @@ if IS_WINDOWS:
     except ImportError as e:
         # C扩展未编译
         IPC_AVAILABLE = False
+        logger.warning(
+            "native_ipc C 扩展未编译，后续调用将触发降级告警",
+            extra={
+                "log_type": LogType.SYSTEM.value,
+                "scenario": "backend.native.ipc",
+                "native_module": "backend.native.ipc.core",
+                "action_required": "compile_extension",
+            },
+        )
         __all__ = ["IPC_AVAILABLE"]
 
         @log_alert_on_error
@@ -117,6 +138,7 @@ else:
                 "log_type": LogType.ALERT.value,
                 "current_platform": platform.system(),
                 "action_required": "unsupported_platform",
+                "scenario": "backend.native.ipc",
             },
         )
         raise RuntimeError("IPC async only supports Windows platform")

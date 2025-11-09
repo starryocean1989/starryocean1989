@@ -12,7 +12,17 @@ import os
 from types import MappingProxyType
 from typing import Dict, Iterable, List, Optional
 
-logger = logging.getLogger(__name__)
+from backend.infrastructure.native.logging_bridge import log_from_native, NativeLogLevel
+from backend.infrastructure.system_vnpy.logging_system import (
+    LogType,
+    bind_logger_defaults,
+)
+
+_logger = bind_logger_defaults(
+    logging.getLogger("backend.native.native_symbol_index.wrapper"),
+    log_type=LogType.SYSTEM.value,
+    scenario="backend.native.native_symbol_index.wrapper",
+)
 
 try:
     from backend.infrastructure.native.native_gil import LockFreeHashMap
@@ -21,7 +31,14 @@ try:
 except Exception as exc:  # noqa: BLE001 - 捕获所有导入异常
     LockFreeHashMap = None  # type: ignore
     LOCKFREE_HASHMAP_AVAILABLE = False
-    logger.debug("LockFreeHashMap 导入失败: %s", exc)
+    log_from_native(
+        NativeLogLevel.WARNING,
+        "backend.native.native_symbol_index.wrapper",
+        "LockFreeHashMap",
+        0,
+        "LockFreeHashMap import failed, lockfree index unavailable",
+        str({"error": str(exc)}),
+    )
 
 try:
     from .symbol_index import SymbolIndex as _NativeSymbolIndex  # type: ignore
@@ -30,7 +47,14 @@ try:
 except ImportError as exc:
     _NativeSymbolIndex = None  # type: ignore
     SYMBOL_INDEX_AVAILABLE = False
-    logger.debug("native_symbol_index C 扩展导入失败: %s", exc)
+    log_from_native(
+        NativeLogLevel.WARNING,
+        "backend.native.native_symbol_index.wrapper",
+        "symbol_index",
+        0,
+        "native_symbol_index C extension import failed",
+        str({"error": str(exc)}),
+    )
 
 
 def _next_power_of_two(value: int) -> int:
@@ -64,6 +88,14 @@ class PythonSymbolIndex:
             self._market_index.setdefault(market, []).append(code)
 
         self._sorted_codes = sorted(self._code_index.keys())
+        _logger.debug(
+            "python fallback index built",
+            extra={
+                "log_type": LogType.SYSTEM.value,
+                "scenario": "backend.native.native_symbol_index.fallback",
+                "count": len(self._sorted_codes),
+            },
+        )
 
     def get_symbol(self, code: str) -> Optional[Dict[str, object]]:
         return self._code_index.get(code.zfill(6))
@@ -199,14 +231,46 @@ def create_symbol_index(*, use_native: bool = True, impl: Optional[str] = None):
 
     if use_native:
         if selected_impl in {"auto", "lockfree"} and LOCKFREE_INDEX_AVAILABLE:
+            log_from_native(
+                NativeLogLevel.INFO,
+                "backend.native.native_symbol_index.wrapper",
+                "create_symbol_index",
+                0,
+                "Using lockfree symbol index implementation",
+                str({"impl": "lockfree"}),
+            )
             return LockFreeSymbolIndex()
 
         if selected_impl in {"auto", "cpp"} and SYMBOL_INDEX_AVAILABLE and NativeSymbolIndex is not None:
+            log_from_native(
+                NativeLogLevel.INFO,
+                "backend.native.native_symbol_index.wrapper",
+                "create_symbol_index",
+                0,
+                "Using native symbol index implementation",
+                str({"impl": "cpp"}),
+            )
             return NativeSymbolIndex()
 
         if selected_impl == "python":
+            log_from_native(
+                NativeLogLevel.WARNING,
+                "backend.native.native_symbol_index.wrapper",
+                "create_symbol_index",
+                0,
+                "Force-using Python symbol index implementation",
+                str({"impl": "python"}),
+            )
             return PythonSymbolIndex()
 
+    log_from_native(
+        NativeLogLevel.WARNING,
+        "backend.native.native_symbol_index.wrapper",
+        "create_symbol_index",
+        0,
+        "Falling back to Python symbol index implementation",
+        str({"impl": selected_impl}),
+    )
     return PythonSymbolIndex()
 
 

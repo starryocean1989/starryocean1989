@@ -12,6 +12,9 @@ import platform
 import logging
 from typing import Optional, Type
 
+# 导入native_call_guard装饰器
+from backend.infrastructure.native.logging_bridge import native_call_guard, native_async_call_guard
+
 # 创建logger
 logger = logging.getLogger(__name__)
 
@@ -266,6 +269,7 @@ class AsyncIPCPipe:
             logger.error(f"注册IPC管道到事件循环扩展失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             raise
 
+    @native_async_call_guard(component="backend.native.ipc")
     async def read(self, size: int = 4096) -> bytes:
         """
         异步读取数据（真正的异步，不使用线程池）
@@ -356,6 +360,7 @@ class AsyncIPCPipe:
         logger.error(f"从管道读取失败: 意外的结果格式, 管道: {self.pipe_name}", extra={"log_type": "SYSTEM"})
         raise RuntimeError("Failed to read from pipe: unexpected result format")
 
+    @native_async_call_guard(component="backend.native.ipc")
     async def write(self, data: bytes) -> int:
         """
         异步写入数据（真正的异步，不使用线程池）

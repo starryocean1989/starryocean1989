@@ -84,30 +84,31 @@ class StartupStage(ABC):
         start_time = time.time()
 
         try:
-            # 记录阶段开始（新架构直接使用logger）
-            self.logger.info(
-                f"📍 阶段 {self.name} 开始",
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+            # 记录阶段开始（仅写入详细日志，终端输出由各阶段自行控制）
+            self.logger.debug(
+                "[StartupStage] 阶段 %s 开始执行", self.name,
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
 
-            # 执行阶段逻辑
+            # 执行阶段逻辑（终端输出在子类中完成）
             result = await self._execute(context)
 
             # 计算耗时
             elapsed_ms = (time.time() - start_time) * 1000
             result.elapsed_ms = elapsed_ms
 
-            # 记录阶段成功（新架构直接使用logger）
             if result.success:
-                self.logger.info(
-                    f"✅ 阶段 {self.name} 完成 ({elapsed_ms:.0f}ms)",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+                self.logger.debug(
+                    "[StartupStage] 阶段 %s 成功完成 (%.0fms)",
+                    self.name,
+                    elapsed_ms,
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
                 )
-
-            # 记录阶段失败（新架构直接使用logger）
             else:
                 self.logger.error(
-                    f"❌ [StartupStage] 阶段 {self.name} 失败: {result.message}",
+                    "❌ [StartupStage] 阶段 %s 失败: %s",
+                    self.name,
+                    result.message,
                     exc_info=result.error,
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"}
                 )

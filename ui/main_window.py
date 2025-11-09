@@ -5,6 +5,7 @@
 # 这样PySide6 WebEngine进程会使用正确的Python路径
 import os
 import sys
+import time
 
 if not os.environ.get("PYTHONEXECUTABLE"):
     os.environ["PYTHONEXECUTABLE"] = sys.executable
@@ -1746,30 +1747,37 @@ class MainWindow(QMainWindow, LoggerMixin):
         interface_id = self._load_queue[self._load_index]
         self._load_index += 1
 
+        stage_logger = logging.getLogger("startup.stage")
+        metadata = self.interface_metadata.get(interface_id, {})
+        interface_name = metadata.get("name", interface_id)
+
+        self.logger.info("-" * 60)
+        self.logger.info(
+            "[%d/%d] 正在加载: %s (%s)",
+            self._load_index,
+            len(self._load_queue),
+            interface_name,
+            interface_id,
+        )
+        self.logger.info("-" * 60)
+
+        stage_logger.info(
+            "[UI-LAZY] ▶ 开始加载界面 %s (%s) [index=%d/%d]",
+            interface_name,
+            interface_id,
+            self._load_index,
+            len(self._load_queue),
+            extra={"log_type": "STAGE_NODE"},
+        )
+
+        start_ts = time.perf_counter()
+
         try:
-            metadata = self.interface_metadata.get(interface_id, {})
-            interface_name = metadata.get("name", interface_id)
-
-            self.logger.info("-" * 60)
-            self.logger.info(
-                "[%d/%d] 正在加载: %s (%s)",
-                self._load_index,
-                len(self._load_queue),
-                interface_name,
-                interface_id,
-            )
-            self.logger.info("-" * 60)
-
             # 加载界面
             self._trigger_lazy_load(interface_id)
-
-            self._loaded_count += 1
-            self.logger.info(
-                "✅ [%d/%d] %s 加载完成", self._load_index, len(self._load_queue), interface_name
-            )
-
         except Exception as e:
             self._failed_count += 1
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
             self.logger.error(
                 "❌ [%d/%d] %s 加载失败: %s",
                 self._load_index,
@@ -1778,31 +1786,93 @@ class MainWindow(QMainWindow, LoggerMixin):
                 e,
                 exc_info=True,
             )
+            stage_logger.error(
+                "[UI-LAZY] ❌ 加载界面 %s (%s) 失败，用时 %.1f ms: %s",
+                interface_name,
+                interface_id,
+                elapsed_ms,
+                e,
+                extra={"log_type": "STAGE_NODE"},
+                exc_info=True,
+            )
+        else:
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            self._loaded_count += 1
+            self.logger.info(
+                "✅ [%d/%d] %s 加载完成",
+                self._load_index,
+                len(self._load_queue),
+                interface_name,
+            )
+            stage_logger.info(
+                "[UI-LAZY] ✅ 加载完成 %s (%s) -> %.1f ms",
+                interface_name,
+                interface_id,
+                elapsed_ms,
+                extra={"log_type": "STAGE_NODE"},
+            )
 
         # 使用QTimer异步加载下一个界面，避免阻塞UI
         QTimer.singleShot(50, self._load_next_interface)
 
     def _instantiate_and_replace(self, interface_id: str, interface_class: type | None):
         """实例化真实界面并替换占位."""
-        try:
-            if not interface_class:
-                # 通用动态导入：根据映射导入对应类
-                from importlib import import_module
+        stage_logger = logging.getLogger("startup.stage")
 
+        try:
+            from importlib import import_module
+
+            klass: type | None = interface_class
+            module_path: str | None = None
+            class_name: str | None = None
+
+            if klass is None:
                 module_path, class_name = self.interface_imports.get(interface_id, (None, None))
                 if not module_path or not class_name:
                     raise RuntimeError(f"未找到界面映射: {interface_id}")
-                klass = getattr(import_module(module_path), class_name)
 
-                # 特殊处理：为需要服务的界面传递正确的服务实例
-                if interface_id == "data":
-                    # DataCenter 不需要服务参数，会在内部自己获取服务
-                    real = klass()
-                else:
-                    real = klass()
-            else:
-                real = interface_class()
-            # 在内容栈中替换：找到占位索引并替换为真实界面
+                stage_logger.info(
+                    "[UI-LAZY] ▶ 导入模块 %s (interface=%s)",
+                    module_path,
+                    interface_id,
+                    extra={"log_type": "STAGE_NODE"},
+                )
+                import_start = time.perf_counter()
+                module = import_module(module_path)
+                import_elapsed = (time.perf_counter() - import_start) * 1000.0
+                stage_logger.info(
+                    "[UI-LAZY] ✅ 模块导入完成 %s -> %.1f ms",
+                    module_path,
+                    import_elapsed,
+                    extra={"log_type": "STAGE_NODE"},
+                )
+
+                klass = getattr(module, class_name)
+
+            if klass is None:
+                raise RuntimeError(f"未能获取界面类: {interface_id}")
+
+            module_path = module_path or getattr(klass, "__module__", "<unknown>")
+            class_name = class_name or getattr(klass, "__name__", repr(klass))
+
+            stage_logger.info(
+                "[UI-LAZY] ▶ 实例化 %s.%s (interface=%s)",
+                module_path,
+                class_name,
+                interface_id,
+                extra={"log_type": "STAGE_NODE"},
+            )
+            instantiate_start = time.perf_counter()
+            real = klass()
+            instantiate_elapsed = (time.perf_counter() - instantiate_start) * 1000.0
+            stage_logger.info(
+                "[UI-LAZY] ✅ 实例化完成 %s.%s -> %.1f ms",
+                module_path,
+                class_name,
+                instantiate_elapsed,
+                extra={"log_type": "STAGE_NODE"},
+            )
+
             if self.content_stack and interface_id in self.function_interfaces:
                 placeholder = self.function_interfaces[interface_id]
                 for i in range(self.content_stack.count()):
@@ -1811,12 +1881,17 @@ class MainWindow(QMainWindow, LoggerMixin):
                         placeholder.deleteLater()
                         self.content_stack.insertWidget(i, real)
                         break
-            # 更新字典
             self.function_interfaces[interface_id] = real
             self.logger.info("✅ 按需加载完成并替换占位: %s", interface_id)
         except Exception as e:
+            stage_logger.error(
+                "[UI-LAZY] ❌ 实例化界面 %s 失败: %s",
+                interface_id,
+                e,
+                extra={"log_type": "STAGE_NODE"},
+                exc_info=True,
+            )
             self.logger.error("实例化并替换 '%s' 失败: %s", interface_id, e, exc_info=True)
-            # 替换为错误占位
             error_placeholder = self._create_error_placeholder(interface_id, str(e))
             if self.content_stack:
                 self.content_stack.addWidget(error_placeholder)

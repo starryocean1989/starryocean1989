@@ -5,6 +5,7 @@
 负责执行_smart_cache_validation_and_sensing的8步验证流程。
 """
 
+import asyncio
 import time
 from typing import Optional, Dict, Any, Callable
 
@@ -12,7 +13,6 @@ from backend.infrastructure.system_vnpy.logging_system import (
     get_alert_logger,
     get_configured_logger,
     get_progress_logger,
-    get_stage_logger,
 )
 from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
@@ -29,6 +29,8 @@ progress_logger = get_progress_logger(
     "backend.startup.workers.cache_validator.progress",
     scenario="application_startup",
 )
+
+CACHE_NODE_ID = "backend_init.cache"
 
 
 class CacheValidatorWorker(StartupWorker):
@@ -61,21 +63,53 @@ class CacheValidatorWorker(StartupWorker):
         scenario = "application_startup"
 
         try:
-            # 获取ChinaStockEngine
-            if not context.china_stock_engine:
-                logger.debug("[CACHE-VALIDATOR] ChinaStockEngine未初始化")
+
+            engine = context.china_stock_engine
+            if engine is None:
+                logger.debug("[CACHE-VALIDATOR] ChinaStockEngine未注入，等待数据进程或远程代理...")
+
+                wait_deadline = time.time() + 5.0
+                while (
+                    time.time() < wait_deadline
+                    and engine is None
+                    and getattr(context, "data_process_pid", None) is None
+                ):
+                    await asyncio.sleep(0.1)
+                    engine = context.china_stock_engine
+
+            if engine is None:
+                data_process_pid = getattr(context, "data_process_pid", None)
+
+                if data_process_pid is not None:
+                    logger.info(
+                        "[CACHE-VALIDATOR] 检测到三进程模式，缓存验证由数据进程执行（PID=%s）",
+                        data_process_pid,
+                    )
+                    elapsed_ms = (time.time() - start_time) * 1000
+                    self._mark_ready(
+                        context,
+                        CACHE_NODE_ID,
+                        level="steps",
+                        message="缓存验证由数据进程执行",
+                        extra={
+                            "delegated": True,
+                            "data_process_pid": data_process_pid,
+                            "elapsed_ms": elapsed_ms,
+                        },
+                    )
+                    return WorkerResult(
+                        success=True,
+                        message="缓存验证由数据进程执行",
+                        elapsed_ms=elapsed_ms,
+                        data={"delegated": True, "data_process_pid": data_process_pid},
+                    )
+
+                logger.debug("[CACHE-VALIDATOR] ChinaStockEngine仍未初始化，且未检测到数据进程")
                 alert_logger.error("[CACHE-VALIDATOR] ❌ ChinaStockEngine未初始化")
                 raise RuntimeError("ChinaStockEngine未初始化")
 
-            engine = context.china_stock_engine
-            stage_logger = get_stage_logger("startup.stage", scenario=scenario)
-
             logger.debug("[CACHE-VALIDATOR] 开始执行8步缓存验证流程")
             logger.info("[CACHE-VALIDATOR] ℹ️ 开始执行8步缓存验证流程")
-
-            # 注意：分支B标题和ChinaStockEngine初始化信息已在BackendInitStage中输出
-            # 这里只输出8步验证的开始标记
-            stage_logger.info("📍 开始缓存验证与感知流程（8步）")
 
             # 创建进度回调函数
             def progress_callback(description: str, percent: int):
@@ -94,14 +128,16 @@ class CacheValidatorWorker(StartupWorker):
                 logger.debug(
                     f"[CACHE-VALIDATOR] 步骤{step_num}完成: {step_name}, 耗时={elapsed:.0f}ms, 进度={progress}%"
                 )
-                stage_logger.info(
-                    f"✅ 步骤{step_num}完成: {step_name} ({elapsed:.0f}ms) [进度: {progress}%]"
+                logger.debug(
+                    "[CACHE-VALIDATOR] 步骤%s完成: %s, 耗时=%.0fms, 进度=%s%%",
+                    step_num,
+                    step_name,
+                    elapsed,
+                    progress,
                 )
 
             # 执行8步验证流程
             # 注意：_smart_cache_validation_and_sensing是同步方法，需要在后台线程执行
-            import asyncio
-
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
@@ -120,7 +156,7 @@ class CacheValidatorWorker(StartupWorker):
                 alert_logger.warning(
                     f"[CACHE-VALIDATOR] ⚠️ 触发离线降级: {offline_reason}"
                 )
-                stage_logger.warning(f"🔴 触发离线降级: {offline_reason}")
+                logger.warning("⚠️ 触发离线降级: %s", offline_reason)
 
             # 注意："✅ 数据引擎完全就绪"已在_smart_cache_validation_and_sensing中输出，
             # 这里不需要重复输出
@@ -130,6 +166,17 @@ class CacheValidatorWorker(StartupWorker):
             )
             logger.info(
                 f"[CACHE-VALIDATOR] ✅ 8步缓存验证流程完成: 耗时={elapsed_ms:.0f}ms"
+            )
+            self._mark_ready(
+                context,
+                CACHE_NODE_ID,
+                level="steps",
+                message="缓存验证流程完成",
+                extra={
+                    "elapsed_ms": elapsed_ms,
+                    "success": result.get("success", False),
+                    "offline_mode": result.get("offline_mode", False),
+                },
             )
 
             return WorkerResult(
@@ -149,6 +196,12 @@ class CacheValidatorWorker(StartupWorker):
             alert_logger.error(
                 f"[CACHE-VALIDATOR] ❌ 缓存验证Worker异常: {e}",
                 exc_info=True,
+            )
+            self._mark_failure(
+                context,
+                CACHE_NODE_ID,
+                f"缓存验证异常: {e}",
+                extra={"elapsed_ms": elapsed_ms},
             )
 
             return WorkerResult(

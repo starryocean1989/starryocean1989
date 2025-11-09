@@ -4,6 +4,10 @@
 #include <Python.h>
 #include <stdint.h>
 
+// 日志桥接函数声明
+void native_log_from_c(int level, const char* component, const char* function,
+                      int line, const char* message, const char* details);
+
 // 原生协议常量
 enum {
     RPC_BRIDGE_MAGIC = 0x4E525031u,  // 'NRP1'

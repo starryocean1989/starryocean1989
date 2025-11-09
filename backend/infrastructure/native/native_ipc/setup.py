@@ -34,7 +34,7 @@ ipc_async_module = Extension(
     define_macros=[('PY_SSIZE_T_CLEAN', None)],
     extra_compile_args=['/std:c11', '/W3'],  # C11标准，警告级别3
     extra_link_args=[],
-    include_dirs=[],
+    include_dirs=['..'],
 )
 
 setup(

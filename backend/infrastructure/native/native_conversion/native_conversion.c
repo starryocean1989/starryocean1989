@@ -6,6 +6,8 @@
 #include <Python.h>
 #include "batch_convert.h"
 #include "batch_string.h"
+/* 日志桥接宏 */
+#include "../native_log_bridge.h"
 
 /* 前向声明 */
 extern PyObject* batch_convert_func(PyObject *self, PyObject *args);
@@ -28,6 +30,12 @@ static struct PyModuleDef native_conversionmodule = {
 };
 
 PyMODINIT_FUNC PyInit_native_conversion(void) {
-    return PyModule_Create(&native_conversionmodule);
+    PyObject *m = PyModule_Create(&native_conversionmodule);
+    if (m) {
+        NATIVE_LOG_INFO("backend.native.conversion.module", "PyInit_native_conversion", __LINE__, "native_conversion module loaded");
+    } else {
+        NATIVE_LOG_ERROR("backend.native.conversion.module", "PyInit_native_conversion", __LINE__, "failed to create native_conversion module");
+    }
+    return m;
 }
 

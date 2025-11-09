@@ -3,6 +3,8 @@
  * fs_watcher.c - Windows 原生目录监控扩展
  *
  * 提供 watch_directory(path, callback, recursive=True, buffer_size=64*1024) -> DirectoryWatcher
+ *
+ * 阶段11埋点：记录关键文件系统调用的参数与返回码，便于排查权限/资源问题
  */
 
 #define PY_SSIZE_T_CLEAN
@@ -10,6 +12,12 @@
 
 #include <windows.h>
 #include <process.h>
+#include <stdio.h>
+
+/* 包含日志桥接头文件 */
+#include "../native_log_bridge.h"
+
+#define COMPONENT_FS_CORE "backend.native.fs.watcher"
 
 typedef struct {
     PyObject_HEAD
@@ -173,6 +181,12 @@ directory_watcher_thread(void *arg)
         ZeroMemory(&self->overlapped, sizeof(OVERLAPPED));
         self->overlapped.hEvent = self->notify_event;
 
+        /* 阶段11埋点：记录ReadDirectoryChangesW系统调用开始 */
+        char monitor_msg[256];
+        sprintf(monitor_msg, "开始监控目录变化: handle=0x%p, buffer_size=%lu, recursive=%s",
+                self->dir_handle, self->buffer_size, self->recursive ? "true" : "false");
+        NATIVE_LOG_DEBUG(COMPONENT_FS_CORE, "ReadDirectoryChangesW", __LINE__, monitor_msg);
+
         if (!ReadDirectoryChangesW(
                 self->dir_handle,
                 self->buffer,
@@ -183,7 +197,14 @@ directory_watcher_thread(void *arg)
                 &self->overlapped,
                 NULL)) {
             DWORD err = GetLastError();
+            /* 阶段11埋点：记录ReadDirectoryChangesW失败 */
+            char error_msg[256];
+            sprintf(error_msg, "监控目录变化失败: handle=0x%p, error_code=%lu, 返回码=FALSE", self->dir_handle, err);
+            NATIVE_LOG_ERROR(COMPONENT_FS_CORE, "ReadDirectoryChangesW", __LINE__, error_msg);
             if (err == ERROR_OPERATION_ABORTED) {
+                char abort_msg[256];
+                sprintf(abort_msg, "监控操作被中止: handle=0x%p, 场景=文件系统监控停止", self->dir_handle);
+                NATIVE_LOG_INFO(COMPONENT_FS_CORE, "ReadDirectoryChangesW", __LINE__, abort_msg);
                 break;
             }
             PyGILState_STATE gstate = PyGILState_Ensure();
@@ -191,6 +212,11 @@ directory_watcher_thread(void *arg)
             PyErr_WriteUnraisable((PyObject *)self);
             PyGILState_Release(gstate);
             break;
+        } else {
+            /* 阶段11埋点：记录ReadDirectoryChangesW成功 */
+            char success_msg[256];
+            sprintf(success_msg, "监控目录变化调用成功: handle=0x%p, 场景=文件系统监控", self->dir_handle);
+            NATIVE_LOG_DEBUG(COMPONENT_FS_CORE, "ReadDirectoryChangesW", __LINE__, success_msg);
         }
         if (self->ready_event) {
             SetEvent(self->ready_event);
@@ -290,6 +316,13 @@ DirectoryWatcher_init(DirectoryWatcherObject *self, PyObject *args, PyObject *kw
         return -1;
     }
 
+    /* 阶段11埋点：记录CreateFileW系统调用 */
+    PyObject *path_str = PyUnicode_AsUTF8String(path_obj);
+    if (path_str) {
+        NATIVE_LOG_DEBUG(COMPONENT_FS_CORE, "CreateFileW", __LINE__, "开始创建目录句柄");
+        Py_DECREF(path_str);
+    }
+
     HANDLE dir_handle = CreateFileW(
         path_w,
         FILE_LIST_DIRECTORY,
@@ -301,6 +334,11 @@ DirectoryWatcher_init(DirectoryWatcherObject *self, PyObject *args, PyObject *kw
     PyMem_Free(path_w);
 
     if (dir_handle == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        /* 阶段11埋点：记录CreateFileW失败 */
+        char error_msg[256];
+        sprintf(error_msg, "创建目录句柄失败: error_code=%lu, 返回码=INVALID_HANDLE_VALUE", err);
+        NATIVE_LOG_ERROR(COMPONENT_FS_CORE, "CreateFileW", __LINE__, error_msg);
         PyErr_SetFromWindowsErrWithUnicodeFilename(0, path_obj);
         if (self->stop_event) {
             CloseHandle(self->stop_event);
@@ -311,6 +349,11 @@ DirectoryWatcher_init(DirectoryWatcherObject *self, PyObject *args, PyObject *kw
             self->notify_event = NULL;
         }
         return -1;
+    } else {
+        /* 阶段11埋点：记录CreateFileW成功 */
+        char success_msg[256];
+        sprintf(success_msg, "创建目录句柄成功: handle=0x%p, 场景=目录监控初始化", dir_handle);
+        NATIVE_LOG_INFO(COMPONENT_FS_CORE, "CreateFileW", __LINE__, success_msg);
     }
 
     self->dir_handle = dir_handle;

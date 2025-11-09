@@ -7,11 +7,25 @@ Windows平台：使用IOCP（完成端口）
 其他平台：自动降级到aiofiles
 """
 
-import platform
 import logging
+import platform
 
-# 创建logger
-logger = logging.getLogger(__name__)
+from backend.infrastructure.native.logging_bridge import native_call_guard
+from backend.infrastructure.system_vnpy.logging_system import (
+    LogType,
+    bind_logger_defaults,
+    get_alert_logger,
+)
+
+_LOGGER = bind_logger_defaults(
+    logging.getLogger("backend.native.iocp"),
+    log_type=LogType.SYSTEM.value,
+    scenario="backend.native.iocp",
+)
+_ALERT_LOGGER = get_alert_logger(
+    "backend.native.iocp.alert",
+    scenario="backend.native.iocp",
+)
 
 # 平台检测
 IS_WINDOWS = platform.system() == "Windows"
@@ -41,6 +55,13 @@ if IS_WINDOWS:
             batch_file_exists = batch_file_delete = batch_file_stat = _raise_batch_error
             fast_dir_walk = fast_dir_list = _raise_batch_error
         IOCP_AVAILABLE = True
+        _LOGGER.debug(
+            "native_iocp C 扩展已加载",
+            extra={
+                "scenario": "backend.native.iocp",
+                "native_module": "backend.native.iocp.core",
+            },
+        )
         __all__ = [
             "AsyncIOCPFile",
             "open_file",
@@ -64,7 +85,15 @@ if IS_WINDOWS:
         __all__ = []
 
         def _raise_import_error():
-            logger.warning("IOCP C扩展未编译，请运行: python setup.py build_ext --inplace in backend/infrastructure/native/native_iocp/", extra={"log_type": "SYSTEM"})
+            _ALERT_LOGGER.error(
+                "native_iocp C 扩展未编译，已降级至 Python 兼容实现",
+                extra={
+                    "log_type": LogType.ALERT.value,
+                    "scenario": "backend.native.iocp",
+                    "action_required": "compile_extension",
+                    "fallback": "python_async_file",
+                },
+            )
             raise ImportError(
                 "IOCP C extension not compiled. "
                 "Please run: python setup.py build_ext --inplace in backend/infrastructure/native/native_iocp/"
@@ -87,7 +116,15 @@ else:
     __all__ = []
 
     def _raise_platform_error():
-        logger.critical("IOCP异步文件I/O仅支持Windows平台", extra={"log_type": "SYSTEM"})
+        _ALERT_LOGGER.critical(
+            "IOCP异步文件I/O仅支持Windows平台，当前平台不受支持",
+            extra={
+                "log_type": LogType.ALERT.value,
+                "scenario": "backend.native.iocp",
+                "current_platform": platform.system(),
+                "action_required": "unsupported_platform",
+            },
+        )
         raise RuntimeError("IOCP async file I/O only supports Windows platform")
 
     AsyncIOCPFile = _raise_platform_error

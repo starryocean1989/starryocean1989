@@ -1,11 +1,10 @@
 @echo off
-:: -*- coding: utf-8 -*-
-REM 编译所有 native C 扩展模块
-REM 使用方法: compile_all.bat
-
 setlocal EnableDelayedExpansion
+REM -*- coding: utf-8 -*-
+REM 编译所有 native C/CPP 扩展模块
+REM 使用方法: 直接双击或在 PowerShell/cmd 中运行
 
-set TOTAL_STEPS=27
+set TOTAL_STEPS=31
 set STEP=1
 
 echo ========================================
@@ -15,6 +14,9 @@ echo.
 
 REM 获取脚本所在目录
 cd /d %~dp0
+
+REM 预安装必要的构建依赖
+python -m pip install --upgrade pip setuptools wheel pybind11 >nul 2>&1
 
 call :build_module native_compute native_compute
 if %ERRORLEVEL% NEQ 0 goto :FAILED
@@ -70,6 +72,12 @@ call :build_module native_indicator native_indicator
 if %ERRORLEVEL% NEQ 0 goto :FAILED
 call :build_module native_calendar native_calendar
 if %ERRORLEVEL% NEQ 0 goto :FAILED
+call :build_module native_alert native_alert
+if %ERRORLEVEL% NEQ 0 goto :FAILED
+call :build_module native_metrics native_metrics
+if %ERRORLEVEL% NEQ 0 goto :FAILED
+call :build_module native_dataconverter native_dataconverter
+if %ERRORLEVEL% NEQ 0 goto :FAILED
 call :build_module "native_qhighlighter" native_qhighlighter optional
 if %ERRORLEVEL% NEQ 0 goto :FAILED
 
@@ -82,17 +90,17 @@ set "MODULE_OPTION=%~3"
 
 echo [%STEP%/%TOTAL_STEPS%] 编译 %MODULE_NAME%...
 if "%MODULE_DIR%"=="" (
-    echo ❌ 未提供 %MODULE_NAME% 的路径
+    echo ERROR: 未提供 %MODULE_NAME% 的路径
     exit /b 1
 )
 if not exist "%MODULE_DIR%\setup.py" (
     if /I "%MODULE_OPTION%"=="optional" (
-        echo ⚠️ 未找到 %MODULE_NAME%\setup.py，跳过
+        echo WARNING: 未找到 %MODULE_NAME%\setup.py，跳过
         echo.
         set /a STEP+=1
         exit /b 0
     ) else (
-        echo ❌ 未找到 %MODULE_NAME%\setup.py
+        echo ERROR: 未找到 %MODULE_NAME%\setup.py
         exit /b 1
     )
 )
@@ -115,12 +123,12 @@ call :clean_directory build\lib
 
 python setup.py build_ext --build-temp build\temp --build-lib build\lib
 if ERRORLEVEL 1 (
-    echo ℹ️ %MODULE_NAME% 需要使用 inplace 构建模式，正在切换...
+    echo INFO: %MODULE_NAME% 需要使用 inplace 构建模式，正在切换...
     call :clean_directory build\temp
     call :clean_directory build\lib
     python setup.py build_ext --inplace
     if ERRORLEVEL 1 (
-        echo ❌ %MODULE_NAME% 编译失败
+        echo ERROR: %MODULE_NAME% 编译失败
         exit /b 1
     )
     set "BUILD_MODE=inplace"
@@ -128,13 +136,15 @@ if ERRORLEVEL 1 (
 
 if /I "%BUILD_MODE%"=="packaged" (
     call :deploy_built_artifacts "%MODULE_NAME%"
-    if ERRORLEVEL 1 exit /b 1
+    if ERRORLEVEL 1 (
+        exit /b 1
+    )
 ) else (
     call :clean_directory build\temp
     call :clean_directory build\lib
 )
 
-echo ✅ %MODULE_NAME% 编译成功
+echo SUCCESS: %MODULE_NAME% 编译成功
 exit /b 0
 
 :deploy_built_artifacts
@@ -142,20 +152,22 @@ set "MODULE_NAME=%~1"
 set "COPY_WARN=0"
 
 if not exist build\lib (
-    echo ❌ %MODULE_NAME% 未生成任何二进制产物
+    echo ERROR: %MODULE_NAME% 未生成任何二进制产物
     exit /b 1
 )
 
 for /r "build\lib" %%F in (*.pyd) do (
     call :copy_single "%%~fF"
-    if ERRORLEVEL 1 set "COPY_WARN=1"
+    if ERRORLEVEL 1 (
+        set "COPY_WARN=1"
+    )
 )
 
 call :clean_directory build\temp
 if %COPY_WARN% EQU 0 (
     call :clean_directory build\lib
 ) else (
-    echo ⚠️ %MODULE_NAME% 目标文件被占用，新构建版本保留在 build\lib，请释放占用后手动替换。
+    echo WARNING: %MODULE_NAME% 目标文件被占用，新构建版本保留在 build\lib，请释放占用后手动替换。
 )
 
 exit /b 0
@@ -178,7 +190,7 @@ exit /b 0
 
 :SUCCESS
 echo ========================================
-echo ✅ 所有模块编译完成！
+echo SUCCESS: 所有模块编译完成！
 echo ========================================
 echo.
 echo 提示：native_compute 新增了日期批量处理功能
@@ -195,7 +207,7 @@ exit /b 0
 
 :FAILED
 echo.
-echo ❌ 编译过程已终止。
+echo ERROR: 编译过程已终止。
 pause
 endlocal
 exit /b 1

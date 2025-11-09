@@ -2,6 +2,41 @@
 #include <Python.h>
 #include <structmember.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+#include "../native_log_bridge.h"
+
+#define NATIVE_QUEUE_COMPONENT "backend.native.queue.core"
+#define NATIVE_QUEUE_WRAPPER_COMPONENT "backend.native.queue.wrapper"
+
+static void queue_log(
+    int level,
+    const char *function,
+    int line,
+    const char *message,
+    const char *details
+) {
+    native_log_bridge_log(
+        level,
+        NATIVE_QUEUE_COMPONENT,
+        function,
+        line,
+        message,
+        details);
+}
+
+static void queue_log_warning(const char *function, int line, const char *message, const char *details) {
+    queue_log(NATIVE_LOG_LEVEL_WARNING, function, line, message, details);
+}
+
+static void queue_log_error(const char *function, int line, const char *message, const char *details) {
+    queue_log(NATIVE_LOG_LEVEL_ERROR, function, line, message, details);
+}
+
+static void queue_log_info(const char *function, int line, const char *message, const char *details) {
+    queue_log(NATIVE_LOG_LEVEL_INFO, function, line, message, details);
+}
 
 typedef struct {
     PyObject_HEAD
@@ -101,6 +136,7 @@ NativeQueue_push(NativeQueueObject *self, PyObject *arg)
 {
     if (arg == NULL) {
         PyErr_SetString(PyExc_ValueError, "item cannot be NULL");
+        queue_log_warning(__FUNCTION__, __LINE__, "Attempted to push NULL item into queue", NULL);
         return NULL;
     }
 
@@ -111,16 +147,23 @@ NativeQueue_push(NativeQueueObject *self, PyObject *arg)
     Py_END_ALLOW_THREADS
 
     if (self->count == self->capacity) {
+        Py_ssize_t old_capacity = self->capacity;
         PyThread_release_lock(self->lock);
         Py_BEGIN_ALLOW_THREADS
         PyThread_acquire_lock(self->lock, 1);
         Py_END_ALLOW_THREADS
         Py_ssize_t new_capacity = self->capacity * 2;
         if (native_queue_resize(self, new_capacity) < 0) {
+            char resize_error_details[256];
+            snprintf(resize_error_details, sizeof(resize_error_details), "old_capacity=%zd,new_capacity=%zd", old_capacity, new_capacity);
+            queue_log_error(__FUNCTION__, __LINE__, "Failed to resize queue buffer", resize_error_details);
             PyThread_release_lock(self->lock);
             Py_DECREF(arg);
             return NULL;
         }
+        char resize_details[256];
+        snprintf(resize_details, sizeof(resize_details), "old_capacity=%zd,new_capacity=%zd", old_capacity, new_capacity);
+        queue_log_info(__FUNCTION__, __LINE__, "Queue buffer resized successfully", resize_details);
     }
 
     self->buffer[self->tail] = arg;
@@ -229,6 +272,7 @@ PyMODINIT_FUNC
 PyInit__native_queue(void)
 {
     PyObject *m;
+
     if (PyType_Ready(&NativeQueueType) < 0) {
         return NULL;
     }
@@ -257,6 +301,7 @@ PyInit__native_queue(void)
         return NULL;
     }
 
+    queue_log_info(__FUNCTION__, __LINE__, "native_queue module initialised", NULL);
     return m;
 }
 

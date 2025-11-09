@@ -6,11 +6,46 @@
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <iphlpapi.h>
+#include <stdio.h>
 #include <string.h>
 #include <wchar.h>
 
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "iphlpapi.lib")
+
+#include "../native_log_bridge.h"
+
+#define PROCESS_METRICS_COMPONENT "backend.native.process_metrics.core"
+
+static void process_metrics_log(
+    int level,
+    const char *function,
+    int line,
+    const char *message,
+    const char *details
+) {
+    native_log_bridge_log(
+        level,
+        PROCESS_METRICS_COMPONENT,
+        function,
+        line,
+        message,
+        details);
+}
+
+static void log_windows_error(const char *function, int line, const char *context, DWORD error_code) {
+    char details[256];
+    snprintf(details, sizeof(details), "context=%s;win32_error=%lu", context ? context : "<unknown>", (unsigned long)error_code);
+    process_metrics_log(NATIVE_LOG_LEVEL_ERROR, function, line, "Windows API call failed", details);
+}
+
+static void log_warning(const char *function, int line, const char *message, const char *details) {
+    process_metrics_log(NATIVE_LOG_LEVEL_WARNING, function, line, message, details);
+}
+
+static void log_info_once(const char *function, int line, const char *message) {
+    process_metrics_log(NATIVE_LOG_LEVEL_INFO, function, line, message, NULL);
+}
 
 static PyObject *g_process_times = NULL;
 static double g_processor_count = 1.0;
@@ -31,6 +66,7 @@ filetime_to_uint64(FILETIME ft)
 static void
 set_last_error(const char *context, DWORD error_code)
 {
+    log_windows_error(__FUNCTION__, __LINE__, context, error_code);
     PyObject *err_tuple;
     err_tuple = Py_BuildValue("(skI)", context, "win32", error_code);
     if (!err_tuple) {
@@ -76,16 +112,19 @@ get_network_counters(unsigned long long *in_bytes, unsigned long long *out_bytes
     DWORD size = 0;
     DWORD result = GetIfTable(NULL, &size, FALSE);
     if (result != ERROR_INSUFFICIENT_BUFFER) {
+        log_windows_error(__FUNCTION__, __LINE__, "GetIfTable probe failed", result);
         return -1;
     }
 
     PMIB_IFTABLE table = (PMIB_IFTABLE)PyMem_Malloc(size);
     if (!table) {
+        log_warning(__FUNCTION__, __LINE__, "PyMem_Malloc failed in get_network_counters", NULL);
         return -1;
     }
 
     result = GetIfTable(table, &size, FALSE);
     if (result != NO_ERROR) {
+        log_windows_error(__FUNCTION__, __LINE__, "GetIfTable", result);
         PyMem_Free(table);
         return -1;
     }
@@ -108,6 +147,7 @@ get_network_counters(unsigned long long *in_bytes, unsigned long long *out_bytes
     PyMem_Free(table);
     *in_bytes = in_total;
     *out_bytes = out_total;
+
     return 0;
 }
 
@@ -156,7 +196,11 @@ get_system_metrics(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
 {
     MEMORYSTATUSEX mem_status;
     mem_status.dwLength = sizeof(mem_status);
-    GlobalMemoryStatusEx(&mem_status);
+    if (!GlobalMemoryStatusEx(&mem_status)) {
+        log_windows_error(__FUNCTION__, __LINE__, "GlobalMemoryStatusEx", GetLastError());
+        PyErr_SetFromWindowsErr(GetLastError());
+        return NULL;
+    }
 
     ULONGLONG total_bytes = mem_status.ullTotalPhys;
     ULONGLONG used_bytes = total_bytes - mem_status.ullAvailPhys;
@@ -164,7 +208,9 @@ get_system_metrics(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
 
     unsigned long long net_in = 0;
     unsigned long long net_out = 0;
-    get_network_counters(&net_in, &net_out);
+    if (get_network_counters(&net_in, &net_out) != 0) {
+        log_warning(__FUNCTION__, __LINE__, "Failed to query interface traffic, using zeros", NULL);
+    }
 
     ULONGLONG free_bytes = 0;
     ULONGLONG total_disk = 0;
@@ -176,6 +222,8 @@ get_system_metrics(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
         if (total_disk > 0) {
             disk_percent = (double)(total_disk - free_bytes) * 100.0 / (double)total_disk;
         }
+    } else {
+        log_windows_error(__FUNCTION__, __LINE__, "GetDiskFreeSpaceExW", GetLastError());
     }
 
     DWORD process_ids[2048];
@@ -187,6 +235,7 @@ get_system_metrics(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args))
 
     PyObject *metrics = PyDict_New();
     if (!metrics) {
+        log_warning(__FUNCTION__, __LINE__, "Failed to allocate metrics dictionary", NULL);
         return NULL;
     }
 
@@ -313,6 +362,7 @@ make_process_snapshot(DWORD pid, MEMORYSTATUSEX *mem_status)
     PyObject *result = PyDict_New();
     if (!result) {
         CloseHandle(handle);
+        log_warning(__FUNCTION__, __LINE__, "Failed to allocate process snapshot dictionary", NULL);
         return NULL;
     }
 
@@ -520,6 +570,7 @@ enumerate_processes(PyObject *Py_UNUSED(self), PyObject *args, PyObject *kwargs)
     ProcessEntry *entries = PyMem_Calloc(process_count, sizeof(ProcessEntry));
     if (!entries) {
         PyErr_NoMemory();
+        log_warning(__FUNCTION__, __LINE__, "PyMem_Calloc failed in enumerate_processes", NULL);
         return NULL;
     }
 
@@ -534,6 +585,7 @@ enumerate_processes(PyObject *Py_UNUSED(self), PyObject *args, PyObject *kwargs)
         if (!snapshot) {
             if (PyErr_Occurred()) {
                 PyErr_Clear();
+                log_warning(__FUNCTION__, __LINE__, "make_process_snapshot returned NULL, skipping", NULL);
             }
             continue;
         }
@@ -555,6 +607,7 @@ enumerate_processes(PyObject *Py_UNUSED(self), PyObject *args, PyObject *kwargs)
             Py_DECREF(entries[idx].dict);
         }
         PyMem_Free(entries);
+        log_warning(__FUNCTION__, __LINE__, "Failed to allocate result list in enumerate_processes", NULL);
         return NULL;
     }
 
@@ -572,6 +625,7 @@ enumerate_processes(PyObject *Py_UNUSED(self), PyObject *args, PyObject *kwargs)
     PyObject *result = PyDict_New();
     if (!result) {
         Py_DECREF(result_list);
+        log_warning(__FUNCTION__, __LINE__, "Failed to allocate result dictionary in enumerate_processes", NULL);
         return NULL;
     }
 
@@ -642,6 +696,7 @@ PyInit_process_metrics(void)
 
     PyObject *module = PyModule_Create(&module_def);
     if (!module) {
+        log_warning(__FUNCTION__, __LINE__, "PyModule_Create failed for process_metrics", NULL);
         return NULL;
     }
 
@@ -652,6 +707,7 @@ PyInit_process_metrics(void)
     if (!g_process_times) {
         Py_DECREF(g_last_error);
         Py_DECREF(module);
+        log_warning(__FUNCTION__, __LINE__, "Failed to allocate process times cache", NULL);
         return NULL;
     }
 
@@ -660,6 +716,7 @@ PyInit_process_metrics(void)
         Py_DECREF(g_process_times);
         Py_DECREF(g_last_error);
         Py_DECREF(module);
+        log_warning(__FUNCTION__, __LINE__, "Failed to create availability flag", NULL);
         return NULL;
     }
     if (PyModule_AddObject(module, "PROCESS_METRICS_AVAILABLE", available) < 0) {
@@ -674,6 +731,7 @@ PyInit_process_metrics(void)
         Py_DECREF(g_process_times);
         Py_DECREF(g_last_error);
         Py_DECREF(module);
+        log_warning(__FUNCTION__, __LINE__, "Failed to add process times cache to module", NULL);
         return NULL;
     }
 
@@ -683,9 +741,11 @@ PyInit_process_metrics(void)
         Py_DECREF(g_process_times);
         Py_DECREF(g_last_error);
         Py_DECREF(module);
+        log_warning(__FUNCTION__, __LINE__, "Failed to expose LAST_ERROR", NULL);
         return NULL;
     }
 
+    log_info_once(__FUNCTION__, __LINE__, "native_process_metrics module initialised");
     return module;
 }
 

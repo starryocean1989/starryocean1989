@@ -16,10 +16,14 @@
 """
 
 import asyncio
+import atexit
+from contextlib import contextmanager, redirect_stdout
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import List, Optional, cast
 import os
+import sys
+from io import StringIO
 
 import calendar
 import importlib.resources
@@ -33,6 +37,48 @@ import pandas as pd
 import pandas_market_calendars as mcal
 
 from .logger import logger
+
+
+def _suppress_native_calendar_stdout() -> None:
+    """过滤native_calendar扩展的标准输出."""
+
+    original_write = getattr(sys.stdout, "write", None)
+    if original_write is None:
+        return
+    if getattr(original_write, "__native_calendar_filter__", False):  # type: ignore[attr-defined]
+        return
+
+    def filtered_write(data: str) -> int:
+        stripped = data.strip()
+        if stripped in {"NativeCalendar constructed", "NativeCalendar destructed"}:
+            return len(data)
+        return original_write(data)  # type: ignore[misc]
+
+    setattr(filtered_write, "__native_calendar_filter__", True)  # type: ignore[attr-defined]
+    sys.stdout.write = filtered_write  # type: ignore[assignment]
+
+
+@contextmanager
+def _suppress_native_calendar_fd():
+    """临时将底层stdout重定向到空设备，屏蔽C++扩展的stdout."""
+
+    try:
+        fd = sys.stdout.fileno()
+    except (AttributeError, ValueError, OSError):
+        yield
+        return
+
+    sys.stdout.flush()
+    saved_fd = os.dup(fd)
+    try:
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), fd)
+        yield
+    finally:
+        try:
+            os.dup2(saved_fd, fd)
+        finally:
+            os.close(saved_fd)
 
 
 class TradingCalendar:
@@ -53,13 +99,23 @@ class TradingCalendar:
 
         if NativeCalendar is not None:
             try:
+                _suppress_native_calendar_stdout()
                 with importlib.resources.path('native_calendar', 'sse_calendar.bin') as bitmap_path:
                     self._bitmap_path = str(bitmap_path)
 
                 if not os.path.exists(self._bitmap_path):
                     raise FileNotFoundError(f"交易日历位图文件未找到: {self._bitmap_path}")
 
-                self._native_calendar = NativeCalendar(1990, self._bitmap_path)
+                with _suppress_native_calendar_fd():
+                    with redirect_stdout(StringIO()):
+                        self._native_calendar = NativeCalendar(1990, self._bitmap_path)
+
+                def _cleanup_native_calendar() -> None:
+                    if self._native_calendar is not None:
+                        with _suppress_native_calendar_fd():
+                            self._native_calendar = None
+
+                atexit.register(_cleanup_native_calendar)
                 logger.debug(
                     "✓ 交易日历初始化完成 (native_calendar C++ 扩展, 数据源: %s)",
                     self._bitmap_path,

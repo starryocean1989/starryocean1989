@@ -80,6 +80,12 @@ from backend.startup.ui_startup.boot_orchestrator import get_boot_orchestrator
 # UI层专用logger
 logger_user = logging.getLogger("ui.user_feedback")
 
+_stage_logger = logging.getLogger("startup.stage")
+_stage_logger.info(
+    "[UI-System] 模块加载完成: system_manager_view",
+    extra={"log_type": "STAGE_NODE"},
+)
+
 
 # ==================== 日志表格组件（已合并） ====================
 
@@ -709,8 +715,6 @@ class _UnifiedHeatmapCanvas(QWidget):
                 sep_x = x_pos + bar_width + bar_spacing // 2
                 painter.setPen(QPen(QColor("#666"), 2))
                 painter.drawLine(sep_x, 5, sep_x, rect.height() - 5)
-
-
 class UnifiedMonitorCard(QWidget):
     """整合的系统监控卡片 - CPU/网络/内存的9个热力图."""
 
@@ -1375,8 +1379,6 @@ class SingleDiskCard(QWidget):
                 self.info_labels["uncorrectable_errors"].setStyleSheet(
                     "font-size: 11px; color: #FA0; border: none; font-weight: bold;"
                 )
-
-
 class DiskMonitorCard(QWidget):
     """硬盘监控卡片 - 横向排列，自适应字体."""
 
@@ -1385,7 +1387,20 @@ class DiskMonitorCard(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None):
         """初始化硬盘监控卡片."""
+        # 调用父类初始化
+        base_init_start = time.perf_counter()
+        stage_logger.info(
+            "[UI-System] 调用 BaseWidget.__init__",
+            extra={"log_type": "STAGE_NODE"},
+        )
         super().__init__(parent)
+        stage_logger.info(
+            "[UI-System] BaseWidget.__init__ 完成",
+            extra={
+                "log_type": "STAGE_NODE",
+                "elapsed_time": time.perf_counter() - base_init_start,
+            },
+        )
 
         # 🔧 连接信号到槽函数（Qt会自动在主线程执行槽函数）
         self.update_requested.connect(self._safe_update_ui)
@@ -1846,11 +1861,7 @@ class AlertManagerWidget(QWidget):
             self.severity_combo.setCurrentIndex(0)
 
         self._apply_filters()
-
-
 # ==================== 日志管理组件 ====================
-
-
 class LogManagerWidget(QWidget):
     """日志管理界面组件."""
 
@@ -1860,7 +1871,20 @@ class LogManagerWidget(QWidget):
 
     def __init__(self):
         """初始化日志管理界面."""
+        # 调用父类初始化
+        base_init_start = time.perf_counter()
+        stage_logger.info(
+            "[UI-System] 调用 BaseWidget.__init__",
+            extra={"log_type": "STAGE_NODE"},
+        )
         super().__init__()
+        stage_logger.info(
+            "[UI-System] BaseWidget.__init__ 完成",
+            extra={
+                "log_type": "STAGE_NODE",
+                "elapsed_time": time.perf_counter() - base_init_start,
+            },
+        )
 
         # 🎯 立即添加调试日志
         import logging
@@ -2594,7 +2618,6 @@ class LogManagerWidget(QWidget):
 函数: {record.get('function', '')}
 行号: {record.get('line', '')}
 记录器: {record.get('logger_name', '')}
-
 消息:
 {record.get('message', '')}
 """
@@ -2747,9 +2770,22 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def __init__(self, parent=None):
         """初始化系统管理界面."""
+        init_start = time.perf_counter()
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.info(
+            "[UI-System] ▶ SystemManager.__init__ 开始",
+            extra={"log_type": "STAGE_NODE"},
+        )
+
         # 初始化服务管理器
         self.service_manager = get_service_manager()
         self.system_service = None
+
+        stage_logger.info(
+            "[UI-System] 服务管理器就绪: registered=%s",
+            list(self.service_manager.services.keys()),
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # 选项卡部件
         self.tab_widget: Optional[QTabWidget] = None
@@ -2940,10 +2976,29 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 🔧 架构修复：在调用父类初始化之前就初始化服务
         # 因为 super().__init__() 会调用 setup_ui()，而 setup_ui() 会创建标签页
         # 标签页创建时会调用 _load_config()，此时需要 system_service 已经就绪
+        service_init_start = time.perf_counter()
         self._initialize_service_before_ui()
+        stage_logger.info(
+            "[UI-System] _initialize_service_before_ui 完成 (%.1f ms, ready=%s)",
+            (time.perf_counter() - service_init_start) * 1000.0,
+            bool(self.system_service),
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # 调用父类初始化
+        base_init_start = time.perf_counter()
+        stage_logger.info(
+            "[UI-System] 调用 BaseWidget.__init__",
+            extra={"log_type": "STAGE_NODE"},
+        )
         super().__init__(parent, "系统管理")
+        stage_logger.info(
+            "[UI-System] BaseWidget.__init__ 完成",
+            extra={
+                "log_type": "STAGE_NODE",
+                "elapsed_time": time.perf_counter() - base_init_start,
+            },
+        )
 
         # 🔍 调试注入：使用专门的DEBUG文件日志
         try:
@@ -2962,10 +3017,23 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 🔧 关键修复：缓存EventEngine实例，避免property动态获取导致的多线程竞态
         # 必须在 super().__init__() 之后，因为 _init_event_engine_cache() 使用 self.logger
         self._cached_event_engine: Optional[Any] = None
+        cache_start = time.perf_counter()
         self._init_event_engine_cache()
+        stage_logger.info(
+            "[UI-System] EventEngine 缓存结果: available=%s (%.1f ms)",
+            bool(self._cached_event_engine),
+            (time.perf_counter() - cache_start) * 1000.0,
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # 🔍 创建专门的DEBUG文件日志（用于调试，不影响终端输出）
+        debug_logger_start = time.perf_counter()
         self._setup_debug_file_logger()
+        stage_logger.info(
+            "[UI-System] Debug logger 准备完成 (%.1f ms)",
+            (time.perf_counter() - debug_logger_start) * 1000.0,
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # 🔧 新增：UI更新节流机制（避免频繁渲染）- 使用原子操作避免锁
         self._last_ui_update_time = 0.0
@@ -2978,7 +3046,14 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 🔥 FIX: 缓存hardware数据（用于跨事件使用）
         self._cached_hardware_data = {}
 
+        subscription_start = time.perf_counter()
         self._start_delayed_event_subscription()
+        stage_logger.info(
+            "[UI-System] 事件订阅流程启动 (%.1f ms, subscribed=%s)",
+            (time.perf_counter() - subscription_start) * 1000.0,
+            self._events_subscribed,
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # 🔥 连接线程安全的UI更新信号
         self.ui_update_signal.connect(self._do_throttled_ui_update)
@@ -3003,6 +3078,11 @@ class SystemManager(BaseWidget, LoggerMixin):
         QTimer.singleShot(1000, self._update_datasource_connectivity)
 
         self.logger.info("系统管理界面初始化完成")
+        stage_logger.info(
+            "[UI-System] ◀ SystemManager.__init__ 完成 (总耗时 %.1f ms)",
+            (time.perf_counter() - init_start) * 1000.0,
+            extra={"log_type": "STAGE_NODE"},
+        )
 
     def _init_event_engine_cache(self):
         """初始化EventEngine缓存（关键修复）.
@@ -3257,7 +3337,12 @@ class SystemManager(BaseWidget, LoggerMixin):
                     self._monitoring_events_registered = True
 
     def setup_ui(self):
-        """设置用户界面（延迟加载重资源，构造期仅占位）."""
+        """设置用户界面（延迟加载重资源，构造期仅占位）。"""
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.info(
+            "[UI-System] setup_ui 开始",
+            extra={"log_type": "STAGE_NODE"},
+        )
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -3292,8 +3377,19 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         QTimer.singleShot(300, self._safe_create_sub_interfaces)
 
+        stage_logger.info(
+            "[UI-System] setup_ui 结束",
+            extra={"log_type": "STAGE_NODE"},
+        )
+
     def _safe_create_sub_interfaces(self):
         """安全延迟创建子界面（失败显示错误占位，不让应用崩溃）."""
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.info(
+            "[UI-System] _safe_create_sub_interfaces 调用开始",
+            extra={"log_type": "STAGE_NODE"},
+        )
+
         self.logger.info("=" * 70)
         self.logger.info("[SystemManager] _safe_create_sub_interfaces 被调用")
         self.logger.info("=" * 70)
@@ -3322,7 +3418,11 @@ class SystemManager(BaseWidget, LoggerMixin):
             if self.tab_widget:
                 self.tab_widget.addTab(error_tab, "错误")
             self.logger.error("SystemManager 延迟加载失败: %s", e, exc_info=True)
-
+        finally:
+            stage_logger.info(
+                "[UI-System] _safe_create_sub_interfaces 调用结束",
+                extra={"log_type": "STAGE_NODE"},
+            )
     def _create_sub_interfaces(self):
         """创建8个子界面（按新顺序）."""
         self.logger.info("[SystemManager] _create_sub_interfaces 开始执行")
@@ -4098,9 +4198,6 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         except Exception as e:
             self.logger.error("更新数据源连通性失败: %s", e)
-
-    # ==================== 1.1 系统状态监控 ====================
-
     def _create_system_status_tab(self) -> QWidget:
         """创建系统状态监控子界面（重构版：深色极简，热力图+趋势图）."""
         tab = QWidget()
@@ -4897,7 +4994,6 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         except Exception as e:
             self.logger.error("更新行情场景失败: %s", e)
-
     def _update_backtest_scenario(self, summary: Dict[str, Any]):
         """更新回测场景."""
         try:
@@ -5693,7 +5789,6 @@ class SystemManager(BaseWidget, LoggerMixin):
         layout.addWidget(self.diagnosis_tabs)
 
         return tab
-
     def _create_process_monitor_tab(self) -> QWidget:
         """创建进程监控子界面（新设计 - 进程列表+整体设备热力图）."""
         tab = QWidget()
@@ -6267,9 +6362,6 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         except Exception as e:
             self.logger.error("更新建议失败: %s", e)
-
-    # ==================== 1.8 工具集合 ====================
-
     def _create_tools_tab(self) -> QWidget:
         """创建工具集合子界面."""
         tab = QWidget()
@@ -7020,9 +7112,6 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.reader_status_label.setText("状态: 启动失败")
 
             self.show_error(f"启动失败: {e}")
-
-    # ==================== 网络测速工具方法 ====================
-
     def _test_bandwidth_full(self):
         """测试服务商带宽（完整测试）."""
         try:
@@ -7822,7 +7911,6 @@ class SystemManager(BaseWidget, LoggerMixin):
             # 恢复扫描按钮
             if self.cleaner_scan_btn:
                 self.cleaner_scan_btn.setEnabled(True)
-
     def _on_clean_progress(self, current: int, total: int, message: str):
         """清理进度回调（在主线程执行）.
 
@@ -8610,7 +8698,6 @@ class SystemManager(BaseWidget, LoggerMixin):
         """获取磁盘曲线颜色."""
         colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#98D8C8"]
         return colors[index % len(colors)]
-
     def _create_temperature_chart(self, title: str):
         """创建温度折线图（CPU/GPU/硬盘）."""
         chart_widget = pg.GraphicsLayoutWidget()
@@ -9343,7 +9430,6 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         except Exception as e:
             self.logger.error("更新磁盘空间图表失败: %s", e)
-
     def _update_temperature_chart(self, temperature_data: Dict[str, Any]):
         """更新温度折线图."""
         try:
@@ -9817,7 +9903,6 @@ class SystemManager(BaseWidget, LoggerMixin):
                 break
 
         return "--"
-
     def _update_status_details_table(self, metrics: Dict[str, Any]):
         """更新状态详细数据表格（含瓶颈状态列）."""
         try:

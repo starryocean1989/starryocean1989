@@ -7,6 +7,9 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <Windows.h>
+
+/* Native Log Bridge */
+#include "../native_log_bridge.h"
 #include "batch_file.h"
 #include "dir_traversal.h"
 

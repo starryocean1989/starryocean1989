@@ -12,6 +12,8 @@
 
 from backend.startup.orchestrator import StartupOrchestrator, StartupResult
 from backend.startup.context import StartupContext
+from backend.startup.event_bus import EventBus, StartupEvent, StartupEventType, ReadinessBarrier
+from backend.startup.plan import StartupPlan, StartupNode
 from backend.startup.stages.base import StartupStage, StageResult
 from backend.startup.workers.base import StartupWorker, WorkerResult
 
@@ -32,6 +34,12 @@ __all__ = [
     "StageResult",
     "StartupWorker",
     "WorkerResult",
+    "EventBus",
+    "StartupEvent",
+    "StartupEventType",
+    "ReadinessBarrier",
+    "StartupPlan",
+    "StartupNode",
     # 阶段类
     "EnvSetupStage",
     "LoggingInitStage",

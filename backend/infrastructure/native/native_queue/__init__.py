@@ -5,6 +5,8 @@
 优先加载 C 扩展实现，失败时回退到轻量 Python 版本，便于在未构建环境下运行单元测试。
 """
 
+from backend.infrastructure.native.logging_bridge import native_call_guard
+
 try:
     from ._native_queue import (  # type: ignore[attr-defined]
         NativeQueue,

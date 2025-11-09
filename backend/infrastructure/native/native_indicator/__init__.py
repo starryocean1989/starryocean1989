@@ -3,7 +3,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Sequence
+
+from backend.infrastructure.system_vnpy.logging_system import (
+    LogType,
+    bind_logger_defaults,
+    get_alert_logger,
+)
 
 if TYPE_CHECKING:
     from numpy import ndarray as _NDArrayFloat  # pragma: no cover
@@ -19,9 +26,46 @@ CORE_AVAILABLE = bool(
     getattr(_native_core, "INDICATOR_AVAILABLE", False) if _native_core else False
 )
 
+_LOGGER = bind_logger_defaults(
+    logging.getLogger("backend.native.indicator"),
+    log_type=LogType.SYSTEM.value,
+    scenario="backend.native.indicator",
+)
+_ALERT_LOGGER = get_alert_logger(
+    "backend.native.indicator.alert",
+    scenario="backend.native.indicator",
+)
+
+if CORE_AVAILABLE:
+    _LOGGER.debug(
+        "native_indicator_core 加载完成",
+        extra={
+            "scenario": "backend.native.indicator",
+            "native_module": "backend.native.indicator.core",
+        },
+    )
+else:
+    _LOGGER.warning(
+        "native_indicator_core 未编译，将触发运行时降级",
+        extra={
+            "log_type": LogType.SYSTEM.value,
+            "scenario": "backend.native.indicator",
+            "native_module": "backend.native.indicator.core",
+            "action_required": "compile_extension",
+        },
+    )
 
 def _ensure_core_available() -> None:
     if not CORE_AVAILABLE or _native_core is None:
+        _ALERT_LOGGER.error(
+            "native_indicator_core 未加载，已降级到纯 Python 实现",
+            extra={
+                "log_type": LogType.ALERT.value,
+                "scenario": "backend.native.indicator",
+                "action_required": "compile_extension",
+                "fallback": "python_indicator",
+            },
+        )
         raise RuntimeError(
             "native_indicator_core 未加载，无法执行技术指标计算。"
         )

@@ -355,7 +355,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.gateway_classes[GatewayType.CTP.value] = CtpGateway
                 self.logger.info("✅ CTP网关类可用")
             except ImportError:
-                self.logger.warning("⚠️ CTP网关类不可用", extra={"log_type": "SYSTEM"})
+                self.logger.info("ℹ️ CTP网关类不可用（未安装vnpy_ctp）", extra={"log_type": "SYSTEM"})
 
             # PaperAccount（使用内部适配器）
             try:
@@ -374,7 +374,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.gateway_classes[GatewayType.CTP_MINI.value] = MiniGateway
                 self.logger.info("✅ CTP Mini网关类可用")
             except ImportError:
-                self.logger.warning("⚠️ CTP Mini网关类不可用", extra={"log_type": "SYSTEM"})
+                self.logger.info("ℹ️ CTP Mini网关类不可用（未安装vnpy_mini）", extra={"log_type": "SYSTEM"})
 
             # Sopt
             try:
@@ -383,7 +383,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.gateway_classes[GatewayType.SOPT.value] = SoptGateway
                 self.logger.info("✅ Sopt网关类可用")
             except ImportError:
-                self.logger.warning("⚠️ Sopt网关类不可用", extra={"log_type": "SYSTEM"})
+                self.logger.info("ℹ️ Sopt网关类不可用（未安装vnpy_sopt）", extra={"log_type": "SYSTEM"})
 
             # TTS
             try:
@@ -392,7 +392,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.gateway_classes[GatewayType.TTS.value] = TtsGateway
                 self.logger.info("✅ TTS网关类可用")
             except ImportError:
-                self.logger.warning("⚠️ TTS网关类不可用", extra={"log_type": "SYSTEM"})
+                self.logger.info("ℹ️ TTS网关类不可用（未安装vnpy_tts）", extra={"log_type": "SYSTEM"})
 
             # IB (Interactive Brokers)
             try:
@@ -1022,9 +1022,11 @@ class TradingGatewayService(BaseService, LoggerMixin):
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("从文件加载策略", e)
-            stage_logger.error(
+            alert(
+                "ERROR",
+                "trading",
                 f"❌ 策略加载异常: {str(e)}, 耗时={elapsed_ms:.0f}ms",
-                extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+                scenario="strategy_loading",
             )
             return {
                 "success": False,
@@ -1287,12 +1289,18 @@ class TradingGatewayService(BaseService, LoggerMixin):
                         get_logging_context,
                     )
 
-                    ctx = get_logging_hub()
-                    ctx.set_stage("trading")
-                    self.logger.info(
-                        "📍 切换到交易阶段，启动策略实盘交易",
-                        extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
-                    )
+                    logging_ctx = get_logging_context()
+                    if logging_ctx is not None:
+                        logging_ctx.set_stage("trading")
+                        self.logger.info(
+                            "📍 切换到交易阶段，启动策略实盘交易",
+                            extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
+                        )
+                    else:
+                        self.logger.debug(
+                            "logging_context未初始化，跳过阶段标记",
+                            extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
+                        )
                 except ImportError:
                     self.logger.debug(
                         "logging_context模块不可用，跳过阶段切换",

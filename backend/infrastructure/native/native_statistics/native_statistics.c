@@ -7,7 +7,22 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <pythread.h>
+
+#include "../native_log_bridge.h"
+
+#define COMPONENT_CORE "backend.native.native_statistics.core"
+
+static inline void stats_log(
+    int level,
+    const char *function,
+    int line,
+    const char *message,
+    const char *details
+) {
+    native_log_bridge_log(level, COMPONENT_CORE, function, line, message, details);
+}
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -34,8 +49,20 @@ streaming_metric_grow_buffer(StreamingMetricHandleObject *self) {
     self->buffer = PyMem_Calloc((size_t)self->window_size, sizeof(double));
     if (self->buffer == NULL) {
         PyErr_NoMemory();
+        stats_log(
+            NATIVE_LOG_LEVEL_ERROR,
+            "streaming_metric_grow_buffer",
+            __LINE__,
+            "Failed to allocate statistics buffer",
+            "{\"reason\":\"no_memory\"}");
         return -1;
     }
+    stats_log(
+        NATIVE_LOG_LEVEL_DEBUG,
+        "streaming_metric_grow_buffer",
+        __LINE__,
+        "Initialized statistics buffer",
+        NULL);
     return 0;
 }
 
@@ -140,8 +167,20 @@ ensure_lock(StreamingMetricHandleObject *self) {
     self->lock = PyThread_allocate_lock();
     if (self->lock == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "failed to allocate thread lock");
+        stats_log(
+            NATIVE_LOG_LEVEL_ERROR,
+            "ensure_lock",
+            __LINE__,
+            "Failed to allocate statistics lock",
+            "{\"reason\":\"no_lock\"}");
         return -1;
     }
+    stats_log(
+        NATIVE_LOG_LEVEL_DEBUG,
+        "ensure_lock",
+        __LINE__,
+        "Allocated statistics lock",
+        NULL);
     return 0;
 }
 
@@ -198,10 +237,22 @@ StreamingMetricHandle_init(StreamingMetricHandleObject *self, PyObject *args, Py
     Py_ssize_t window_size = 1440;
 
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "|n", kwlist, &window_size)) {
+        stats_log(
+            NATIVE_LOG_LEVEL_WARNING,
+            "StreamingMetricHandle_init",
+            __LINE__,
+            "Failed to parse window_size",
+            NULL);
         return -1;
     }
     if (window_size <= 0) {
         PyErr_SetString(PyExc_ValueError, "window_size must be positive");
+        stats_log(
+            NATIVE_LOG_LEVEL_ERROR,
+            "StreamingMetricHandle_init",
+            __LINE__,
+            "Invalid window_size provided",
+            "{\"error\":\"non_positive_window\"}");
         return -1;
     }
     self->window_size = window_size;
@@ -215,6 +266,18 @@ StreamingMetricHandle_init(StreamingMetricHandleObject *self, PyObject *args, Py
     if (ensure_lock(self) != 0) {
         return -1;
     }
+    char init_details[160];
+    snprintf(
+        init_details,
+        sizeof(init_details),
+        "{\"window_size\":%lld}",
+        (long long)window_size);
+    stats_log(
+        NATIVE_LOG_LEVEL_INFO,
+        "StreamingMetricHandle_init",
+        __LINE__,
+        "StreamingMetricHandle initialized",
+        init_details);
     return 0;
 }
 
@@ -245,6 +308,12 @@ static PyObject *
 StreamingMetricHandle_update(StreamingMetricHandleObject *self, PyObject *args) {
     double value;
     if (!PyArg_ParseTuple(args, "d", &value)) {
+        stats_log(
+            NATIVE_LOG_LEVEL_WARNING,
+            "StreamingMetricHandle_update",
+            __LINE__,
+            "Failed to parse value for update",
+            NULL);
         return NULL;
     }
     if (ensure_lock(self) != 0) {
@@ -254,8 +323,26 @@ StreamingMetricHandle_update(StreamingMetricHandleObject *self, PyObject *args) 
     int rc = streaming_metric_push_value(self, value);
     PyThread_release_lock(self->lock);
     if (rc != 0) {
+        char error_details[160];
+        snprintf(
+            error_details,
+            sizeof(error_details),
+            "{\"value\":%.6f,\"reason\":\"push_failed\"}",
+            value);
+        stats_log(
+            NATIVE_LOG_LEVEL_ERROR,
+            "StreamingMetricHandle_update",
+            __LINE__,
+            "Failed to push value into streaming metric",
+            error_details);
         return NULL;
     }
+    stats_log(
+        NATIVE_LOG_LEVEL_DEBUG,
+        "StreamingMetricHandle_update",
+        __LINE__,
+        "Value appended to streaming metric",
+        NULL);
     Py_RETURN_NONE;
 }
 
@@ -266,6 +353,12 @@ StreamingMetricHandle_extend(StreamingMetricHandleObject *self, PyObject *iterab
     }
     PyObject *iterator = PyObject_GetIter(iterable);
     if (iterator == NULL) {
+        stats_log(
+            NATIVE_LOG_LEVEL_WARNING,
+            "StreamingMetricHandle_extend",
+            __LINE__,
+            "Failed to obtain iterator for extend",
+            NULL);
         return NULL;
     }
     int error = 0;
@@ -275,10 +368,28 @@ StreamingMetricHandle_extend(StreamingMetricHandleObject *self, PyObject *iterab
         Py_DECREF(item);
         if (PyErr_Occurred()) {
             error = 1;
+            stats_log(
+                NATIVE_LOG_LEVEL_WARNING,
+                "StreamingMetricHandle_extend",
+                __LINE__,
+                "Failed to coerce iterable item to float",
+                NULL);
             break;
         }
         if (streaming_metric_push_value(self, value) != 0) {
             error = 1;
+            char error_details[160];
+            snprintf(
+                error_details,
+                sizeof(error_details),
+                "{\"value\":%.6f,\"reason\":\"push_failed\"}",
+                value);
+            stats_log(
+                NATIVE_LOG_LEVEL_ERROR,
+                "StreamingMetricHandle_extend",
+                __LINE__,
+                "Failed to push value during extend",
+                error_details);
             break;
         }
     }
@@ -288,8 +399,20 @@ StreamingMetricHandle_extend(StreamingMetricHandleObject *self, PyObject *iterab
         return NULL;
     }
     if (PyErr_Occurred()) {
+        stats_log(
+            NATIVE_LOG_LEVEL_WARNING,
+            "StreamingMetricHandle_extend",
+            __LINE__,
+            "Error raised while iterating sequence",
+            NULL);
         return NULL;
     }
+    stats_log(
+        NATIVE_LOG_LEVEL_DEBUG,
+        "StreamingMetricHandle_extend",
+        __LINE__,
+        "Extended streaming metric with iterable",
+        NULL);
     Py_RETURN_NONE;
 }
 
@@ -302,6 +425,12 @@ StreamingMetricHandle_reset(StreamingMetricHandleObject *self, PyObject *Py_UNUS
     StreamingMetricHandle_clear(self);
     streaming_metric_grow_buffer(self);
     PyThread_release_lock(self->lock);
+    stats_log(
+        NATIVE_LOG_LEVEL_INFO,
+        "StreamingMetricHandle_reset",
+        __LINE__,
+        "Streaming metric reset",
+        NULL);
     Py_RETURN_NONE;
 }
 
@@ -320,6 +449,12 @@ StreamingMetricHandle_snapshot(StreamingMetricHandleObject *self, PyObject *Py_U
     PyThread_acquire_lock(self->lock, 1);
     Py_ssize_t count = streaming_metric_effective_count(self);
     if (count <= 0) {
+        stats_log(
+            NATIVE_LOG_LEVEL_DEBUG,
+            "StreamingMetricHandle_snapshot",
+            __LINE__,
+            "Snapshot requested on empty metric",
+            NULL);
         result = Py_BuildValue("{s:O,s:O,s:O,s:O,s:O}",
                                "sample_count", PyLong_FromLong(0),
                                "mean", Py_None,
@@ -342,6 +477,12 @@ StreamingMetricHandle_snapshot(StreamingMetricHandleObject *self, PyObject *Py_U
     if (values == NULL) {
         PyThread_release_lock(self->lock);
         PyErr_NoMemory();
+        stats_log(
+            NATIVE_LOG_LEVEL_ERROR,
+            "StreamingMetricHandle_snapshot",
+            __LINE__,
+            "Failed to allocate snapshot buffer",
+            "{\"reason\":\"no_memory\"}");
         return NULL;
     }
     copy_values_in_order(self, values);
@@ -368,6 +509,20 @@ StreamingMetricHandle_snapshot(StreamingMetricHandleObject *self, PyObject *Py_U
                            "stddev", stddev,
                            "p95", p95,
                            "p99", p99);
+    char snapshot_details[200];
+    snprintf(
+        snapshot_details,
+        sizeof(snapshot_details),
+        "{\"sample_count\":%lld,\"mean\":%.6f,\"stddev\":%.6f}",
+        (long long)count,
+        mean,
+        stddev);
+    stats_log(
+        NATIVE_LOG_LEVEL_INFO,
+        "StreamingMetricHandle_snapshot",
+        __LINE__,
+        "Streaming metric snapshot computed",
+        snapshot_details);
     return result;
 }
 
@@ -409,7 +564,34 @@ static PyTypeObject StreamingMetricHandleType = {
 
 static PyObject *
 module_create_streaming_metric(PyObject *Py_UNUSED(module), PyObject *args, PyObject *kwds) {
-    return PyObject_Call((PyObject *)&StreamingMetricHandleType, args, kwds);
+    PyObject *handle = PyObject_Call((PyObject *)&StreamingMetricHandleType, args, kwds);
+    if (handle != NULL) {
+        PyObject *window_attr = PyObject_GetAttrString(handle, "window_size");
+        long long window_size = -1;
+        if (window_attr != NULL) {
+            window_size = PyLong_AsLongLong(window_attr);
+            Py_DECREF(window_attr);
+        } else {
+            PyErr_Clear();
+        }
+        char factory_details[160];
+        if (window_size > 0) {
+            snprintf(
+                factory_details,
+                sizeof(factory_details),
+                "{\"window_size\":%lld}",
+                window_size);
+        } else {
+            snprintf(factory_details, sizeof(factory_details), "{\"window_size\":\"unknown\"}");
+        }
+        stats_log(
+            NATIVE_LOG_LEVEL_INFO,
+            "module_create_streaming_metric",
+            __LINE__,
+            "StreamingMetricHandle created via factory",
+            factory_details);
+    }
+    return handle;
 }
 
 static PyMethodDef module_methods[] = {

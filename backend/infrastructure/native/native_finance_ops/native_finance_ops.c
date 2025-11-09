@@ -13,6 +13,9 @@
 #include <string.h>
 #include <time.h>
 #include "finance_metrics.h"
+#include "native_log_bridge.h"
+
+#define COMPONENT_FINANCE_CORE "backend.native.finance_ops.core"
 
 typedef struct {
     int date;
@@ -64,6 +67,7 @@ static void release_double_buffer(DoubleBuffer* buf) {
 
 static int acquire_double_buffer(PyObject* dict, const char* key, int required, Py_ssize_t expected_length, DoubleBuffer* out) {
     if (!out) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "acquire_double_buffer", __LINE__, "output buffer pointer is NULL");
         return 0;
     }
 
@@ -76,6 +80,7 @@ static int acquire_double_buffer(PyObject* dict, const char* key, int required, 
     if (!obj) {
         if (required) {
             PyErr_Format(PyExc_KeyError, "缺少必要列: %s", key);
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "acquire_double_buffer", __LINE__, "missing required column");
             return 0;
         }
         out->length = (expected_length >= 0) ? expected_length : 0;
@@ -83,17 +88,20 @@ static int acquire_double_buffer(PyObject* dict, const char* key, int required, 
     }
 
     if (PyObject_GetBuffer(obj, &out->view, PyBUF_WRITABLE | PyBUF_CONTIG | PyBUF_FORMAT) != 0) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "acquire_double_buffer", __LINE__, "PyObject_GetBuffer failed");
         return 0;
     }
 
     if (out->view.ndim > 1) {
         PyErr_Format(PyExc_TypeError, "%s必须是一维数组", key);
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "acquire_double_buffer", __LINE__, "buffer is not 1D");
         release_double_buffer(out);
         return 0;
     }
 
     if (out->view.itemsize != (Py_ssize_t)sizeof(double)) {
         PyErr_Format(PyExc_TypeError, "%s的数据类型必须为float64", key);
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "acquire_double_buffer", __LINE__, "buffer dtype is not float64");
         release_double_buffer(out);
         return 0;
     }
@@ -101,6 +109,7 @@ static int acquire_double_buffer(PyObject* dict, const char* key, int required, 
     Py_ssize_t length = out->view.len / out->view.itemsize;
     if (expected_length >= 0 && length != expected_length) {
         PyErr_Format(PyExc_ValueError, "%s长度不匹配，期望%zd，实际%zd", key, expected_length, length);
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "acquire_double_buffer", __LINE__, "buffer length mismatch");
         release_double_buffer(out);
         return 0;
     }
@@ -134,6 +143,7 @@ static int parse_adjust_mode(const char* adjust_type) {
     }
 
     PyErr_SetString(PyExc_ValueError, "不支持的复权类型");
+    NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "parse_adjust_mode", __LINE__, "unsupported adjust type");
     return -1;
 }
 
@@ -204,6 +214,7 @@ static int convert_date_pyobject(PyObject* obj, int* out_date) {
     if (PyLong_Check(obj)) {
         long value = PyLong_AsLong(obj);
         if (PyErr_Occurred()) {
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "convert_date_pyobject", __LINE__, "failed to convert PyLong to date");
             return 0;
         }
         *out_date = (int)value;
@@ -213,6 +224,7 @@ static int convert_date_pyobject(PyObject* obj, int* out_date) {
     if (PyUnicode_Check(obj)) {
         const char* text = PyUnicode_AsUTF8(obj);
         if (!text) {
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "convert_date_pyobject", __LINE__, "PyUnicode_AsUTF8 returned NULL");
             return 0;
         }
 
@@ -227,6 +239,7 @@ static int convert_date_pyobject(PyObject* obj, int* out_date) {
 
         if (idx != 8) {
             PyErr_SetString(PyExc_ValueError, "日期格式必须为YYYYMMDD或YYYY-MM-DD");
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "convert_date_pyobject", __LINE__, "invalid date string format");
             return 0;
         }
 
@@ -235,6 +248,7 @@ static int convert_date_pyobject(PyObject* obj, int* out_date) {
     }
 
     PyErr_SetString(PyExc_TypeError, "日期必须为整数或字符串");
+    NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "convert_date_pyobject", __LINE__, "unsupported date object type");
     return 0;
 }
 
@@ -289,6 +303,7 @@ static int build_daily_entries(const int* dates, const double* pnl, size_t count
     DatePnlItem* pairs = (DatePnlItem*)malloc(sizeof(DatePnlItem) * count);
     if (!pairs) {
         PyErr_NoMemory();
+        NATIVE_LOG_CRITICAL_SIMPLE(COMPONENT_FINANCE_CORE, "build_daily_entries", __LINE__, "failed to allocate DatePnlItem array");
         return 0;
     }
 
@@ -303,6 +318,7 @@ static int build_daily_entries(const int* dates, const double* pnl, size_t count
     if (!entries) {
         free(pairs);
         PyErr_NoMemory();
+        NATIVE_LOG_CRITICAL_SIMPLE(COMPONENT_FINANCE_CORE, "build_daily_entries", __LINE__, "failed to allocate DailyEntry array");
         return 0;
     }
 
@@ -319,6 +335,7 @@ static int build_daily_entries(const int* dates, const double* pnl, size_t count
                 free(entries);
                 free(pairs);
                 PyErr_SetString(PyExc_ValueError, "无效的日期数据");
+                NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "build_daily_entries", __LINE__, "invalid date when building daily entries");
                 return 0;
             }
             format_period_label(&entry->tm_date, "daily", entry->label, sizeof(entry->label));
@@ -344,6 +361,7 @@ static int build_daily_entries(const int* dates, const double* pnl, size_t count
         free(entries);
         free(pairs);
         PyErr_SetString(PyExc_ValueError, "无效的日期数据");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "build_daily_entries", __LINE__, "invalid date when finalizing last entry");
         return 0;
     }
     format_period_label(&entry->tm_date, "daily", entry->label, sizeof(entry->label));
@@ -387,6 +405,7 @@ static int build_period_entries(const DailyEntry* daily_entries, size_t daily_co
     PeriodEntry* entries = (PeriodEntry*)malloc(sizeof(PeriodEntry) * daily_count);
     if (!entries) {
         PyErr_NoMemory();
+        NATIVE_LOG_CRITICAL_SIMPLE(COMPONENT_FINANCE_CORE, "build_period_entries", __LINE__, "failed to allocate PeriodEntry array");
         return 0;
     }
 
@@ -501,6 +520,7 @@ static int extract_confidence_levels(PyObject* obj, double** out_levels, size_t*
 
     PyObject* seq = PySequence_Fast(obj, "confidence_levels必须是可迭代对象");
     if (!seq) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "extract_confidence_levels", __LINE__, "confidence levels is not iterable");
         return 0;
     }
 
@@ -516,6 +536,7 @@ static int extract_confidence_levels(PyObject* obj, double** out_levels, size_t*
     if (!levels) {
         Py_DECREF(seq);
         PyErr_NoMemory();
+        NATIVE_LOG_CRITICAL_SIMPLE(COMPONENT_FINANCE_CORE, "extract_confidence_levels", __LINE__, "failed to allocate levels array");
         return 0;
     }
 
@@ -525,11 +546,13 @@ static int extract_confidence_levels(PyObject* obj, double** out_levels, size_t*
         double value = PyFloat_AsDouble(item);
         if (PyErr_Occurred()) {
             success = 0;
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "extract_confidence_levels", __LINE__, "failed to parse confidence level as float");
             break;
         }
         if (value <= 0.0 || value >= 1.0) {
             PyErr_SetString(PyExc_ValueError, "置信水平必须在(0,1)之间");
             success = 0;
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "extract_confidence_levels", __LINE__, "confidence level out of (0,1) range");
             break;
         }
         levels[i] = value;
@@ -557,11 +580,13 @@ static PyObject* py_apply_price_adjustments(PyObject* self, PyObject* args, PyOb
     static char* kwlist[] = {"prices", "adjustments", "adjust_type", NULL};
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|s", kwlist, &prices_dict, &adjustments_dict, &adjust_type)) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "apply_price_adjustments", __LINE__, "argument parsing failed");
         return NULL;
     }
 
     if (!PyDict_Check(prices_dict) || !PyDict_Check(adjustments_dict)) {
         PyErr_SetString(PyExc_TypeError, "prices和adjustments必须为dict");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "apply_price_adjustments", __LINE__, "prices or adjustments not a dict");
         return NULL;
     }
 
@@ -607,6 +632,7 @@ static PyObject* py_apply_price_adjustments(PyObject* self, PyObject* args, PyOb
 
     int mode = parse_adjust_mode(adjust_type);
     if (mode < 0) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "apply_price_adjustments", __LINE__, "invalid adjust type");
         goto cleanup;
     }
 
@@ -725,6 +751,7 @@ cleanup:
     if (success) {
         Py_RETURN_NONE;
     }
+    NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "apply_price_adjustments", __LINE__, "apply_price_adjustments failed");
     return NULL;
 }
 
@@ -738,6 +765,7 @@ static PyObject* py_aggregate_daily_pnl(PyObject* self, PyObject* args, PyObject
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|d", kwlist,
                                      &dates_obj, &pnl_obj, &initial_equity)) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "aggregate_daily_pnl", __LINE__, "argument parsing failed");
         return NULL;
     }
 
@@ -745,6 +773,7 @@ static PyObject* py_aggregate_daily_pnl(PyObject* self, PyObject* args, PyObject
     Py_ssize_t count = PySequence_Length(dates_obj);
     if (count < 0) {
         PyErr_SetString(PyExc_ValueError, "Invalid dates sequence");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "aggregate_daily_pnl", __LINE__, "PySequence_Length(dates) returned < 0");
         return NULL;
     }
 
@@ -754,6 +783,7 @@ static PyObject* py_aggregate_daily_pnl(PyObject* self, PyObject* args, PyObject
     if (!dates || !pnl) {
         free(dates);
         free(pnl);
+        NATIVE_LOG_CRITICAL_SIMPLE(COMPONENT_FINANCE_CORE, "aggregate_daily_pnl", __LINE__, "failed to allocate dates/pnl arrays");
         return PyErr_NoMemory();
     }
 
@@ -776,6 +806,7 @@ static PyObject* py_aggregate_daily_pnl(PyObject* self, PyObject* args, PyObject
 
     if (!result) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to aggregate daily PnL");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "aggregate_daily_pnl", __LINE__, "aggregate_daily_pnl core returned NULL");
         return NULL;
     }
 
@@ -821,12 +852,14 @@ static PyObject* py_compute_return_metrics(PyObject* self, PyObject* args, PyObj
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|i", kwlist,
                                      &pnl_obj, &equity_obj, &trading_days)) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_return_metrics", __LINE__, "argument parsing failed");
         return NULL;
     }
 
     Py_ssize_t count = PySequence_Length(pnl_obj);
     if (count < 2) {
         PyErr_SetString(PyExc_ValueError, "Need at least 2 data points");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_return_metrics", __LINE__, "insufficient data points (<2)");
         return NULL;
     }
 
@@ -836,6 +869,7 @@ static PyObject* py_compute_return_metrics(PyObject* self, PyObject* args, PyObj
     if (!pnl || !equity) {
         free(pnl);
         free(equity);
+        NATIVE_LOG_CRITICAL_SIMPLE(COMPONENT_FINANCE_CORE, "compute_return_metrics", __LINE__, "failed to allocate pnl/equity arrays");
         return PyErr_NoMemory();
     }
 
@@ -857,6 +891,7 @@ static PyObject* py_compute_return_metrics(PyObject* self, PyObject* args, PyObj
 
     if (!metrics) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to compute metrics");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_return_metrics", __LINE__, "compute_return_metrics core returned NULL");
         return NULL;
     }
 
@@ -883,12 +918,14 @@ static PyObject* py_bucketize_period(PyObject* self, PyObject* args, PyObject* k
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|s", kwlist,
                                      &equity_obj, &dates_obj, &period_mode)) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "bucketize_period", __LINE__, "argument parsing failed");
         return NULL;
     }
 
     Py_ssize_t count = PySequence_Length(equity_obj);
     if (count < 1) {
         PyErr_SetString(PyExc_ValueError, "Empty sequence");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "bucketize_period", __LINE__, "empty equity sequence");
         return NULL;
     }
 
@@ -898,6 +935,7 @@ static PyObject* py_bucketize_period(PyObject* self, PyObject* args, PyObject* k
     if (!equity || !dates) {
         free(equity);
         free(dates);
+        NATIVE_LOG_CRITICAL_SIMPLE(COMPONENT_FINANCE_CORE, "bucketize_period", __LINE__, "failed to allocate equity/dates arrays");
         return PyErr_NoMemory();
     }
 
@@ -919,6 +957,7 @@ static PyObject* py_bucketize_period(PyObject* self, PyObject* args, PyObject* k
 
     if (!buckets) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to bucketize periods");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "bucketize_period", __LINE__, "bucketize_period core returned NULL");
         return NULL;
     }
 
@@ -951,28 +990,33 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
     static char* kwlist[] = {"dates", "pnl", "initial_equity", "risk_free_rate", "trading_days_per_year", NULL};
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|ddi", kwlist, &dates_obj, &pnl_obj, &initial_equity, &risk_free_rate, &trading_days)) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "argument parsing failed");
         return NULL;
     }
 
     Py_ssize_t count = PySequence_Length(dates_obj);
     if (count < 0) {
         PyErr_SetString(PyExc_ValueError, "无法获取日期序列长度");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "PySequence_Length(dates) returned < 0");
         return NULL;
     }
 
     if (PySequence_Length(pnl_obj) != count) {
         PyErr_SetString(PyExc_ValueError, "日期与盈亏序列长度不匹配");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "length of pnl does not match dates");
         return NULL;
     }
 
     if (count == 0) {
         PyObject* empty_list = PyList_New(0);
         if (!empty_list) {
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to build empty_list");
             return NULL;
         }
         PyObject* summary = PyDict_New();
         if (!summary) {
             Py_DECREF(empty_list);
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to build empty summary");
             return NULL;
         }
         if (!dict_set_double(summary, "initial_equity", initial_equity) ||
@@ -988,6 +1032,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
             !dict_set_long(summary, "trading_days", 0)) {
             Py_DECREF(empty_list);
             Py_DECREF(summary);
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to populate empty summary");
             return NULL;
         }
 
@@ -995,6 +1040,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
         if (!result) {
             Py_DECREF(empty_list);
             Py_DECREF(summary);
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to build empty result dict");
             return NULL;
         }
         Py_INCREF(Py_True);
@@ -1003,6 +1049,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
             Py_DECREF(result);
             Py_DECREF(empty_list);
             Py_DECREF(summary);
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to set success flag in empty result");
             return NULL;
         }
         Py_DECREF(Py_True);
@@ -1015,6 +1062,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
             Py_DECREF(result);
             Py_DECREF(empty_list);
             Py_DECREF(summary);
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to assemble empty result dict");
             return NULL;
         }
 
@@ -1028,6 +1076,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
     if (!dates || !pnls) {
         free(dates);
         free(pnls);
+        NATIVE_LOG_CRITICAL_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to allocate dates/pnls arrays");
         return PyErr_NoMemory();
     }
 
@@ -1040,6 +1089,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
             free(dates);
             free(pnls);
             PyErr_SetString(PyExc_ValueError, "无法读取日期或盈亏数据");
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to read date or pnl item from sequences");
             return NULL;
         }
 
@@ -1048,6 +1098,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
             Py_DECREF(pnl_item);
             free(dates);
             free(pnls);
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to convert date object");
             return NULL;
         }
 
@@ -1059,6 +1110,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
             free(dates);
             free(pnls);
             PyErr_SetString(PyExc_ValueError, "盈亏数据无法转换为浮点数");
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "pnl item is not float");
             return NULL;
         }
     }
@@ -1068,6 +1120,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
     if (!build_daily_entries(dates, pnls, (size_t)count, initial_equity, &daily_entries, &daily_count)) {
         free(dates);
         free(pnls);
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "build_daily_entries returned false");
         return NULL;
     }
 
@@ -1082,6 +1135,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
     daily_list = PyList_New((Py_ssize_t)daily_count);
     equity_curve = PyList_New((Py_ssize_t)daily_count);
     if (!daily_list || !equity_curve) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to build daily_list/equity_curve");
         goto error;
     }
 
@@ -1152,16 +1206,19 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
     }
 
     if (!build_period_entries(daily_entries, daily_count, "weekly", initial_equity, &weekly_entries, &weekly_count)) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "build_period_entries weekly failed");
         goto error;
     }
 
     if (!build_period_entries(daily_entries, daily_count, "monthly", initial_equity, &monthly_entries, &monthly_count)) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "build_period_entries monthly failed");
         goto error;
     }
 
     weekly_list = PyList_New((Py_ssize_t)weekly_count);
     monthly_list = PyList_New((Py_ssize_t)monthly_count);
     if (!weekly_list || !monthly_list) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "failed to build weekly_list/monthly_list");
         goto error;
     }
 
@@ -1280,6 +1337,7 @@ static PyObject* py_compute_period_statistics(PyObject* self, PyObject* args, Py
     return result;
 
 error:
+    NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_period_statistics", __LINE__, "compute_period_statistics failed, cleaning up");
     Py_XDECREF(daily_list);
     Py_XDECREF(weekly_list);
     Py_XDECREF(monthly_list);
@@ -1302,11 +1360,13 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
     static char* kwlist[] = {"returns", "scale", "risk_free_rate", "trading_days_per_year", "confidence_levels", NULL};
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|ddiO", kwlist, &returns_obj, &scale, &risk_free_rate, &trading_days, &confidence_levels_obj)) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "argument parsing failed");
         return NULL;
     }
 
     PyObject* returns_seq = PySequence_Fast(returns_obj, "returns必须是可迭代对象");
     if (!returns_seq) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "returns is not iterable");
         return NULL;
     }
 
@@ -1314,6 +1374,7 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
     if (count < 2) {
         Py_DECREF(returns_seq);
         PyErr_SetString(PyExc_ValueError, "计算风险指标至少需要2个收益率数据点");
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "insufficient return points (<2)");
         return NULL;
     }
 
@@ -1323,6 +1384,7 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
         Py_DECREF(returns_seq);
         free(returns);
         free(returns_sorted);
+        NATIVE_LOG_CRITICAL_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "failed to allocate returns arrays");
         return PyErr_NoMemory();
     }
 
@@ -1334,6 +1396,7 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
             free(returns);
             free(returns_sorted);
             PyErr_SetString(PyExc_ValueError, "收益率序列必须为浮点数");
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "returns item not float");
             return NULL;
         }
         returns_sorted[i] = returns[i];
@@ -1426,6 +1489,7 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
         if (!use_default_levels && confidence_levels) {
             free(confidence_levels);
         }
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "failed to create var_dict");
         return NULL;
     }
 
@@ -1456,6 +1520,7 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
             if (!use_default_levels && confidence_levels) {
                 free(confidence_levels);
             }
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "failed to populate var entry");
             return NULL;
         }
 
@@ -1471,6 +1536,7 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
             if (!use_default_levels && confidence_levels) {
                 free(confidence_levels);
             }
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "failed to insert var entry into dict");
             return NULL;
         }
         Py_DECREF(key);
@@ -1524,6 +1590,7 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
         free(returns_sorted);
         free(equity_curve);
         Py_DECREF(var_dict);
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "failed to create equity_list");
         return NULL;
     }
 
@@ -1535,6 +1602,7 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
             free(returns_sorted);
             free(equity_curve);
             Py_DECREF(var_dict);
+            NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "failed to build equity_list value");
             return NULL;
         }
         PyList_SET_ITEM(equity_list, i, value);
@@ -1568,6 +1636,7 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
         free(returns);
         free(returns_sorted);
         free(equity_curve);
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "compute_risk_profile", __LINE__, "failed to assemble risk profile result dict");
         return NULL;
     }
 
@@ -1611,12 +1680,22 @@ static struct PyModuleDef finance_ops_module = {
 PyMODINIT_FUNC PyInit_native_finance_ops(void) {
     PyObject* module = PyModule_Create(&finance_ops_module);
     if (module == NULL) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "PyInit_native_finance_ops", __LINE__, "failed to create native_finance_ops module");
         return NULL;
     }
 
-    // 添加常量
-    PyModule_AddIntConstant(module, "FINANCE_OPS_AVAILABLE", 1);
-    PyModule_AddStringConstant(module, "VERSION", "1.0.0");
+    if (PyModule_AddIntConstant(module, "FINANCE_OPS_AVAILABLE", 1) != 0) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "PyInit_native_finance_ops", __LINE__, "failed to add FINANCE_OPS_AVAILABLE constant");
+        Py_DECREF(module);
+        return NULL;
+    }
+    if (PyModule_AddStringConstant(module, "VERSION", "1.0.0") != 0) {
+        NATIVE_LOG_ERROR_SIMPLE(COMPONENT_FINANCE_CORE, "PyInit_native_finance_ops", __LINE__, "failed to add VERSION constant");
+        Py_DECREF(module);
+        return NULL;
+    }
+
+    NATIVE_LOG_INFO_SIMPLE(COMPONENT_FINANCE_CORE, "PyInit_native_finance_ops", __LINE__, "native_finance_ops module loaded");
 
     return module;
 }

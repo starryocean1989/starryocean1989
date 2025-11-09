@@ -6,6 +6,32 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include "netprobe.h"
+#include "../native_log_bridge.h"
+#include <stdio.h>
+
+#define NETPROBE_WRAPPER_COMPONENT "backend.native.netprobe.wrapper"
+
+static void netprobe_wrapper_log(
+    int level,
+    const char *function,
+    int line,
+    const char *message,
+    const char *details
+) {
+    native_log_bridge_log(level, NETPROBE_WRAPPER_COMPONENT, function, line, message, details);
+}
+
+static void netprobe_wrapper_log_warning(const char *function, int line, const char *message, const char *details) {
+    netprobe_wrapper_log(NATIVE_LOG_LEVEL_WARNING, function, line, message, details);
+}
+
+static void netprobe_wrapper_log_error(const char *function, int line, const char *message, const char *details) {
+    netprobe_wrapper_log(NATIVE_LOG_LEVEL_ERROR, function, line, message, details);
+}
+
+static void netprobe_wrapper_log_info(const char *function, int line, const char *message, const char *details) {
+    netprobe_wrapper_log(NATIVE_LOG_LEVEL_INFO, function, line, message, details);
+}
 
 // Python函数：test_connection
 static PyObject* py_test_connection(PyObject* self, PyObject* args, PyObject* kwargs) {
@@ -16,11 +42,15 @@ static PyObject* py_test_connection(PyObject* self, PyObject* args, PyObject* kw
     static char* kwlist[] = {"host", "port", "timeout", NULL};
     
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "si|d", kwlist, &host, &port, &timeout)) {
+        netprobe_wrapper_log_warning(__FUNCTION__, __LINE__, "Invalid arguments for test_connection", NULL);
         return NULL;
     }
     
     ConnectionResult* result = test_connection(host, port, timeout);
     if (!result) {
+        char details[128];
+        snprintf(details, sizeof(details), "host=%s;port=%d;timeout=%.2f", host, port, timeout);
+        netprobe_wrapper_log_error(__FUNCTION__, __LINE__, "test_connection returned NULL", details);
         PyErr_SetString(PyExc_RuntimeError, "Connection test failed");
         return NULL;
     }
@@ -34,10 +64,12 @@ static PyObject* py_test_connection(PyObject* self, PyObject* args, PyObject* kw
     if (result->error_message) {
         PyDict_SetItemString(result_dict, "error", PyUnicode_FromString(result->error_message));
     } else {
+        Py_INCREF(Py_None);
         PyDict_SetItemString(result_dict, "error", Py_None);
     }
     
     free_connection_result(result);
+    netprobe_wrapper_log_info(__FUNCTION__, __LINE__, "test_connection succeeded", NULL);
     
     return result_dict;
 }
@@ -52,10 +84,12 @@ static PyObject* py_batch_test_connections(PyObject* self, PyObject* args, PyObj
     
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|di", kwlist, 
                                      &servers_list, &timeout, &max_concurrent)) {
+        netprobe_wrapper_log_warning(__FUNCTION__, __LINE__, "Invalid arguments for batch_test_connections", NULL);
         return NULL;
     }
     
     if (!PyList_Check(servers_list)) {
+        netprobe_wrapper_log_warning(__FUNCTION__, __LINE__, "Servers argument must be list", NULL);
         PyErr_SetString(PyExc_TypeError, "servers must be a list");
         return NULL;
     }
@@ -92,6 +126,7 @@ static PyObject* py_batch_test_connections(PyObject* self, PyObject* args, PyObj
     free(ports);
     
     if (!batch_result) {
+        netprobe_wrapper_log_error(__FUNCTION__, __LINE__, "batch_test_connections returned NULL", NULL);
         PyErr_SetString(PyExc_RuntimeError, "Batch test failed");
         return NULL;
     }
@@ -108,6 +143,7 @@ static PyObject* py_batch_test_connections(PyObject* self, PyObject* args, PyObj
         if (batch_result->results[i].error_message) {
             PyDict_SetItemString(result_dict, "error", PyUnicode_FromString(batch_result->results[i].error_message));
         } else {
+            Py_INCREF(Py_None);
             PyDict_SetItemString(result_dict, "error", Py_None);
         }
         
@@ -115,7 +151,7 @@ static PyObject* py_batch_test_connections(PyObject* self, PyObject* args, PyObj
     }
     
     free_batch_test_result(batch_result);
-    
+    netprobe_wrapper_log_info(__FUNCTION__, __LINE__, "batch_test_connections completed", NULL);
     return results_list;
 }
 

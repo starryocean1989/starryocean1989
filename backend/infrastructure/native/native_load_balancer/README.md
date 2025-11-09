@@ -17,4 +17,11 @@ python setup.py build_ext --inplace
 
 或运行 `backend/infrastructure/native/compile_all.bat`。
 
+## 日志集成
+
+已集成 NativeLogBridge，支持负载均衡优化过程的结构化日志记录：
+
+- **C 层**：优化计算启动、参数解析异常等关键事件。
+- **Python 层**：使用 `@native_call_guard` 装饰器捕获包装层异常，回退实现提供基础日志。
+
 
