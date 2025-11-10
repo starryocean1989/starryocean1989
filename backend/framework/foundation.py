@@ -822,16 +822,13 @@ class ServiceBase(ABC):
 
     def log_performance(self, operation: str, duration: float, **kwargs) -> None:
         """记录性能日志"""
-        context_str = ", ".join(["%s=%s" % (k, v) for k, v in kwargs.items()])
+        context_str = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
         if context_str:
             self.logger.info(
-                "[性能] %s 耗时 %.3fs (%s)",
-                operation,
-                duration,
-                context_str,
+                f"[性能] {operation} 耗时 {duration:.3f}s ({context_str})"
             )
         else:
-            self.logger.info("[性能] %s 耗时 %.3fs", operation, duration)
+            self.logger.info(f"[性能] {operation} 耗时 {duration:.3f}s")
 
     # 业务方法声明（由具体服务类实现）
     def query_historical_data(

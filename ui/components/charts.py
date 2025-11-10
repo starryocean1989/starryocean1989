@@ -1383,7 +1383,7 @@ class ChartWidget(BaseWidget):
                     # 使用plot方法替代addItem来避免geometryChanged问题
                     if hasattr(pg, "mkPen"):
                         self.indicator_charts["macd"].plot(
-                            x=timestamps[-len(macd_values) :],
+                            x=timestamps[-len(macd_values):],
                             y=macd_values,
                             pen=(
                                 pg.mkPen(color="blue", width=1)
@@ -1395,7 +1395,7 @@ class ChartWidget(BaseWidget):
                     # Signal线（橙色）
                     if hasattr(pg, "mkPen"):
                         self.indicator_charts["macd"].plot(
-                            x=timestamps[-len(macdsignal_values) :],
+                            x=timestamps[-len(macdsignal_values):],
                             y=macdsignal_values,
                             pen=(
                                 pg.mkPen(color="orange", width=1)
@@ -1410,7 +1410,7 @@ class ChartWidget(BaseWidget):
                         self.indicator_charts["macd"].clear()
                         if hasattr(pg, "mkPen"):
                             self.indicator_charts["macd"].plot(
-                                x=timestamps[-len(macd_data) :],
+                                x=timestamps[-len(macd_data):],
                                 y=macd_data,
                                 pen=(
                                     pg.mkPen(color="blue", width=1)
@@ -1429,7 +1429,7 @@ class ChartWidget(BaseWidget):
                     # 使用plot方法替代addItem来避免geometryChanged问题
                     if hasattr(pg, "mkPen"):
                         self.indicator_charts["rsi"].plot(
-                            x=timestamps[-len(rsi_values) :],
+                            x=timestamps[-len(rsi_values):],
                             y=rsi_values,
                             pen=(
                                 pg.mkPen(color="yellow", width=1)
@@ -1463,7 +1463,7 @@ class ChartWidget(BaseWidget):
                         self.indicator_charts["rsi"].clear()
                         if hasattr(pg, "mkPen"):
                             self.indicator_charts["rsi"].plot(
-                                x=timestamps[-len(rsi_data) :],
+                                x=timestamps[-len(rsi_data):],
                                 y=rsi_data,
                                 pen=(
                                     pg.mkPen(color="yellow", width=1)

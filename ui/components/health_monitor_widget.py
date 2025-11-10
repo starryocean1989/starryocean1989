@@ -5,12 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTextEdit, QProgressBar, QFrame,
     QScrollArea, QGridLayout, QTabWidget, QSplitter
 )
