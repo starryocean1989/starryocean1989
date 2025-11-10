@@ -51,19 +51,19 @@ PANDAS_AVAILABLE = False
 NUMPY_AVAILABLE = False
 
 # pandas和numpy别名（延迟导入）
-pd = None
-np = None
+pd = None  # pylint: disable=invalid-name
+np = None  # pylint: disable=invalid-name
 
 # VnPy核心组件（延迟导入）
-MainEngine: Optional[Any] = None
-EventEngine: Optional[Any] = None
-Event: Optional[Any] = None
-TickData: Optional[Any] = None
-BarData: Optional[Any] = None
-OrderData: Optional[Any] = None
-TradeData: Optional[Any] = None
-PositionData: Optional[Any] = None
-AccountData: Optional[Any] = None
+MainEngine: Optional[Any] = None  # pylint: disable=invalid-name
+EventEngine: Optional[Any] = None  # pylint: disable=invalid-name
+Event: Optional[Any] = None  # pylint: disable=invalid-name
+TickData: Optional[Any] = None  # pylint: disable=invalid-name
+BarData: Optional[Any] = None  # pylint: disable=invalid-name
+OrderData: Optional[Any] = None  # pylint: disable=invalid-name
+TradeData: Optional[Any] = None  # pylint: disable=invalid-name
+PositionData: Optional[Any] = None  # pylint: disable=invalid-name
+AccountData: Optional[Any] = None  # pylint: disable=invalid-name
 
 # VnPy事件类型
 EVENT_TICK = "eTick"
@@ -203,15 +203,15 @@ class UnifiedMarketData:
         )
 
     @classmethod
-    def from_vnpy_bar(cls, bar: Any) -> "UnifiedMarketData":
+    def from_vnpy_bar(cls, bar_data: Any) -> "UnifiedMarketData":
         """从VnPy Bar转换"""
         return cls(
-            symbol=bar.symbol,
-            exchange=Exchange(bar.exchange.value),
-            datetime=bar.datetime,
+            symbol=bar_data.symbol,
+            exchange=Exchange(bar_data.exchange.value),
+            datetime=bar_data.datetime,
             # 价格字段
-            last_price=bar.close_price,  # Bar用close_price作为last_price
-            open_price=bar.open_price,
+            last_price=bar_data.close_price,  # Bar用close_price作为last_price
+            open_price=bar_data.open_price,
             high_price=bar.high_price,
             low_price=bar.low_price,
             close_price=bar.close_price,
@@ -613,7 +613,6 @@ class ConfigManager:
 
     def save_config(self):
         """保存配置"""
-        # TODO: 实现配置保存逻辑
         raise NotImplementedError("配置保存功能尚未实现")
 
 
@@ -663,17 +662,17 @@ class ServiceBase(ABC):
     @abstractmethod
     def initialize(self) -> bool:
         """初始化服务"""
-        pass
+        pass  # pylint: disable=unnecessary-pass
 
     @abstractmethod
     def shutdown(self) -> bool:
         """关闭服务"""
-        pass
+        pass  # pylint: disable=unnecessary-pass
 
     @abstractmethod
     def get_status(self) -> Dict:
         """获取服务状态"""
-        pass
+        pass  # pylint: disable=unnecessary-pass
 
     def set_engines(self, main_engine: Any, event_engine: Any):
         """设置VnPy引擎"""
@@ -804,7 +803,7 @@ class ServiceBase(ABC):
             "error_count": len(self._errors),
         }
 
-    def query_local_data(self, query: str, **kwargs) -> Any:
+    def query_local_data(self, _query: str, **_kwargs) -> Any:
         """查询本地数据"""
         # 基础实现，子类可重写
         self.logger.warning("query_local_data not implemented in base class")
@@ -815,7 +814,7 @@ class ServiceBase(ABC):
         # 基础实现，子类可重写
         return data is not None
 
-    def get_index_returns(self, index_code: str, start_date: str, end_date: str) -> Any:
+    def get_index_returns(self, _index_code: str, _start_date: str, _end_date: str) -> Any:
         """获取指数收益率数据"""
         # 基础实现，子类可重写
         self.logger.warning("get_index_returns not implemented in base class")
@@ -837,18 +836,18 @@ class ServiceBase(ABC):
     # 业务方法声明（由具体服务类实现）
     def query_historical_data(
         self,
-        symbol: str,
-        start_date: str,
-        end_date: str,
-        interval: str = "1d",
-        check_gaps: bool = False,
+        _symbol: str,
+        _start_date: str,
+        _end_date: str,
+        _interval: str = "1d",
+        _check_gaps: bool = False,
     ) -> Any:
         """查询历史数据（基类声明，子类实现）"""
         self.logger.warning("query_historical_data not implemented in base class")
         return None
 
     def calculate_indicator(
-        self, data: List[float], indicator_name: str, params: Optional[Dict[str, Any]] = None
+        self, _data: List[float], _indicator_name: str, _params: Optional[Dict[str, Any]] = None
     ) -> Any:
         """计算技术指标（基类声明，子类实现）"""
         self.logger.warning("calculate_indicator not implemented in base class")
@@ -856,10 +855,10 @@ class ServiceBase(ABC):
 
     def detect_data_gaps(
         self,
-        symbol: str,
-        start_date: str,
-        end_date: str,
-        interval: str = "1d"
+        _symbol: str,
+        _start_date: str,
+        _end_date: str,
+        _interval: str = "1d"
     ) -> Any:
         """检测数据断点（基类声明，子类实现）"""
         self.logger.warning("detect_data_gaps not implemented in base class")

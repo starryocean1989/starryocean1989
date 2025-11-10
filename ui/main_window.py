@@ -20,7 +20,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, cast
 
 try:
     import psutil
@@ -596,7 +596,7 @@ class MainWindow(QMainWindow):
         self.responsive_helper: Optional[ResponsiveHelper] = None
 
         # 快捷键管理器
-        self.shortcut_manager: Optional[ShortcutManager] = None
+        self.shortcut_manager: Optional['ShortcutManager'] = None
 
         # ✅ 严格串行化：就绪标志
         self._interfaces_created = False
@@ -796,12 +796,9 @@ class MainWindow(QMainWindow):
 
             # 快捷键系统注册
             try:
-                if hasattr(self, "shortcut_manager"):
-                    shortcut_count = (
-                        len(self.shortcut_manager.shortcuts)  # type: ignore
-                        if hasattr(self.shortcut_manager, "shortcuts")  # type: ignore
-                        else 0
-                    )
+                shortcut_manager = getattr(self, 'shortcut_manager', None)
+                if shortcut_manager is not None:
+                    shortcut_count = len(getattr(shortcut_manager, 'shortcuts', {}))
                     stage_logger.info("✅ 快捷键系统注册完成", extra={"log_type": "STAGE_NODE"})
                     stage_logger.info(
                         f"  - 全局快捷键: {shortcut_count}个", extra={"log_type": "STAGE_NODE"}
@@ -1470,6 +1467,16 @@ class MainWindow(QMainWindow):
 
     def create_function_interfaces(self):
         """创建6个功能界面."""
+        # 初始化快捷键管理器
+        try:
+            self.shortcut_manager = ShortcutManager(self)
+            self.logger.debug("快捷键管理器初始化成功")
+        except Exception as e:
+            self.logger.error(
+                "❌ 初始化快捷键管理器失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
+            self.shortcut_manager = None
+
         # ✅ 使用 interface_order 定义界面创建顺序（使用延迟加载，interface_class=None）
         interfaces = [(interface_id, None) for interface_id in self.interface_order]
 
