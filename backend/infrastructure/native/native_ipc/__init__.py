@@ -12,25 +12,15 @@ import platform
 import logging
 from typing import Any, Callable, TypeVar, cast
 
-# 使用统一的日志系统
-from backend.infrastructure.system_vnpy.logging_system import (
-    bind_logger_defaults,
-    get_alert_logger,
-    LogType,
-)
-
 # 导入native_call_guard装饰器
-from backend.infrastructure.native.logging_bridge import native_call_guard
+# from backend.infrastructure.native.logging_bridge import native_call_guard
 
-# 创建logger并绑定默认属性
-logger = bind_logger_defaults(
-    logging.getLogger("backend.native.ipc"),
-    log_type=LogType.SYSTEM.value,
-    scenario="backend.native.ipc"
-)
+# 创建logger
+logger = logging.getLogger("backend.native.ipc")
 
 # 创建告警logger
-alert_logger = get_alert_logger("backend.native.ipc.alert", scenario="backend.native.ipc")
+alert_logger = logging.getLogger("backend.native.ipc.alert")
+
 
 T = TypeVar('T', bound=Callable[..., Any])
 
@@ -39,16 +29,16 @@ def log_alert_on_error(func: T) -> T:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return func(*args, **kwargs)
-        except Exception as e:
+        except Exception:
             alert_logger.error(
-                f"Native IPC 模块发生错误: {str(e)}",
+                f"Native IPC 模块发生错误",
                 exc_info=True,
                 extra={
-                    "error_type": type(e).__name__,
+                    "error_type": "Exception",
                     "module": func.__module__,
                     "function": func.__name__,
                     "scenario": "backend.native.ipc",
-                    "log_type": LogType.ALERT.value,
+                    "log_type": "ALERT",
                 },
             )
             raise
@@ -85,13 +75,13 @@ if IS_WINDOWS:
             "setup_ipc_loop",
             "IPC_AVAILABLE",
         ]
-    except ImportError as e:
+    except ImportError:
         # C扩展未编译
         IPC_AVAILABLE = False
         logger.warning(
             "native_ipc C 扩展未编译，后续调用将触发降级告警",
             extra={
-                "log_type": LogType.SYSTEM.value,
+                "log_type": "SYSTEM",
                 "scenario": "backend.native.ipc",
                 "native_module": "backend.native.ipc.core",
                 "action_required": "compile_extension",
@@ -108,7 +98,7 @@ if IS_WINDOWS:
             alert_logger.critical(
                 alert_msg,
                 extra={
-                    "log_type": LogType.ALERT.value,
+                    "log_type": "ALERT",
                     "action_required": "compile_extension",
                     "module_path": "backend/infrastructure/native/native_ipc",
                 },
@@ -135,7 +125,7 @@ else:
         alert_logger.critical(
             error_msg,
             extra={
-                "log_type": LogType.ALERT.value,
+                "log_type": "ALERT",
                 "current_platform": platform.system(),
                 "action_required": "unsupported_platform",
                 "scenario": "backend.native.ipc",

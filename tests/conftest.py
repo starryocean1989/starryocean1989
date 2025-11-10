@@ -18,10 +18,3 @@ if str(_TESTS_DIR) not in sys.path:
 
 
 
-@pytest.fixture(scope="session", name="data")
-def fixture_orjson_test_data():
-    """提供orjson性能测试所需的示例数据。"""
-
-    return generate_complex_request()
-
-

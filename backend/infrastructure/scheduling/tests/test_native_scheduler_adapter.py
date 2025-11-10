@@ -45,16 +45,20 @@ def test_submit_delegates_and_returns_future():
     adapter.ensure_category("alpha", queue_capacity=10, max_workers=1)
     future = adapter.submit("alpha", lambda x: x + 1, args=(1,), kwargs={"y": 2})
     assert future is not None
-    scheduler = adapter._scheduler  # noqa: SLF001
-    assert scheduler.submissions[0][0] == "alpha"
-    assert scheduler.submissions[0][2] == (1,)
-    assert scheduler.submissions[0][3] == {"y": 2}
+    # 直接访问被monkeypatch的DummyScheduler类创建的实例
+    scheduler = adapter._scheduler
+    assert isinstance(scheduler, adapter_module.NativeScheduler)
+    assert scheduler.submissions[0][0] == "alpha"  # type: ignore[attr-defined]
+    assert scheduler.submissions[0][2] == (1,)  # type: ignore[attr-defined]
+    assert scheduler.submissions[0][3] == {"y": 2}  # type: ignore[attr-defined]
 
 
 def test_context_manager_triggers_shutdown():
     adapter = adapter_module.SchedulerAdapter(executor_factory=lambda mw: {"max_workers": mw})
     with adapter:
         adapter.ensure_category("alpha", queue_capacity=1, max_workers=1)
-    scheduler = adapter._scheduler  # noqa: SLF001
-    assert scheduler.shutdown_calls == [True]
+    # 直接访问被monkeypatch的DummyScheduler类创建的实例
+    scheduler = adapter._scheduler
+    assert isinstance(scheduler, adapter_module.NativeScheduler)
+    assert scheduler.shutdown_calls == [True]  # type: ignore[attr-defined]
 

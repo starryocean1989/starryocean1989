@@ -50,7 +50,7 @@
 import logging
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from PySide6.QtCore import QDate, QThread, QTimer, Signal, Qt, QStringListModel
 from PySide6.QtWidgets import QCompleter
@@ -80,9 +80,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.core.base import get_service_manager, get_event_engine
-from backend.core.service_base import LoggerMixin
+from backend.framework import get_service_registry, get_event_engine
 from backend.services.database_adapter import get_db_manager
+from backend.services.data_center_service import DataCenterService
+from backend.services.data_center_proxy import DataCenterServiceProxy
 from ui.components.widgets import BaseWidget
 
 # vnpy事件相关
@@ -122,7 +123,7 @@ class ReloadSymbolsThread(QThread):
     error_signal = Signal(str)  # 错误信号，传递错误消息
     progress_signal = Signal(str)  # 进度信号，传递进度消息
 
-    def __init__(self, data_center_service, parent=None):
+    def __init__(self, data_center_service: Any, parent=None):
         """初始化工作线程.
 
         Args:
@@ -306,7 +307,7 @@ class DownloadThread(QThread):
     error_signal = Signal(str)  # 错误信号，传递错误消息
     progress_signal = Signal(str)  # 进度信号，传递进度消息
 
-    def __init__(self, data_center_service, start_date, parent=None, symbols=None, end_date=None):
+    def __init__(self, data_center_service: Any, start_date, parent=None, symbols=None, end_date=None):
         """初始化工作线程.
 
         Args:
@@ -610,7 +611,7 @@ class DownloadThread(QThread):
                 )
 
 
-class DataCenter(BaseWidget, LoggerMixin):
+class DataCenter(BaseWidget):
     """数据中心主界面（重构版）."""
 
     # 🔧 关键修复：定义Qt Signal用于跨线程UI更新
@@ -630,9 +631,13 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def __init__(self, parent=None):
         """初始化数据中心界面."""
+        # 初始化logger
+        import logging
+        self.logger = logging.getLogger(self.__class__.__name__)
+
         # 初始化服务管理器
-        self.service_manager = get_service_manager()
-        self.data_center_service = None
+        self.service_manager = get_service_registry()
+        self.data_center_service: Optional[Any] = None
         self.db_manager = get_db_manager()  # 🆕 数据库管理器
 
         # 初始化分页相关属性

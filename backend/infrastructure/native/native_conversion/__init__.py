@@ -7,6 +7,7 @@
 
 import logging
 import platform
+from typing import Any
 
 from backend.infrastructure.system_vnpy.logging_system import (
     LogType,
@@ -56,7 +57,7 @@ if IS_WINDOWS:
             "native_conversion extension unavailable, using Python fallback",
             extra={"native_module": "backend.native.conversion.core"},
         )
-        def _raise_error():
+        def _raise_error(*args: Any, **kwargs: Any) -> Any:
             raise ImportError("Conversion C extension not compiled")
         batch_convert = batch_encode = batch_decode = _raise_error
 else:
@@ -66,7 +67,7 @@ else:
         "native_conversion not supported on current platform",
         extra={"native_module": "backend.native.conversion.core", "platform": platform.system()},
     )
-    def _raise_error():
+    def _raise_error(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("Conversion extension only supports Windows")
     batch_convert = batch_encode = batch_decode = _raise_error
 

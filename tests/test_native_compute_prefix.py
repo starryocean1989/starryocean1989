@@ -30,7 +30,7 @@ def test_prefix_sum_scale_matches_python_divide():
     random.seed(42)
     diffs = [random.randint(-500, 500) for _ in range(1024)]
 
-    result = prefix_sum_scale(diffs, "divide")
+    result = prefix_sum_scale(diffs, "divide")  # type: ignore
 
     cumulative = []
     total = 0
@@ -48,7 +48,7 @@ def test_prefix_sum_scale_matches_python_divide():
 def test_prefix_sum_scale_supports_alternate_scales():
     diffs = [1000, 2000, -500, 750]
 
-    by_1000 = prefix_sum_scale(diffs, "divide_by_1000")
+    by_1000 = prefix_sum_scale(diffs, "divide_by_1000")  # type: ignore
     expected_1000 = []
     running = 0
     for diff in diffs:
@@ -56,7 +56,7 @@ def test_prefix_sum_scale_supports_alternate_scales():
         expected_1000.append(running / 1000.0)
     assert by_1000 == pytest.approx(expected_1000)
 
-    custom = prefix_sum_scale(diffs, "scale", 256.0)
+    custom = prefix_sum_scale(diffs, "scale", 256.0)  # type: ignore
     expected_custom = []
     running = 0
     for diff in diffs:
@@ -76,15 +76,15 @@ def test_prefix_sum_scale_empty_input():
 @pytest.mark.skipif(not COMPUTE_AVAILABLE, reason="native_compute 不可用")
 def test_batch_compute_supported_operations():
     values = [100, 200, 300]
-    assert batch_compute(values, "divide_by_100") == pytest.approx([1.0, 2.0, 3.0])
-    assert batch_compute(values, "divide_by_1000") == pytest.approx([0.1, 0.2, 0.3])
+    assert batch_compute(values, "divide_by_100") == pytest.approx([1.0, 2.0, 3.0])  # type: ignore
+    assert batch_compute(values, "divide_by_1000") == pytest.approx([0.1, 0.2, 0.3])  # type: ignore
     assert batch_compute([1, 2, 3], "square") == [1.0, 4.0, 9.0]
 
 
 @pytest.mark.skipif(not COMPUTE_AVAILABLE, reason="native_compute 不可用")
 def test_batch_hash_returns_hex_strings():
     payload = [b"alpha", b"beta"]
-    hashes = batch_hash(payload, "md5")
+    hashes = batch_hash(payload, "md5")  # type: ignore
     assert all(isinstance(item, str) for item in hashes)
     assert len(hashes[0]) == 32
 

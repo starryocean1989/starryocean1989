@@ -191,9 +191,15 @@ def decode_request(
 
             params = metadata.get("params", {}) if isinstance(metadata, dict) else {}
             method_name = metadata.get("method") if isinstance(metadata, dict) else None
+            # Ensure method_name is a string or None
+            if method_name is not None and not isinstance(method_name, str):
+                method_name = str(method_name)
             if not method_name and callable(method_resolver):
                 try:
                     method_name = method_resolver(method_id)
+                    # Ensure method_resolver result is also a string
+                    if method_name is not None and not isinstance(method_name, str):
+                        method_name = str(method_name)
                 except Exception:
                     method_name = None
 
@@ -205,7 +211,7 @@ def decode_request(
 
             return RPCRequest(
                 request_id=request_id,
-                method=method_name or "",
+                method=str(method_name) if method_name else "",
                 params=params if isinstance(params, dict) else {},
                 method_id=method_id,
                 flags=flags,

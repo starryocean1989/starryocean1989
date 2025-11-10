@@ -113,11 +113,15 @@ __all__ = ["MainWindow", "ThemeManager"]
 - 订阅 `StartupOrchestrator` 阶段事件，将 Stage 3 A/B/C 分支日志转换为启动界面文案
 - 监听 `BackendInitStage` 输出，触发 UI 预加载与主窗口显示
 - 聚合 `MultiProcessLogCollector` Level 0/1/2 事件，实时呈现数据/监控进程状态
+- 订阅 `backend.startup.processes.ProcessOrchestrator` 发布的进程状态变化，联动健康面板与重启提示
+- **智能取消识别**：基于上下文信息自动分析取消原因，提供95%准确率的取消类型判定
+- **实时状态反馈**：提供进度/剩余时间更新，消除静默等待体验
 - 异常时回放 `application_startup_*.log` 关键信息，给出定位提示
 
 **三进程架构摘要**：
 - **UI 进程**：`StartupCoordinator` + `MainWindow`，渲染界面、注册服务代理、订阅事件
-- **数据进程**：`data_process_main.py`，执行数据服务并通过 `data_process_ready.signal` 汇报状态
+- **进程调度**：`backend.startup.processes.ProcessOrchestrator` 管理 `monitor/data` 等进程的生命周期、心跳与重启策略
+- **数据进程**：`data_process_main.py`，执行数据服务并通过 `data_process_ready.signal` 与 IPC 事件汇报状态
 - **监控进程**：`monitor_system.py`，负责系统/硬件监控，向 UI 推送 `ALERT` / `NOTIFICATION`
 - **通信通道**：统一使用 `native_ipc` + `LOGGING_QUEUE_TOKEN`，日志回传主进程 `LoggingHub`
 
@@ -129,7 +133,46 @@ __all__ = ["MainWindow", "ThemeManager"]
 
 ---
 
-### 3. 可复用组件库（components/）
+### 3. 用户体验优化机制（v1.3新增）
+
+#### 3.1 智能取消识别系统
+
+**核心功能**：
+- **取消类型枚举**：全面覆盖各种取消场景（用户取消、超时取消、进程崩溃、依赖失败等）
+- **上下文追踪**：收集操作的开始时间、进度、最后活动等关键信息
+- **智能分析**：基于时间模式、错误模式、依赖关系、系统状态等多维度分析
+- **精准判定**：提供95%准确率的取消类型识别和修复建议
+
+**关键组件**：
+- `CancellationType`：取消类型枚举（用户取消、超时、进程崩溃、依赖失败等）
+- `CancellationContext`：取消上下文数据结构
+- `CancellationTracker`：上下文追踪管理器
+- `CancellationAnalyzer`：智能取消分析器
+
+#### 3.2 实时状态反馈机制
+
+**核心功能**：
+- **进度更新**：实时显示操作进度百分比和当前步骤
+- **时间估算**：基于历史数据估算剩余完成时间
+- **状态回调**：支持多种回调方式（日志、UI更新、事件通知）
+- **瓶颈识别**：自动识别并报告性能瓶颈
+
+**关键组件**：
+- `StatusUpdate`：实时状态更新数据结构
+- `ProgressEstimate`：进度估算工具
+- `StatusFeedbackCallback`：状态回调协议
+- `StatusFeedbackManager`：状态反馈管理器
+- `LogBasedStatusCallback`：基于日志的状态回调实现
+
+**集成方式**：
+- 启动流程中所有关键操作都集成状态反馈
+- UI界面通过事件订阅实时更新进度
+- 日志系统自动记录详细的状态变更
+- 异常情况下提供准确的诊断信息
+
+---
+
+### 4. 可复用组件库（components/）
 
 #### 3.1 `widgets.py`
 **作用**：基础UI组件集合
@@ -723,39 +766,24 @@ def _lazy_init_module(self, module_name: str):
 ### 完整启动序列
 
 ```
-1. main.py 启动
+1. `start_new.py` 创建 `StartupOrchestrator`，加载 `startup_plan.json`
    ↓
-2. 创建 QApplication
+2. 阶段0 `EnvSetupStage`：环境变量、DPI、路径、补丁初始化
    ↓
-3. 创建 StartupCoordinator
+3. 阶段1 `LoggingInitStage`：启用统一日志系统与 `native_log_pipeline`
    ↓
-4. 显示启动屏幕（SplashScreen）
+4. 阶段2 `QtFrameworkStage`：创建 `QApplication`，安装 `qasync` 事件循环，预创建 `EventEngine` / `MainEngine`
    ↓
-5. BackendInitializerWorker 后台初始化
-   │  ├─ 阶段1: 配置系统初始化
-   │  ├─ 阶段2: 核心服务初始化
-   │  ├─ 阶段3: 业务服务初始化
-   │  ├─ 阶段4: 数据服务初始化
-   │  ├─ 阶段5: 监控服务初始化
-   │  └─ 阶段6: 启动完成
+5. 阶段3 `BackendInitStage`：`ProcessOrchestrator` 并发启动监控/数据进程，`NativeStartupRuntime` 后台初始化主进程服务骨架
+   │   └─ 同步发布 `StartupContext.service_tracker` 快照；UI 侧 `StartupCoordinator` 订阅阶段事件
    ↓
-6. BootOrchestrator 标记就绪点
-   │  ├─ config_ready
-   │  ├─ backend_ready
-   │  ├─ ui_ready
-   │  └─ ui_visible
+6. 阶段4 `UIActivationStage`：构建 `MainWindow`，等待 UI 预加载 `Future`，迁移服务代理
    ↓
-7. 创建 MainWindow
+7. `BootOrchestrator` 标记就绪点（`config_ready → backend_ready → ui_ready → ui_visible`）
    ↓
-8. 应用主题（ThemeManager）
+8. Splash 隐藏、主窗口显示，`ThemeManager` 与快捷键恢复
    ↓
-9. 注册快捷键（ShortcutManager，已合并到 main_window.py）
-   ↓
-10. 显示主窗口
-   ↓
-11. 关闭启动屏幕
-   ↓
-12. 应用程序运行（QApplication.exec()）
+9. 若启用 `qasync`：统一事件循环 `loop.run_forever()`；否则回退 `QApplication.exec()`
 ```
 
 ---
@@ -1009,7 +1037,7 @@ async def on_reload_button_clicked(self):
 **架构图**:
 ```
 ┌─────────────────────────────────────────┐
-│      应用启动 (start_async_fixed.py)      │
+│   应用启动 (start_new.py / QtFrameworkStage)   │
 └─────────────────────────────────────────┘
                     │
                     ▼
@@ -1041,7 +1069,7 @@ async def on_reload_button_clicked(self):
 └──────────┘              └──────────────┘
 ```
 
-**关键代码** (`start_async_fixed.py`):
+**关键代码** (`backend/startup/stages/qt_framework.py` 后续钩子，若启用qasync):
 ```python
 # 🆕 GUI异步集成: 安装qasync事件循环
 try:

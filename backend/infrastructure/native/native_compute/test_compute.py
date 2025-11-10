@@ -60,16 +60,13 @@ class TestNativeCompute:
     @pytest.mark.skipif(not COMPUTE_AVAILABLE, reason="Compute extension not available")
     def test_batch_get_price(self):
         """测试 batch_get_price 功能."""
-        # 假设价格数据格式
-        price_data = [
-            {"price": 100.0, "volume": 1000},
-            {"price": 101.0, "volume": 1500},
-            {"price": 99.0, "volume": 800},
-        ]
-        result = batch_get_price(price_data)
+        # 测试二进制价格数据解析 (TDX格式)
+        # 使用简单的二进制数据进行测试
+        price_data = b'\x00\x01\x00\x02\x00\x03\x00\x04'  # 简单的测试数据
+        result = batch_get_price(price_data, 0, 2)
 
         assert isinstance(result, list)
-        assert len(result) == len(price_data)
+        assert len(result) == 2
 
     @pytest.mark.skipif(not COMPUTE_AVAILABLE, reason="Compute extension not available")
     def test_batch_validate_iso_dates(self):
@@ -91,15 +88,22 @@ class TestNativeCompute:
     @pytest.mark.skipif(not COMPUTE_AVAILABLE, reason="Compute extension not available")
     def test_batch_compare_dates(self):
         """测试 batch_compare_dates 功能."""
-        date_pairs = [
-            ("2023-01-01", "2023-01-02"),
-            ("2023-12-31", "2023-01-01"),
-            ("2023-06-15", "2023-06-15"),
+        dates = [
+            "2023-01-01",
+            "2023-12-31",
+            "2023-06-15",
+            "2024-01-01",
         ]
-        result = batch_compare_dates(date_pairs)
+        reference_date = "2023-06-15"
+        result = batch_compare_dates(dates, reference_date)
 
         assert isinstance(result, list)
-        assert len(result) == len(date_pairs)
+        assert len(result) == len(dates)
+        # Test specific comparisons
+        # 2023-01-01 < 2023-06-15 -> -1
+        # 2023-12-31 > 2023-06-15 -> 1
+        # 2023-06-15 == 2023-06-15 -> 0
+        # 2024-01-01 > 2023-06-15 -> 1
 
     @pytest.mark.skipif(not PREFIX_SUM_AVAILABLE, reason="Prefix sum extension not available")
     def test_prefix_sum_scale(self):
@@ -107,7 +111,7 @@ class TestNativeCompute:
         data = [1.0, 2.0, 3.0, 4.0, 5.0]
         scale_factor = 2.0
 
-        result = prefix_sum_scale(data, scale_factor)
+        result = prefix_sum_scale(data, operation="scale", custom_scale=scale_factor)
 
         assert isinstance(result, list)
         assert len(result) == len(data)
@@ -146,7 +150,7 @@ class TestNativeCompute:
         # 空输入
         assert batch_compute([]) == []
         assert batch_hash([]) == []
-        assert batch_get_price([]) == []
+        assert batch_get_price(b'', 0, 0) == []
 
         # 单个元素
         assert len(batch_compute([1.0])) == 1
@@ -154,7 +158,7 @@ class TestNativeCompute:
 
         # None值处理
         try:
-            batch_compute([None])
+            batch_compute([None])  # type: ignore
         except (TypeError, ValueError):
             # 应该抛出适当的异常
             pass

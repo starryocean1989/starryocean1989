@@ -113,6 +113,8 @@ async def _fetch_single_ipo_date_int(
 
         # 从连接池获取连接
         conn = await pool.acquire()
+        if conn is None:
+            return None
         try:
             # 查询财务信息
             finance_info = await asyncio.wait_for(
@@ -130,7 +132,7 @@ async def _fetch_single_ipo_date_int(
             return int(ipo_date_int)
 
         finally:
-            await pool.release(conn)
+            pool.release(conn)
 
     except asyncio.TimeoutError:
         logger.debug(f"查询IPO日期超时: {symbol}")
@@ -227,7 +229,7 @@ async def batch_get_ipo_dates(
     finally:
         # 关闭临时连接池
         if temp_pool is not None:
-            await temp_pool.close()
+            await temp_pool.close_all()
 
 
 async def _fetch_single_ipo_date(
@@ -249,6 +251,8 @@ async def _fetch_single_ipo_date(
 
         # 从连接池获取连接
         conn = await pool.acquire()
+        if conn is None:
+            return None
         try:
             # 查询财务信息
             finance_info = await asyncio.wait_for(
@@ -265,7 +269,7 @@ async def _fetch_single_ipo_date(
             return None
 
         finally:
-            await pool.release(conn)
+            pool.release(conn)
 
     except asyncio.TimeoutError:
         logger.debug(f"查询IPO日期超时: {symbol}")
@@ -377,22 +381,22 @@ def _download_ipo_batch_worker(symbols: List[str]) -> Dict[str, Optional[date]]:
     # 配置子进程日志记录
     import logging
     from backend.infrastructure.system_vnpy.logging_system import (
-        configure_subprocess_logging,
+        setup_subprocess_logging,
         LogType,
         get_alert_logger
     )
-    
+
     # 配置子进程日志
-    configure_subprocess_logging(
-        logger_name="tdx.ipo_worker",
-        log_type=LogType.SYSTEM.value,
-        scenario="tdx.ipo_download"
+    # 简化配置，直接使用标准logging
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
-    
+
     # 获取logger
     logger = logging.getLogger("tdx.ipo_worker")
     alert_logger = get_alert_logger("tdx.ipo_worker.alert", scenario="tdx.ipo_download")
-    
+
     # 记录任务开始
     logger.info(
         f"开始批量下载IPO日期，共 {len(symbols)} 个品种",
@@ -411,11 +415,11 @@ def _download_ipo_batch_worker(symbols: List[str]) -> Dict[str, Optional[date]]:
         result = loop.run_until_complete(
             batch_get_ipo_dates(symbols, pool=None, max_concurrent=38, timeout=10.0)
         )
-        
+
         # 统计成功/失败数量
         success_count = sum(1 for v in result.values() if v is not None)
         failed_count = len(symbols) - success_count
-        
+
         if failed_count > 0:
             logger.warning(
                 f"IPO日期下载完成，成功 {success_count} 个，失败 {failed_count} 个",
@@ -430,7 +434,7 @@ def _download_ipo_batch_worker(symbols: List[str]) -> Dict[str, Optional[date]]:
                 f"IPO日期下载完成，全部 {success_count} 个成功",
                 extra={"success_count": success_count}
             )
-            
+
         return result
     except Exception as e:
         # 记录严重错误
@@ -516,7 +520,7 @@ async def batch_get_finance_info(
     finally:
         # 关闭临时连接池
         if temp_pool is not None:
-            await temp_pool.close()
+            await temp_pool.close_all()
 
 
 async def _fetch_single_finance_info(
@@ -536,6 +540,8 @@ async def _fetch_single_finance_info(
     try:
         # 从连接池获取连接
         conn = await pool.acquire()
+        if conn is None:
+            return None
         try:
             # 查询财务信息
             finance_info = await asyncio.wait_for(
@@ -544,7 +550,7 @@ async def _fetch_single_finance_info(
             return finance_info
 
         finally:
-            await pool.release(conn)
+            pool.release(conn)
 
     except asyncio.TimeoutError:
         logger.debug(f"查询财务信息超时: {code}")

@@ -9,7 +9,7 @@ import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
 from PySide6.QtCore import (
     QAbstractTableModel,
@@ -61,7 +61,10 @@ from PySide6.QtWidgets import (
 import psutil
 import pyqtgraph as pg
 
+from backend.framework import get_service_registry, get_event_engine
 from backend.core.base import get_service_manager
+from backend.services.system_manager_service import SystemManagerService
+import logging
 from ui.components.widgets import (
     BaseWidget,
     GaugeWidget,
@@ -69,7 +72,6 @@ from ui.components.widgets import (
     VerticalThresholdHeatmap,
 )
 from ui.components.theme_system import DashboardTheme
-from backend.core.service_base import LoggerMixin
 from backend.infrastructure.system_vnpy import (
     EVENT_ALERT_CREATED,
     EVENT_ALERT_UPDATED,
@@ -592,14 +594,18 @@ class AlertCard(QWidget):
     def _call_alert_action(self, action: str, note: str) -> None:
         """调用告警操作."""
         try:
-            service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service", silent=True)
+            if not self.alert_id:
+                QMessageBox.warning(self, "错误", "告警ID无效")
+                return
+
+            service_manager = get_service_registry()
+            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
 
             if system_service:
                 if action == "acknowledge":
-                    result = system_service.acknowledge_alert(self.alert_id, note)
+                    result = system_service.acknowledge_alert(str(self.alert_id), note)
                 elif action == "resolve":
-                    result = system_service.resolve_alert(self.alert_id, note)
+                    result = system_service.resolve_alert(str(self.alert_id), note)
                 else:
                     return
 
@@ -917,7 +923,7 @@ class UnifiedMonitorCard(QWidget):
         )
         self.bandwidth_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.bandwidth_detail_label)
-        
+
         # Socket缓冲区信息标签
         self.socket_buffer_label = QLabel("Socket缓冲区: --")
         self.socket_buffer_label.setStyleSheet(
@@ -951,7 +957,7 @@ class UnifiedMonitorCard(QWidget):
             )
         else:
             self.bandwidth_detail_label.setText("带宽未测试")
-    
+
     def update_socket_buffer_info(self, socket_buffer_info: Dict[str, Any]):
         """更新Socket缓冲区信息显示.
 
@@ -960,13 +966,13 @@ class UnifiedMonitorCard(QWidget):
         """
         if not hasattr(self, "socket_buffer_label") or not socket_buffer_info:
             return
-        
+
         try:
             recv_size_kb = socket_buffer_info.get("recv_buffer_size_avg", 0) / 1024
             send_size_kb = socket_buffer_info.get("send_buffer_size_avg", 0) / 1024
             recv_usage = socket_buffer_info.get("recv_buffer_usage_ratio", 0.0)
             send_usage = socket_buffer_info.get("send_buffer_usage_ratio", 0.0)
-            
+
             # 根据使用率设置颜色
             recv_color = "#888"  # 默认灰色
             send_color = "#888"
@@ -974,15 +980,15 @@ class UnifiedMonitorCard(QWidget):
                 recv_color = "#FF4444"  # 严重-红色
             elif recv_usage > 80:
                 recv_color = "#FFAA00"  # 警告-橙色
-            
+
             if send_usage > 95:
                 send_color = "#FF4444"  # 严重-红色
             elif send_usage > 80:
                 send_color = "#FFAA00"  # 警告-橙色
-            
+
             buffer_text = f"Socket缓冲区: 接收{recv_size_kb:.0f}KB({recv_usage:.0f}%) 发送{send_size_kb:.0f}KB({send_usage:.0f}%)"
             self.socket_buffer_label.setText(buffer_text)
-            
+
             # 如果任一使用率超过阈值，使用警告颜色
             if recv_usage > 80 or send_usage > 80:
                 warning_color = send_color if send_usage > recv_usage else recv_color
@@ -1079,7 +1085,7 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
                 self.bandwidth_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.bandwidth_detail_label.setWordWrap(True)
                 container_layout.addWidget(self.bandwidth_detail_label)
-                
+
                 # 添加Socket缓冲区信息标签
                 self.socket_buffer_label = QLabel("Socket缓冲区: --")
                 self.socket_buffer_label.setStyleSheet(
@@ -1137,7 +1143,7 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
                 )
             else:
                 self.bandwidth_detail_label.setText("未测试")
-    
+
     def update_socket_buffer_info(self, socket_buffer_info: Dict[str, Any]):
         """更新Socket缓冲区信息显示.
 
@@ -1146,13 +1152,13 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
         """
         if not hasattr(self, "socket_buffer_label") or not socket_buffer_info:
             return
-        
+
         try:
             recv_size_kb = socket_buffer_info.get("recv_buffer_size_avg", 0) / 1024
             send_size_kb = socket_buffer_info.get("send_buffer_size_avg", 0) / 1024
             recv_usage = socket_buffer_info.get("recv_buffer_usage_ratio", 0.0)
             send_usage = socket_buffer_info.get("send_buffer_usage_ratio", 0.0)
-            
+
             # 根据使用率设置颜色
             recv_color = "#888"  # 默认灰色
             send_color = "#888"
@@ -1160,15 +1166,15 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
                 recv_color = "#FF4444"  # 严重-红色
             elif recv_usage > 80:
                 recv_color = "#FFAA00"  # 警告-橙色
-            
+
             if send_usage > 95:
                 send_color = "#FF4444"  # 严重-红色
             elif send_usage > 80:
                 send_color = "#FFAA00"  # 警告-橙色
-            
+
             buffer_text = f"接收:{recv_size_kb:.0f}KB({recv_usage:.0f}%) 发送:{send_size_kb:.0f}KB({send_usage:.0f}%)"
             self.socket_buffer_label.setText(buffer_text)
-            
+
             # 如果任一使用率超过阈值，使用警告颜色
             if recv_usage > 80 or send_usage > 80:
                 warning_color = send_color if send_usage > recv_usage else recv_color
@@ -1389,12 +1395,12 @@ class DiskMonitorCard(QWidget):
         """初始化硬盘监控卡片."""
         # 调用父类初始化
         base_init_start = time.perf_counter()
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] 调用 BaseWidget.__init__",
             extra={"log_type": "STAGE_NODE"},
         )
         super().__init__(parent)
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] BaseWidget.__init__ 完成",
             extra={
                 "log_type": "STAGE_NODE",
@@ -1719,8 +1725,8 @@ class AlertManagerWidget(QWidget):
         """刷新告警数据."""
         try:
             # 调用后端API获取最新告警
-            service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service", silent=True)
+            service_manager = get_service_registry()
+            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
 
             if system_service:
                 # 获取所有告警
@@ -1740,18 +1746,18 @@ class AlertManagerWidget(QWidget):
     def _cleanup_resolved(self) -> None:
         """清理已解决的告警."""
         try:
-            service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service", silent=True)
+            service_manager = get_service_registry()
+            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
 
             if system_service:
                 result = system_service.clear_resolved_alerts()
 
                 if result.get("success"):
-                    QMessageBox.information(self, "成功", result.get("message"))
+                    QMessageBox.information(self, "成功", result.get("message", "操作成功"))
                     # 刷新告警列表
                     self._refresh_alerts()
                 else:
-                    QMessageBox.warning(self, "错误", f"清理失败: {result.get('message')}")
+                    QMessageBox.warning(self, "错误", f"清理失败: {result.get('message', '未知错误')}")
             else:
                 QMessageBox.warning(self, "错误", "系统管理服务不可用")
 
@@ -1873,12 +1879,12 @@ class LogManagerWidget(QWidget):
         """初始化日志管理界面."""
         # 调用父类初始化
         base_init_start = time.perf_counter()
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] 调用 BaseWidget.__init__",
             extra={"log_type": "STAGE_NODE"},
         )
         super().__init__()
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] BaseWidget.__init__ 完成",
             extra={
                 "log_type": "STAGE_NODE",
@@ -2543,12 +2549,16 @@ class LogManagerWidget(QWidget):
             return
 
         try:
-            service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service", silent=True)
+            service_manager = get_service_registry()
+            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
 
             if system_service:
-                # 提取日志ID列表
-                log_ids = [record.get("id") for record in selected_records if record.get("id")]
+                # 提取日志ID列表，确保类型正确
+                log_ids = []
+                for record in selected_records:
+                    record_id = record.get("id")
+                    if record_id is not None:
+                        log_ids.append(int(record_id))
 
                 if not log_ids:
                     QMessageBox.warning(self, "错误", "选中的日志没有有效的ID，无法删除")
@@ -2561,7 +2571,7 @@ class LogManagerWidget(QWidget):
                     )
                     self._refresh_logs()
                 else:
-                    QMessageBox.warning(self, "删除失败", result.get("message"))
+                    QMessageBox.warning(self, "删除失败", result.get("message", "删除失败"))
             else:
                 QMessageBox.warning(self, "错误", "系统管理服务不可用")
         except Exception as e:
@@ -2585,8 +2595,8 @@ class LogManagerWidget(QWidget):
 
         # 调用后端API删除所有日志
         try:
-            service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service", silent=True)
+            service_manager = get_service_registry()
+            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
 
             if system_service:
                 result = system_service.delete_all_logs()
@@ -2754,7 +2764,7 @@ def get_root() -> Path:
     return root_path
 
 
-class SystemManager(BaseWidget, LoggerMixin):
+class SystemManager(BaseWidget):
     """系统管理主界面（重构版）."""
 
     # 定义信号用于跨线程通信
@@ -2771,17 +2781,19 @@ class SystemManager(BaseWidget, LoggerMixin):
     def __init__(self, parent=None):
         """初始化系统管理界面."""
         init_start = time.perf_counter()
-        stage_logger = logging.getLogger("startup.stage")
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] ▶ SystemManager.__init__ 开始",
             extra={"log_type": "STAGE_NODE"},
         )
 
+        # 初始化logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+
         # 初始化服务管理器
-        self.service_manager = get_service_manager()
+        self.service_manager = get_service_registry()
         self.system_service = None
 
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] 服务管理器就绪: registered=%s",
             list(self.service_manager.services.keys()),
             extra={"log_type": "STAGE_NODE"},
@@ -2978,7 +2990,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 标签页创建时会调用 _load_config()，此时需要 system_service 已经就绪
         service_init_start = time.perf_counter()
         self._initialize_service_before_ui()
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] _initialize_service_before_ui 完成 (%.1f ms, ready=%s)",
             (time.perf_counter() - service_init_start) * 1000.0,
             bool(self.system_service),
@@ -2987,12 +2999,12 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # 调用父类初始化
         base_init_start = time.perf_counter()
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] 调用 BaseWidget.__init__",
             extra={"log_type": "STAGE_NODE"},
         )
         super().__init__(parent, "系统管理")
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] BaseWidget.__init__ 完成",
             extra={
                 "log_type": "STAGE_NODE",
@@ -3019,7 +3031,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         self._cached_event_engine: Optional[Any] = None
         cache_start = time.perf_counter()
         self._init_event_engine_cache()
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] EventEngine 缓存结果: available=%s (%.1f ms)",
             bool(self._cached_event_engine),
             (time.perf_counter() - cache_start) * 1000.0,
@@ -3029,7 +3041,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 🔍 创建专门的DEBUG文件日志（用于调试，不影响终端输出）
         debug_logger_start = time.perf_counter()
         self._setup_debug_file_logger()
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] Debug logger 准备完成 (%.1f ms)",
             (time.perf_counter() - debug_logger_start) * 1000.0,
             extra={"log_type": "STAGE_NODE"},
@@ -3048,7 +3060,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         subscription_start = time.perf_counter()
         self._start_delayed_event_subscription()
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] 事件订阅流程启动 (%.1f ms, subscribed=%s)",
             (time.perf_counter() - subscription_start) * 1000.0,
             self._events_subscribed,
@@ -3078,7 +3090,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         QTimer.singleShot(1000, self._update_datasource_connectivity)
 
         self.logger.info("系统管理界面初始化完成")
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] ◀ SystemManager.__init__ 完成 (总耗时 %.1f ms)",
             (time.perf_counter() - init_start) * 1000.0,
             extra={"log_type": "STAGE_NODE"},
@@ -3099,7 +3111,7 @@ class SystemManager(BaseWidget, LoggerMixin):
             return
 
         # 降级方案：从全局获取
-        from backend.core.base import get_event_engine
+        from backend.framework import get_event_engine
 
         self._cached_event_engine = get_event_engine()
         if self._cached_event_engine:
@@ -3318,9 +3330,9 @@ class SystemManager(BaseWidget, LoggerMixin):
             success: 服务是否成功初始化
         """
         if service_name == "system_manager_service" and success:
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_manager = get_service_manager()
+            service_manager = get_service_registry()
 
             # 重新获取服务（此时应该已就绪）
             self.system_service = service_manager.get_service("system_manager_service", silent=True)
@@ -3337,9 +3349,8 @@ class SystemManager(BaseWidget, LoggerMixin):
                     self._monitoring_events_registered = True
 
     def setup_ui(self):
-        """设置用户界面（延迟加载重资源，构造期仅占位）。"""
-        stage_logger = logging.getLogger("startup.stage")
-        stage_logger.info(
+        """设置用户界面（延迟加载重资源，构造期仅占位）."""
+        _stage_logger.info(
             "[UI-System] setup_ui 开始",
             extra={"log_type": "STAGE_NODE"},
         )
@@ -3377,15 +3388,14 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         QTimer.singleShot(300, self._safe_create_sub_interfaces)
 
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] setup_ui 结束",
             extra={"log_type": "STAGE_NODE"},
         )
 
     def _safe_create_sub_interfaces(self):
         """安全延迟创建子界面（失败显示错误占位，不让应用崩溃）."""
-        stage_logger = logging.getLogger("startup.stage")
-        stage_logger.info(
+        _stage_logger.info(
             "[UI-System] _safe_create_sub_interfaces 调用开始",
             extra={"log_type": "STAGE_NODE"},
         )
@@ -3419,7 +3429,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.tab_widget.addTab(error_tab, "错误")
             self.logger.error("SystemManager 延迟加载失败: %s", e, exc_info=True)
         finally:
-            stage_logger.info(
+            _stage_logger.info(
                 "[UI-System] _safe_create_sub_interfaces 调用结束",
                 extra={"log_type": "STAGE_NODE"},
             )
@@ -4005,7 +4015,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.unified_monitor_card.update_network_status(
                     network_disconnected, retry_callback=self._retry_latency_test
                 )
-                
+
                 # 更新Socket缓冲区信息
                 network_subsystem = metrics.get("network_subsystem", {})
                 socket_buffer_info = network_subsystem.get("socket_buffer_info", {})
@@ -7166,7 +7176,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                             # 注意：实际完成日志（含结果）在_update_bandwidth_result_success/error中记录
                             _run_test_inner()
                     else:
-                        # 如果ai_log_process不可用，直接执行
+                        # 如果event_log_process不可用，直接执行
                         _run_test_inner()
                 except Exception as e:
                     self.logger.error(
@@ -7319,6 +7329,10 @@ class SystemManager(BaseWidget, LoggerMixin):
 
                             socket.send_json({"action": "get_bandwidth"})
                             result_response = socket.recv_json()
+                            # 确保result_response是dict类型
+                            if not isinstance(result_response, dict):
+                                self.logger.warning(f"[MANUAL-SPEEDTEST] 收到非dict响应: {type(result_response)}")
+                                continue
                             self.logger.debug(
                                 f"[MANUAL-SPEEDTEST] 轮询第{attempt + 1}次响应: status={result_response.get('status', 'unknown')}",
                                 extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
@@ -7429,8 +7443,8 @@ class SystemManager(BaseWidget, LoggerMixin):
                     )
                     self.bandwidth_test_error_signal.emit(f"连接失败: {str(e)[:50]}")
 
-                    # 如果使用了ai_log_process，记录完成
-                    if ai_log_process:
+                    # 如果使用了event_log_process，记录完成
+                    if event_log_process:
                         stage_logger = logging.getLogger("task.manual_speedtest")
                         stage_logger.info(
                             "❌ 手动测速失败",
@@ -9540,21 +9554,21 @@ class SystemManager(BaseWidget, LoggerMixin):
                 power_data = hardware_data["power"]
                 if hasattr(self, "power_usage_label"):
                     total_power = power_data.get("total_watts", 0)
-                    self.power_usage_label.setText(f"{total_power:.1f} W")
+                    self.power_usage_label.setText(f"{total_power:.1f} W")  # type: ignore
 
                 # 电池信息（如果是笔记本）
                 if "battery_percent" in power_data and hasattr(self, "battery_label"):
                     battery_pct = power_data.get("battery_percent", 0)
                     plugged = power_data.get("power_plugged", False)
                     status = "充电中" if plugged else "使用电池"
-                    self.battery_label.setText(f"{status}: {battery_pct:.0f}%")
+                    self.battery_label.setText(f"{status}: {battery_pct:.0f}%")  # type: ignore
 
             # 2. 更新电压数据
             if "voltage" in hardware_data:
                 voltage_data = hardware_data["voltage"]
                 if hasattr(self, "voltage_label"):
                     cpu_voltage = voltage_data.get("cpu_voltage", 0)
-                    self.voltage_label.setText(f"{cpu_voltage:.2f} V")
+                    self.voltage_label.setText(f"{cpu_voltage:.2f} V")  # type: ignore
 
             # 3. 更新风扇数据
             if "fans" in hardware_data:
@@ -9571,19 +9585,19 @@ class SystemManager(BaseWidget, LoggerMixin):
                 gpu_data = hardware_data["gpu"]
                 if hasattr(self, "gpu_power_label"):
                     gpu_power = gpu_data.get("power_watts", 0)
-                    self.gpu_power_label.setText(f"{gpu_power:.1f} W")
+                    self.gpu_power_label.setText(f"{gpu_power:.1f} W")  # type: ignore
 
                 if hasattr(self, "gpu_voltage_label"):
                     gpu_voltage = gpu_data.get("voltage", 0)
-                    self.gpu_voltage_label.setText(f"{gpu_voltage:.3f} V")
+                    self.gpu_voltage_label.setText(f"{gpu_voltage:.3f} V")  # type: ignore
 
                 if hasattr(self, "gpu_temp_label"):
                     gpu_temp = gpu_data.get("temperature", 0)
-                    self.gpu_temp_label.setText(f"{gpu_temp:.1f} °C")
+                    self.gpu_temp_label.setText(f"{gpu_temp:.1f} °C")  # type: ignore
 
                 if hasattr(self, "gpu_util_label"):
                     gpu_util = gpu_data.get("utilization", 0)
-                    self.gpu_util_label.setText(f"{gpu_util:.1f}%")
+                    self.gpu_util_label.setText(f"{gpu_util:.1f}%")  # type: ignore
 
         except Exception as e:
             self.logger.debug(f"更新扩展硬件数据失败（部分硬件不支持）: {e}")
@@ -10181,7 +10195,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                         f"{self.metric_thresholds['packet_loss']:.1f}%",
                     )
                 )
-                
+
                 # 新增：Socket缓冲区信息
                 socket_buffer_info = network_subsystem.get("socket_buffer_info", {})
                 if socket_buffer_info:
@@ -10191,7 +10205,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                     send_usage = socket_buffer_info.get("send_buffer_usage_ratio", 0.0)
                     tcp_connections = socket_buffer_info.get("tcp_connections", 0)
                     established_connections = socket_buffer_info.get("established_connections", 0)
-                    
+
                     # Socket接收缓冲区
                     rows.append(
                         (
@@ -10201,7 +10215,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                             "80%",
                         )
                     )
-                    
+
                     # Socket发送缓冲区
                     rows.append(
                         (
@@ -10211,7 +10225,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                             "80%",
                         )
                     )
-                    
+
                     # TCP连接数
                     rows.append(
                         (

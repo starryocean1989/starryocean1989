@@ -31,16 +31,19 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import yaml
 
 # VnPy导入
-try:
+if TYPE_CHECKING:
     from vnpy.event import Event, EventEngine
-except ImportError:
-    EventEngine = None
-    Event = None
+else:
+    try:
+        from vnpy.event import Event, EventEngine
+    except ImportError:
+        EventEngine = None
+        Event = None
 
 # 日志配置
 logger = logging.getLogger("core_engine")
@@ -96,7 +99,8 @@ class ConfigManager:
             # 加载系统配置
             if self._config_file.exists():
                 with open(self._config_file, "r", encoding="utf-8") as f:
-                    self._config = yaml.safe_load(f) or {}
+                    loaded_config = yaml.safe_load(f)
+                    self._config = loaded_config if isinstance(loaded_config, dict) else {}
                 logger.info(f"系统配置加载成功: {self._config_file}")
             else:
                 logger.warning(f"系统配置文件不存在: {self._config_file}", extra={"log_type": "SYSTEM"})
@@ -105,7 +109,8 @@ class ConfigManager:
             # 加载阈值配置
             if self._threshold_file.exists():
                 with open(self._threshold_file, "r", encoding="utf-8") as f:
-                    self._threshold_config = yaml.safe_load(f) or {}
+                    loaded_threshold = yaml.safe_load(f)
+                    self._threshold_config = loaded_threshold if isinstance(loaded_threshold, dict) else {}
                 logger.info(f"阈值配置加载成功: {self._threshold_file}")
             else:
                 logger.warning(f"阈值配置文件不存在: {self._threshold_file}", extra={"log_type": "SYSTEM"})
@@ -130,17 +135,19 @@ class ConfigManager:
                 if IOCP_AVAILABLE:
                     # 使用native_iocp加载系统配置
                     async with await compat_aopen(
-                        self._config_file, "r", encoding="utf-8"
+                        self._config_file, "r"
                     ) as f:
                         content = await f.read()
-                        self._config = yaml.safe_load(content) or {}
+                        loaded_config = yaml.safe_load(content)
+                        self._config = loaded_config if isinstance(loaded_config, dict) else {}
 
                     # 使用native_iocp加载阈值配置
                     async with await compat_aopen(
-                        self._threshold_file, "r", encoding="utf-8"
+                        self._threshold_file, "r"
                     ) as f:
                         content = await f.read()
-                        self._threshold_config = yaml.safe_load(content) or {}
+                        loaded_threshold = yaml.safe_load(content)
+                        self._threshold_config = loaded_threshold if isinstance(loaded_threshold, dict) else {}
 
                     logger.info("配置文件重新加载成功（使用native_iocp）")
                     return True
@@ -153,13 +160,15 @@ class ConfigManager:
 
             async with aiofiles.open(self._config_file, "r", encoding="utf-8") as f:
                 content = await f.read()
-                self._config = yaml.safe_load(content) or {}
+                loaded_config = yaml.safe_load(content)
+                self._config = loaded_config if isinstance(loaded_config, dict) else {}
 
             async with aiofiles.open(
                 self._threshold_file, "r", encoding="utf-8"
             ) as f:
                 content = await f.read()
-                self._threshold_config = yaml.safe_load(content) or {}
+                loaded_threshold = yaml.safe_load(content)
+                self._threshold_config = loaded_threshold if isinstance(loaded_threshold, dict) else {}
 
             logger.info("配置文件重新加载成功（使用aiofiles）")
             return True
@@ -386,6 +395,7 @@ class CacheManager:
 
         except Exception as e:
             logger.error(f"保存缓存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            return False
 
     @staticmethod
     async def save_monitor_data_async(
@@ -435,7 +445,7 @@ class CacheManager:
                     # 尝试写入JSON副本（不影响主流程）
                     try:
                         async with await compat_aopen(
-                            json_file, "w", encoding="utf-8"
+                            json_file, "w"
                         ) as jf:
                             await jf.write(
                                 json.dumps(asdict(cached_data), ensure_ascii=False, indent=2)
@@ -478,6 +488,7 @@ class CacheManager:
 
         except Exception as e:
             logger.error(f"保存缓存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            return False
 
     @staticmethod
     def load_monitor_data(cache_key: str) -> Tuple[Any, bool]:
@@ -608,7 +619,7 @@ class CacheManager:
                 try:
                     from backend.infrastructure.native.native_iocp import compat_aopen, IOCP_AVAILABLE
                     if IOCP_AVAILABLE:
-                        async with await compat_aopen(json_file, "r", encoding="utf-8") as f:
+                        async with await compat_aopen(json_file, "r") as f:
                             content = await f.read()
                     else:
                         raise ImportError
@@ -1139,6 +1150,7 @@ class SystemManagerEngine:
 
         except Exception as e:
             logger.error(f"获取系统信息失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            return {}
 
     async def get_system_info_async(self) -> Dict[str, Any]:
         """获取系统信息（异步接口）
@@ -1165,6 +1177,7 @@ class SystemManagerEngine:
 
         except Exception as e:
             logger.error(f"获取系统信息失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            return {}
 
     def test_bandwidth(self) -> Dict[str, Any]:
         """测试网络带宽（同步接口，保持兼容）
@@ -1178,6 +1191,7 @@ class SystemManagerEngine:
 
         except Exception as e:
             logger.error(f"测试网络带宽失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            return {}
 
     async def test_bandwidth_async(self) -> Dict[str, Any]:
         """测试网络带宽（异步接口）
@@ -1188,7 +1202,7 @@ class SystemManagerEngine:
         try:
             # 查询监控进程
             data = await self.query_monitor_data("test_bandwidth")
-            if data:
+            if data is not None:
                 # 更新缓存
                 await CacheManager.save_monitor_data_async(
                     data, "bandwidth_result", ttl=3600
@@ -1199,6 +1213,7 @@ class SystemManagerEngine:
 
         except Exception as e:
             logger.error(f"测试网络带宽失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            return {}
 
     def healthcheck(self) -> Dict[str, Any]:
         """健康检查

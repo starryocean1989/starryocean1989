@@ -6,6 +6,8 @@ import platform
 import pandas as pd
 import pytest
 
+from typing import List
+
 from backend.infrastructure.native.native_dataframe_ops import (
     DATAFRAME_OPS_AVAILABLE,
     dataframe_quality_counters,
@@ -62,7 +64,7 @@ def test_scan_quality_returns_expected_structure():
             "open": [1.0, None, 3.0],
             "close": [1.1, 2.2, None],
         },
-        index=[0, 0, 1],
+        index=[0, 0, 1],  # type: ignore
     )
 
     stats = scan_quality(df, ["open", "close"])

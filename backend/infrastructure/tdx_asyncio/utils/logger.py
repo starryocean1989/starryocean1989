@@ -4,14 +4,14 @@ import asyncio
 import functools
 import logging
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, cast, Any
 
 import sys
 
 # 确保stdout使用UTF-8编码（如果可能）
 if hasattr(sys.stdout, "reconfigure"):
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
+        cast(Any, sys.stdout).reconfigure(encoding="utf-8")
     except (OSError, ValueError) as e:
         # 在某些环境下reconfigure可能失败（如已重定向或已配置）
         # 不影响功能，仅记录调试信息

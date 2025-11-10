@@ -369,7 +369,7 @@ class ResourceMonitor:
             return None
 
         try:
-            raw = self._native_get_system_metrics()  # type: ignore[operator]
+            raw: Dict[str, Any] = self._native_get_system_metrics()  # type: ignore[operator]
         except Exception as exc:  # noqa: BLE001
             if not self._native_degraded:
                 logger.warning(

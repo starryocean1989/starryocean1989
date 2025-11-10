@@ -11,13 +11,15 @@
 import ast
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from enum import Enum
 import logging
 
-from backend.core.service_base import BaseService, LoggerMixin
+from backend.framework import ServiceBase
+import logging
 from backend.services.database_adapter import get_db_manager
 from backend.infrastructure.system_vnpy.logging_system import (
     start_event_process,
@@ -526,7 +528,7 @@ class BacktestRendererFactory:
 # =============================================================================
 
 
-class StrategyCenterService(BaseService, LoggerMixin):
+class StrategyCenterService(ServiceBase):
     """策略中心服务.
 
     管理策略文件和回测功能，提供：
@@ -536,9 +538,10 @@ class StrategyCenterService(BaseService, LoggerMixin):
         4. 回测服务 - 回测配置、执行、结果分析
         """
 
-    def __init__(self):
+    def __init__(self, context=None):
         """初始化策略中心服务."""
-        super().__init__()
+        super().__init__("strategy_center_service")
+        self._context = context
 
         # 策略根目录
         self.strategy_root = Path("strategies/user_strategies")
@@ -548,6 +551,9 @@ class StrategyCenterService(BaseService, LoggerMixin):
 
         # 回测任务（内存缓存）
         self._backtest_tasks: Dict[str, Dict[str, Any]] = {}
+
+        # 优化任务（内存缓存）
+        self._optimization_tasks: Dict[str, Dict[str, Any]] = {}
 
         # 数据库管理器（使用统一database）
         self.db_manager = get_db_manager()
@@ -1710,10 +1716,13 @@ class MyPortfolioStrategy(StrategyTemplate):
                             # 注：vnpy的run_backtesting方法需要interval作为字符串，直接使用interval_str
 
                             # 从data_center_service获取历史数据
-                            from backend.core.base import get_service_manager
-
-                            service_manager = get_service_manager()
-                            data_service = service_manager.get_service("data_center_service")
+                            # 从context获取service_manager
+                            service_manager = self._context.service_manager if self._context else None
+                            if not service_manager:
+                                from backend.framework import get_service_registry
+                                service_manager = get_service_registry()
+                            assert service_manager is not None
+                            data_service = service_manager.get("data_center_service")
 
                             if data_service:
                                 # 调用data_center_service的查询方法
@@ -2255,9 +2264,13 @@ class MyPortfolioStrategy(StrategyTemplate):
 
             # 拉取本地数据记录
             try:
-                from backend.core.base import get_service_manager
-                svc = get_service_manager()
-                data_service = svc.get_service("data_center_service")
+                # 从context获取service_manager
+                svc = self._context.service_manager if self._context else None
+                if not svc:
+                    from backend.framework import get_service_registry
+                    svc = get_service_registry()
+                assert svc is not None
+                data_service = svc.get("data_center_service")
                 if not data_service:
                     return {"success": False, "message": "数据中心服务不可用"}
                 data_result = data_service.query_local_data(
@@ -2341,3 +2354,34 @@ class MyPortfolioStrategy(StrategyTemplate):
             if task["status"] == "running":
                 task["status"] = "stopped"
                 self.logger.info("回测任务 %s 已停止", task_id)
+
+    def initialize(self) -> bool:
+        """初始化服务"""
+        try:
+            self.logger.info("初始化策略中心服务")
+            # TODO: 实现具体的初始化逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"策略中心服务初始化失败: {e}")
+            return False
+
+    def shutdown(self) -> bool:
+        """关闭服务"""
+        try:
+            self.logger.info("关闭策略中心服务")
+            # 停止所有回测任务
+            self._stop_all_backtests()
+            # TODO: 实现具体的关闭逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"策略中心服务关闭失败: {e}")
+            return False
+
+    def get_status(self) -> Dict:
+        """获取服务状态"""
+        return {
+            "name": self.name,
+            "status": "active",  # TODO: 实现真实的状态检查
+            "backtest_tasks": len(self._backtest_tasks),
+            "optimization_tasks": len(self._optimization_tasks),
+        }

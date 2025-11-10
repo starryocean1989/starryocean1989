@@ -103,7 +103,7 @@ double compute_max_drawdown(const std::vector<double> &equity) {
     return max_dd;
 }
 
-PYBIND11_MODULE(metrics_native, m) {
+PYBIND11_MODULE(native_metrics, m) {
     native_log_bridge_log(
         NATIVE_LOG_LEVEL_INFO,
         kComponentWrapper,

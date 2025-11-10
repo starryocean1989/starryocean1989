@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from multiprocessing import shared_memory
 from typing import Callable, Iterable, Optional
 
-
 LOGGER = logging.getLogger("backend.infrastructure.system_vnpy.native_log_bridge")
 
 IS_SUPPORTED = sys.platform == "win32"
@@ -29,27 +28,27 @@ DEFAULT_CAPACITY = 4 * 1024 * 1024
 
 if IS_SUPPORTED:
     _cmpxchg64 = ctypes.windll.kernel32.InterlockedCompareExchange64
-    _cmpxchg64.argtypes = [ctypes.POINTER(ctypes.c_longlong), ctypes.c_longlong, ctypes.c_longlong]
+    _cmpxchg64.argtypes = [ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
     _cmpxchg64.restype = ctypes.c_longlong
 
     _xadd64 = ctypes.windll.kernel32.InterlockedExchangeAdd64
-    _xadd64.argtypes = [ctypes.POINTER(ctypes.c_longlong), ctypes.c_longlong]
+    _xadd64.argtypes = [ctypes.c_void_p, ctypes.c_longlong]
     _xadd64.restype = ctypes.c_longlong
 else:  # pragma: no cover - 非 Windows 平台降级
-    def _cmpxchg64(ptr: ctypes.c_void_p, value: int, expected: int) -> int:  # type: ignore[override]
+    def _cmpxchg64(ptr, value: int, expected: int) -> int:  # type: ignore[override]
         current = ptr.contents.value  # type: ignore[attr-defined]
         if current == expected:
             ptr.contents.value = value  # type: ignore[attr-defined]
         return current
 
-    def _xadd64(ptr: ctypes.c_void_p, value: int) -> int:  # type: ignore[override]
+    def _xadd64(ptr, value: int) -> int:  # type: ignore[override]
         current = ptr.contents.value  # type: ignore[attr-defined]
         ptr.contents.value = current + value  # type: ignore[attr-defined]
         return current
 
 
-def _atomic_read(ptr: ctypes.POINTER(ctypes.c_longlong)) -> int:
-    return int(_cmpxchg64(ptr, 0, 0))
+def _atomic_read(ptr) -> int:
+    return int(_cmpxchg64(ptr, 0, 0))  # type: ignore[arg-type]
 
 
 @dataclass
@@ -133,7 +132,7 @@ class SharedLogRing:
             used = write - read
             if used + size > self.capacity:
                 return None
-            prev = _cmpxchg64(self._write_ptr, write + size, write)
+            prev = _cmpxchg64(self._write_ptr, write + size, write)  # type: ignore[arg-type]
             if prev == write:
                 return write
         return None
@@ -176,14 +175,14 @@ class SharedLogRing:
                 return None
             (length,) = struct.unpack("<I", header)
             if length == 0 or length > self.capacity:
-                _xadd64(self._read_ptr, 4)
+                _xadd64(self._read_ptr, 4)  # type: ignore[arg-type]
                 continue
             if write - read < 4 + length:
                 return None
             payload = self._read_bytes(start + 4, length)
             if payload is None:
                 return None
-            _xadd64(self._read_ptr, 4 + length)
+            _xadd64(self._read_ptr, 4 + length)  # type: ignore[arg-type]
             return payload
 
     def _read_bytes(self, offset: int, length: int) -> Optional[bytes]:

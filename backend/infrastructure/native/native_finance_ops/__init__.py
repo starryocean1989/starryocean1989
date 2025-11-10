@@ -28,59 +28,30 @@ metrics = compute_return_metrics(pnl_series, equity_series, trading_days_per_yea
 ```
 """
 
+from typing import TYPE_CHECKING
+
 from backend.infrastructure.native.logging_bridge import (
     NativeLogLevel,
     log_from_native,
     native_call_guard,
 )
 
+if TYPE_CHECKING:
+    try:
+        from . import native_finance_ops as _native  # type: ignore
+    except ImportError:
+        pass
+
 _COMPONENT_WRAPPER = "backend.native.finance_ops.wrapper"
 _COMPONENT_FALLBACK = "backend.native.finance_ops.fallback"
 
+# 尝试导入原生模块
 try:
-    from . import native_finance_ops as _native_finance_ops
-
-    apply_price_adjustments_native = _native_finance_ops.apply_price_adjustments
-    aggregate_daily_pnl_native = _native_finance_ops.aggregate_daily_pnl
-    compute_return_metrics_native = _native_finance_ops.compute_return_metrics
-    bucketize_period_native = _native_finance_ops.bucketize_period
-    compute_period_statistics_native = _native_finance_ops.compute_period_statistics
-    compute_risk_profile_native = _native_finance_ops.compute_risk_profile
-    FINANCE_OPS_AVAILABLE = _native_finance_ops.FINANCE_OPS_AVAILABLE
-    VERSION = _native_finance_ops.VERSION
-
-    _AVAILABLE = True
-    _ERROR = None
-
-    @native_call_guard(component=_COMPONENT_WRAPPER)
-    def apply_price_adjustments(*args, **kwargs):
-        return apply_price_adjustments_native(*args, **kwargs)
-
-    @native_call_guard(component=_COMPONENT_WRAPPER)
-    def aggregate_daily_pnl(*args, **kwargs):
-        return aggregate_daily_pnl_native(*args, **kwargs)
-
-    @native_call_guard(component=_COMPONENT_WRAPPER)
-    def compute_return_metrics(*args, **kwargs):
-        return compute_return_metrics_native(*args, **kwargs)
-
-    @native_call_guard(component=_COMPONENT_WRAPPER)
-    def bucketize_period(*args, **kwargs):
-        return bucketize_period_native(*args, **kwargs)
-
-    @native_call_guard(component=_COMPONENT_WRAPPER)
-    def compute_period_statistics(*args, **kwargs):
-        return compute_period_statistics_native(*args, **kwargs)
-
-    @native_call_guard(component=_COMPONENT_WRAPPER)
-    def compute_risk_profile(*args, **kwargs):
-        return compute_risk_profile_native(*args, **kwargs)
-
+    from . import native_finance_ops as _native  # type: ignore
 except ImportError as e:
-    _AVAILABLE = False
-    _ERROR = str(e)
     FINANCE_OPS_AVAILABLE = False
     VERSION = "0.0.0"
+    __all__ = ["FINANCE_OPS_AVAILABLE", "VERSION"]
 
     log_from_native(
         NativeLogLevel.ERROR,
@@ -91,43 +62,77 @@ except ImportError as e:
         details=str(e),
     )
 
-    # 提供降级函数
-    def aggregate_daily_pnl(*args, **kwargs):
-        raise ImportError(f"native_finance_ops not available: {_ERROR}")
+    def _raise_error():
+        raise ImportError(f"native_finance_ops not available: {str(e)}")
 
-    def compute_return_metrics(*args, **kwargs):
-        raise ImportError(f"native_finance_ops not available: {_ERROR}")
+    # 导出降级函数
+    apply_price_adjustments = _raise_error  # type: ignore
+    aggregate_daily_pnl = _raise_error  # type: ignore
+    compute_return_metrics = _raise_error  # type: ignore
+    bucketize_period = _raise_error  # type: ignore
+    compute_period_statistics = _raise_error  # type: ignore
+    compute_risk_profile = _raise_error  # type: ignore
+else:
+    # 原生模块可用，获取函数引用
+    apply_price_adjustments = getattr(_native, "apply_price_adjustments", None)  # type: ignore
+    aggregate_daily_pnl = getattr(_native, "aggregate_daily_pnl", None)  # type: ignore
+    compute_return_metrics = getattr(_native, "compute_return_metrics", None)  # type: ignore
+    bucketize_period = getattr(_native, "bucketize_period", None)  # type: ignore
+    compute_period_statistics = getattr(_native, "compute_period_statistics", None)  # type: ignore
+    compute_risk_profile = getattr(_native, "compute_risk_profile", None)  # type: ignore
 
-    def bucketize_period(*args, **kwargs):
-        raise ImportError(f"native_finance_ops not available: {_ERROR}")
+    FINANCE_OPS_AVAILABLE = getattr(_native, "FINANCE_OPS_AVAILABLE", False)  # type: ignore
+    VERSION = getattr(_native, "VERSION", "0.0.0")  # type: ignore
 
-    def compute_period_statistics(*args, **kwargs):
-        raise ImportError(f"native_finance_ops not available: {_ERROR}")
+    # 验证核心函数是否可用
+    essential_funcs = [
+        apply_price_adjustments,
+        aggregate_daily_pnl,
+        compute_return_metrics,
+        bucketize_period,
+        compute_period_statistics,
+        compute_risk_profile
+    ]
 
-    def compute_risk_profile(*args, **kwargs):
-        raise ImportError(f"native_finance_ops not available: {_ERROR}")
+    if not all(callable(func) for func in essential_funcs):
+        log_from_native(
+            NativeLogLevel.ERROR,
+            _COMPONENT_FALLBACK,
+            "validate_native_functions",
+            0,
+            "native_finance_ops extension missing core entrypoints",
+            details="Some required functions are not available in the native module",
+        )
 
-    def apply_price_adjustments(*args, **kwargs):
-        raise ImportError(f"native_finance_ops not available: {_ERROR}")
+        def _raise_error():
+            raise ImportError("native_finance_ops extension missing core entrypoints")
 
+        apply_price_adjustments = _raise_error  # type: ignore
+        aggregate_daily_pnl = _raise_error  # type: ignore
+        compute_return_metrics = _raise_error  # type: ignore
+        bucketize_period = _raise_error  # type: ignore
+        compute_period_statistics = _raise_error  # type: ignore
+        compute_risk_profile = _raise_error  # type: ignore
 
-__all__ = [
-    'apply_price_adjustments',
-    'aggregate_daily_pnl',
-    'compute_return_metrics',
-    'bucketize_period',
-    'compute_period_statistics',
-    'compute_risk_profile',
-    'FINANCE_OPS_AVAILABLE',
-    'VERSION',
-]
+        FINANCE_OPS_AVAILABLE = False
+
+    __all__ = [
+        'apply_price_adjustments',
+        'aggregate_daily_pnl',
+        'compute_return_metrics',
+        'bucketize_period',
+        'compute_period_statistics',
+        'compute_risk_profile',
+        'FINANCE_OPS_AVAILABLE',
+        'VERSION',
+    ]
 
 
 def is_available():
     """检查native_finance_ops是否可用"""
-    return _AVAILABLE
+    return FINANCE_OPS_AVAILABLE
 
 
 def get_error():
     """获取导入错误信息"""
-    return _ERROR
+    return "Check logs for import error details"

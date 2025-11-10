@@ -17,7 +17,8 @@ from pathlib import Path
 import logging
 import time
 
-from backend.core.service_base import BaseService, LoggerMixin
+from backend.framework import ServiceBase
+import logging
 from backend.infrastructure.system_vnpy.logging_system import (
     get_logging_hub,
     stage_node,
@@ -58,7 +59,7 @@ logger_alert = bind_logger_defaults(
 )
 
 
-class DataCenterService(BaseService, LoggerMixin):
+class DataCenterService(ServiceBase):
     """数据中心服务.
 
     基于data_module_vnpy包实现的数据管理服务，提供：
@@ -69,9 +70,10 @@ class DataCenterService(BaseService, LoggerMixin):
     5. 数据源管理 - 轮询转推送、虚拟推送
     """
 
-    def __init__(self):
+    def __init__(self, context=None):
         """初始化数据中心服务."""
-        super().__init__()
+        super().__init__("data_center_service")
+        self._context = context
         # ChinaStockEngine引擎（现在是属性，会延迟获取）
         self._china_stock_engine_checked = False
 
@@ -186,9 +188,12 @@ class DataCenterService(BaseService, LoggerMixin):
     def _ensure_china_stock_engine(self) -> None:
         """确保 ChinaStockEngine 被正确获取"""
         if not self._china_stock_engine_checked:
-            from backend.core.base import get_china_stock_engine
-
-            self._china_stock_engine = get_china_stock_engine()
+            # 从context获取china_stock_engine
+            self._china_stock_engine = self._context.china_stock_engine if self._context else None
+            if not self._china_stock_engine:
+                from backend.startup.runtime.locator import get_runtime_locator
+                locator = get_runtime_locator()
+                self._china_stock_engine = locator.get_china_stock_engine()
             self._china_stock_engine_checked = True
 
             if self._china_stock_engine:
@@ -233,6 +238,25 @@ class DataCenterService(BaseService, LoggerMixin):
             )
             self._log_error("关闭", e, exc_info=True)
             return False
+
+    async def initialize(self):
+        """初始化服务 - 实现ServiceBase抽象方法"""
+        return self._do_initialize()
+
+    async def shutdown(self):
+        """关闭服务 - 实现ServiceBase抽象方法"""
+        return self._do_shutdown()
+
+    def get_status(self) -> Dict:
+        """获取服务状态 - 实现ServiceBase抽象方法"""
+        return {
+            "name": self.name,
+            "status": self.status,
+            "china_stock_engine_available": self.china_stock_engine is not None,
+            "connected_datafeeds": [name for name, df in self.datafeeds.items() if df is not None],
+            "symbol_cache_loaded": self._symbol_cache is not None,
+            "active_downloads": self._task_size(),
+        }
 
     def _do_health_check(self) -> Dict[str, Any]:
         """健康检查."""
@@ -1012,7 +1036,6 @@ class DataCenterService(BaseService, LoggerMixin):
     def _register_validation_events(self):
         """注册validation_worker事件监听器."""
         try:
-            from backend.core.base import get_event_engine
             from backend.infrastructure.data_module_vnpy import (
                 ChinaStockEngine,
             )
@@ -1021,7 +1044,12 @@ class DataCenterService(BaseService, LoggerMixin):
             EVENT_IPO_CACHE_UPDATED = ChinaStockEngine.EVENT_IPO_CACHE_UPDATED
             EVENT_VALIDATION_COMPLETED = ChinaStockEngine.EVENT_VALIDATION_COMPLETED
 
-            event_engine = get_event_engine()
+            # 从context获取event_engine
+            event_engine = self._context.event_engine if self._context else None
+            if not event_engine:
+                from backend.startup.runtime.locator import get_runtime_locator
+                locator = get_runtime_locator()
+                event_engine = locator.get_event_engine()
             if not event_engine:
                 self.logger.warning(
                     "EventEngine不可用，无法注册事件监听器", extra={"log_type": "SYSTEM"}
@@ -1423,7 +1451,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 )
                 # 延迟初始化 symbol_loader（如果需要）
                 from backend.infrastructure.data_module_vnpy.data_acquisition import SymbolLoader
-                from backend.core.base import get_event_engine
+                from backend.framework import get_event_engine
 
                 event_engine = get_event_engine()
                 if event_engine:
@@ -3733,10 +3761,14 @@ class DataCenterService(BaseService, LoggerMixin):
             # 从数据感知器获取质量概览
             from backend.infrastructure.data_module_vnpy.data_quality import DataSensor
             from backend.infrastructure.data_module_vnpy import ChinaStockEngine
-            from backend.core.base import get_china_stock_engine
 
             # 获取DataSensor实例
-            engine = get_china_stock_engine()
+            # 从context获取china_stock_engine
+            engine = self._context.china_stock_engine if self._context else None
+            if not engine:
+                from backend.startup.runtime.locator import get_runtime_locator
+                locator = get_runtime_locator()
+                engine = locator.get_china_stock_engine()
             if engine and hasattr(engine, "data_sensor") and engine.data_sensor:
                 data_sensor = engine.data_sensor
             else:
@@ -4500,7 +4532,7 @@ class DataCenterService(BaseService, LoggerMixin):
             try:
                 self._log_operation("启动数据录制")
                 # 获取录制路径配置
-                from backend.core.config import get_settings
+                from backend.framework import get_settings
 
                 settings = get_settings()
                 recording_path = custom_path or settings.vnpy.recording_data_path
@@ -4523,7 +4555,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 try:
                     # 尝试导入vnpy_datarecorder
                     from vnpy_datarecorder import DataRecorderApp  # type: ignore[import-untyped]
-                    from backend.core.base import get_main_engine
+                    from backend.framework import get_main_engine
 
                     # 获取主引擎
                     main_engine = get_main_engine()
@@ -5404,7 +5436,7 @@ class DataCenterService(BaseService, LoggerMixin):
             start_date: 开始日期
         """
         try:
-            from backend.core.base import get_event_engine
+            from backend.framework import get_event_engine
             from backend.infrastructure.system_vnpy import (
                 EVENT_DATA_DOWNLOAD_COMPLETE,
             )
@@ -5611,7 +5643,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     # 继续启动TDX数据源，忽略停止失败
 
             # 获取MainEngine和EventEngine
-            from backend.core.base import get_main_engine, get_event_engine
+            from backend.framework import get_main_engine, get_event_engine
 
             main_engine = get_main_engine()
             event_engine = get_event_engine()
@@ -5934,7 +5966,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 }
 
             # 获取MainEngine和EventEngine
-            from backend.core.base import get_main_engine, get_event_engine
+            from backend.framework import get_main_engine, get_event_engine
 
             main_engine = get_main_engine()
             event_engine = get_event_engine()

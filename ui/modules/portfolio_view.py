@@ -5,7 +5,7 @@
 通过PortfolioService访问组合管理和监控功能。
 """
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from PySide6.QtCore import Qt
 
@@ -28,20 +28,24 @@ from PySide6.QtWidgets import (
 
 import pyqtgraph as pg
 
-from backend.core.base import get_service_manager
-from backend.core.service_base import LoggerMixin
+from backend.framework import get_service_registry, get_event_engine
+from backend.services.portfolio_service import PortfolioService
+import logging
 
 from ui.components.widgets import BaseWidget
 
 
-class PortfolioInvestment(BaseWidget, LoggerMixin):
+class PortfolioInvestment(BaseWidget):
     """组合投资主界面（重构版）."""
 
     def __init__(self, parent=None):
         """初始化组合投资."""
+        # 初始化logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+
         # 初始化服务管理器
-        self.service_manager = get_service_manager()
-        self.portfolio_service = None
+        self.service_manager = get_service_registry()
+        self.portfolio_service: Optional[PortfolioService] = None
 
         # 初始化UI组件
         self.auto_portfolio_table: Optional[QTableWidget] = None
@@ -66,7 +70,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         """获取组合投资服务."""
         try:
             # 从服务管理器获取组合投资服务
-            self.portfolio_service = self.service_manager.get_service("portfolio_service")
+            self.portfolio_service = cast(Optional[PortfolioService], self.service_manager.get_service("portfolio_service"))
             if self.portfolio_service:
                 self.logger.info("组合投资服务获取成功")
             else:
@@ -365,7 +369,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         vnpy_monitors_group = QGroupBox("VnPy核心监控")
         vnpy_monitors_layout = QVBoxLayout(vnpy_monitors_group)
 
-        from backend.core.base import get_event_engine
+        from backend.framework import get_event_engine
         from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,

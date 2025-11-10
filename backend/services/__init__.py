@@ -18,8 +18,8 @@ from .portfolio_service import PortfolioService
 # 导出database_adapter
 from .database_adapter import DatabaseManager, get_db_manager
 
-# 导出vnpy_imports中常用的类和函数
-from .vnpy_imports import (
+# 导出framework中常用的类和函数
+from backend.framework import (
     # VnPy核心
     MainEngine,
     EventEngine,
@@ -38,9 +38,6 @@ from .vnpy_imports import (
     EVENT_POSITION,
     EVENT_ACCOUNT,
     EVENT_LOG,
-    # 数据处理
-    pd,
-    np,
     # 可用性标志
     VNPY_AVAILABLE,
     PANDAS_AVAILABLE,
@@ -78,9 +75,6 @@ __all__ = [
     "EVENT_POSITION",
     "EVENT_ACCOUNT",
     "EVENT_LOG",
-    # 数据处理
-    "pd",
-    "np",
     # 可用性标志
     "VNPY_AVAILABLE",
     "PANDAS_AVAILABLE",

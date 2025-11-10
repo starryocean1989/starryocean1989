@@ -72,14 +72,14 @@ class AsyncGetMinuteTimeData(AsyncBaseParser):
 
         # 🚀 性能优化：批量转换为浮点数（使用native_conversion）
         if len(cumulative_prices_int) > 0:
-            cumulative_prices = safe_batch_convert(cumulative_prices_int, float)
+            cumulative_prices = safe_batch_convert(cumulative_prices_int, float)  # type: ignore[assignment]
         else:
             cumulative_prices = []
 
         # 🚀 性能优化：批量乘以系数（使用native_compute）
         if len(cumulative_prices) > 0:
             coefficients = [self.coefficient] * len(cumulative_prices)
-            final_prices = safe_batch_compute(cumulative_prices, "multiply", coefficients)
+            final_prices = safe_batch_compute(cumulative_prices, "multiply", coefficients)  # type: ignore[arg-type]
         else:
             final_prices = []
 

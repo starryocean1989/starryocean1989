@@ -34,8 +34,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.core.base import get_service_manager
-from backend.core.service_base import LoggerMixin
+from backend.framework import get_service_registry, get_event_engine
+import logging
 
 from ui.components.widgets import BaseWidget
 
@@ -52,13 +52,16 @@ GATEWAY_TYPES = {
 }
 
 
-class TradingGateway(BaseWidget, LoggerMixin):
+class TradingGateway(BaseWidget):
     """交易网关主界面（重构版）."""
 
     def __init__(self, parent=None):
         """初始化交易网关."""
+        # 初始化logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+
         # 初始化服务管理器
-        self.service_manager = get_service_manager()
+        self.service_manager = get_service_registry()
         self.trading_service: Optional[Any] = None
 
         # 初始化UI组件
@@ -294,7 +297,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _create_default_monitor(self):
         """创建默认监控界面（通用）- 集成VnPy核心监控组件."""
-        from backend.core.base import get_event_engine
+        from backend.framework import get_event_engine
         from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
@@ -349,7 +352,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _create_cta_monitor(self):
         """创建CTA策略专用监控界面 - 集成VnPy核心监控."""
-        from backend.core.base import get_event_engine
+        from backend.framework import get_event_engine
         from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
@@ -392,7 +395,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _create_algo_monitor(self):
         """创建算法交易专用监控界面 - 集成VnPy核心监控."""
-        from backend.core.base import get_event_engine
+        from backend.framework import get_event_engine
         from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
@@ -440,7 +443,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _create_option_monitor(self):
         """创建期权策略专用监控界面 - 集成VnPy核心监控."""
-        from backend.core.base import get_event_engine
+        from backend.framework import get_event_engine
         from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
@@ -488,7 +491,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _create_portfolio_monitor(self):
         """创建组合策略专用监控界面 - 集成VnPy核心监控."""
-        from backend.core.base import get_event_engine
+        from backend.framework import get_event_engine
         from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
@@ -537,7 +540,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _create_spread_monitor(self):
         """创建价差交易专用监控界面 - 集成VnPy核心监控."""
-        from backend.core.base import get_event_engine
+        from backend.framework import get_event_engine
         from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
@@ -580,7 +583,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _create_script_monitor(self):
         """创建脚本交易专用监控界面 - 集成VnPy核心监控."""
-        from backend.core.base import get_event_engine
+        from backend.framework import get_event_engine
         from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
@@ -1553,7 +1556,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
                             ]
                             count = len(existing_names) + 1
                         except Exception as e:
-                            logger.debug(f"加载已有策略名称失败: {e}", extra={"log_type": "SYSTEM"})
+                            self.logger.debug(f"加载已有策略名称失败: {e}", extra={"log_type": "SYSTEM"})
                     strategy_name_combo.setCurrentText(f"{class_name}_{count}")
 
         strategy_file_combo.currentTextChanged.connect(on_file_selected)
@@ -2126,7 +2129,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         监听策略启动/停止事件，自动切换监控界面显示。
         """
         try:
-            from backend.core.base import get_event_engine
+            from backend.framework import get_event_engine
             from backend.infrastructure.system_vnpy import (
                 EVENT_STRATEGY_STATUS_CHANGED,
             )
@@ -2292,6 +2295,7 @@ class PortfolioMonitorWidget(QWidget):
         super().__init__(parent)
         self.gateway_name = gateway_name
         self.trading_service = trading_service
+        self.logger = logging.getLogger("ui.trading_gateway.portfolio_monitor")
 
         self._setup_ui()
 
@@ -2435,7 +2439,7 @@ class PortfolioMonitorWidget(QWidget):
                         item.setText(value)
 
         except Exception as e:
-            logger.error(f"更新组合策略监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(f"更新组合策略监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
 
 class AlgoMonitorWidget(QWidget):
@@ -2452,6 +2456,7 @@ class AlgoMonitorWidget(QWidget):
         super().__init__(parent)
         self.gateway_name = gateway_name
         self.trading_service = trading_service
+        self.logger = logging.getLogger("ui.trading_gateway.algo_monitor")
 
         self._setup_ui()
 
@@ -2581,7 +2586,7 @@ class AlgoMonitorWidget(QWidget):
                         item.setText(value)
 
         except Exception as e:
-            logger.error(f"更新算法交易监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(f"更新算法交易监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
 
 class OptionMonitorWidget(QWidget):
@@ -2598,6 +2603,7 @@ class OptionMonitorWidget(QWidget):
         super().__init__(parent)
         self.gateway_name = gateway_name
         self.trading_service = trading_service
+        self.logger = logging.getLogger("ui.trading_gateway.option_monitor")
 
         self._setup_ui()
 
@@ -2756,4 +2762,4 @@ class OptionMonitorWidget(QWidget):
                         item.setText(value)
 
         except Exception as e:
-            logger.error(f"更新期权监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(f"更新期权监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Dict, List
+from typing import Dict, List, cast
 
 import pytest
 
@@ -36,10 +36,18 @@ def test_streaming_metric_handle_basic_statistics() -> None:
 
     snapshot = handle.snapshot()
     assert snapshot["sample_count"] == 10
-    assert math.isclose(snapshot["mean"], 4.5, rel_tol=1e-6)
-    assert math.isclose(snapshot["stddev"], math.sqrt(8.25), rel_tol=1e-6)
-    assert snapshot["p95"] >= 8.0
-    assert snapshot["p99"] >= 9.0
+
+    mean_val = cast(float, snapshot["mean"])
+    assert math.isclose(mean_val, 4.5, rel_tol=1e-6)
+
+    stddev_val = cast(float, snapshot["stddev"])
+    assert math.isclose(stddev_val, math.sqrt(8.25), rel_tol=1e-6)
+
+    p95_val = cast(float, snapshot["p95"])
+    assert p95_val >= 8.0
+
+    p99_val = cast(float, snapshot["p99"])
+    assert p99_val >= 9.0
 
 
 @pytest.mark.skipif(not STATISTICS_AVAILABLE, reason="native_statistics 扩展未编译")

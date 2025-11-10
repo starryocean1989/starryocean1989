@@ -59,7 +59,7 @@ def test_ensure_category_passthrough():
     bridge = bridge_module.NativeSchedulerBridge(auto_shutdown=False)
     bridge.ensure_category("network_download", queue_capacity=10, max_workers=20)
     adapter = bridge._adapter  # noqa: SLF001
-    assert adapter.ensure_calls == [("network_download", 10, 20)]
+    assert adapter.ensure_calls == [("network_download", 10, 20)]  # type: ignore
 
 
 def test_submit_and_stats_delegate():
@@ -74,7 +74,7 @@ def test_reset_reconfigures_adapter():
     new_cfg = {"custom": {"queue_capacity": 1, "max_workers": 1}}
     bridge.reset(new_cfg)
     adapter = bridge._adapter  # noqa: SLF001
-    assert adapter.configure_args[-1] == new_cfg
+    assert adapter.configure_args[-1] == new_cfg  # type: ignore
 
 
 def test_context_manager_shutdown(monkeypatch):
@@ -82,5 +82,5 @@ def test_context_manager_shutdown(monkeypatch):
     adapter = bridge._adapter  # noqa: SLF001
     with bridge:
         pass
-    assert adapter.shutdown_called == [True]
+    assert adapter.shutdown_called == [True]  # type: ignore
 

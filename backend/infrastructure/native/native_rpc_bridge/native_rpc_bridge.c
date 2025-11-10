@@ -206,7 +206,7 @@ decode_single_request(PyObject* raw_buffer_obj, PyObject* method_resolver) {
         char details[128];
         snprintf(details, sizeof(details), "buffer_size=%zd, required=%d",
                  buffer_view.len, RPC_BRIDGE_HEADER_SIZE);
-        NATIVE_LOG_ERROR_DETAILS_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "RPC buffer too small", details);
+        NATIVE_LOG_ERROR_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "RPC buffer too small", details);
         PyBuffer_Release(&buffer_view);
         PyErr_SetString(PyExc_ValueError, "RPC buffer too small");
         return NULL;
@@ -256,7 +256,7 @@ decode_single_request(PyObject* raw_buffer_obj, PyObject* method_resolver) {
     snprintf(header_details, sizeof(header_details),
              "method_id=%u, request_id=%u, flags=0x%x, metadata_size=%zd, payload_size=%zd",
              header.method_id, header.request_id, header.flags, metadata_size, payload_size);
-    NATIVE_LOG_INFO_DETAILS_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "RPC header parsed successfully", header_details);
+    NATIVE_LOG_INFO_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "RPC header parsed successfully", header_details);
 
     PyObject* metadata_bytes = PyBytes_FromStringAndSize(
         (const char*)buffer_view.buf + metadata_offset,
@@ -276,7 +276,7 @@ decode_single_request(PyObject* raw_buffer_obj, PyObject* method_resolver) {
         return NULL;
     }
 
-    NATIVE_LOG_DEBUG_DETAILS(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "Metadata deserialized successfully");
+    NATIVE_LOG_DEBUG(RPC_COMPONENT_CORE, "decode_single_request", __LINE__, "Metadata deserialized successfully");
 
     if (!PyDict_Check(metadata_obj)) {
         PyObject* metadata_dict = PyDict_New();
@@ -539,7 +539,7 @@ py_batch_encode_responses(PyObject* self, PyObject* args) {
         }
 
         if (!PyBytes_Check(metadata_bytes)) {
-            NATIVE_LOG_ERROR_DETAILS(RPC_COMPONENT_CORE, "batch_encode_responses", __LINE__, "_dumps function must return bytes - protocol error");
+            NATIVE_LOG_ERROR(RPC_COMPONENT_CORE, "batch_encode_responses", __LINE__, "_dumps function must return bytes - protocol error");
             PyErr_SetString(PyExc_TypeError, "_dumps must return bytes");
             Py_DECREF(metadata_bytes);
             Py_DECREF(entry);

@@ -5,25 +5,31 @@
 支持多品种同时监控、实时数据自动订阅、Tick转K线合成。
 集成品种叠加、指标叠加、对数坐标等高级功能。
 """
-from typing import Optional
+from typing import Optional, cast, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.services.market_board_service import MarketBoardService
 
 from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from backend.core.base import get_service_manager
-from backend.core.service_base import LoggerMixin
+from backend.framework import get_service_registry, get_main_engine, get_event_engine
+import logging
 
 from ui.components.widgets import BaseWidget
 
 
-class MarketDashboard(BaseWidget, LoggerMixin):
+class MarketDashboard(BaseWidget):
     """行情看板主界面（vnpy_chartwizard版）."""
 
     def __init__(self, parent=None):
         """初始化行情看板."""
+        # 初始化logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+
         # 初始化服务管理器
-        self.service_manager = get_service_manager()
+        self.service_manager = get_service_registry()
         self.market_service = None
 
         # 初始化核心组件
@@ -199,9 +205,9 @@ class SymbolCompleterLineEdit(QLineEdit):
     def _load_symbol_list(self):
         """从品种列表缓存加载数据."""
         try:
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_mgr = get_service_manager()
+            service_mgr = get_service_registry()
             if not service_mgr:
                 logger.warning(
                     "UI服务管理器不可用: 模块=get_service_manager",
@@ -209,7 +215,7 @@ class SymbolCompleterLineEdit(QLineEdit):
                 )
                 return
 
-            data_center = service_mgr.get_service("data_center_service")
+            data_center = service_mgr.get("data_center_service")
             if not data_center:
                 logger.warning(
                     "UI数据中心服务不可用: 模块=data_center_service",
@@ -218,8 +224,8 @@ class SymbolCompleterLineEdit(QLineEdit):
                 return
 
             # 从缓存获取品种列表
-            if hasattr(data_center, "_symbol_cache") and data_center._symbol_cache:
-                cache = data_center._symbol_cache
+            if hasattr(data_center, "_symbol_cache") and getattr(data_center, "_symbol_cache", None):
+                cache = getattr(data_center, "_symbol_cache")
                 symbols = cache.get("symbols", [])
 
                 if symbols:
@@ -414,7 +420,7 @@ class ChartWizardEnhanced(BaseWidget):
                         self._data_ready = True
                         self._data_mode = "online"  # 假设有数据就是在线模式
                         self.initialization_state = "ready"
-                        
+
                         # 🔧 关键修复：检测到数据就绪后，立即触发UI重建
                         # 使用 QTimer.singleShot 确保在主线程中执行UI操作
                         QTimer.singleShot(100, self._check_and_rebuild_ui)
@@ -434,25 +440,25 @@ class ChartWizardEnhanced(BaseWidget):
         """检查数据状态并重建UI（延迟检查）- 修复版."""
         try:
             self.logger.info("🔍 延迟检查UI状态...")
-            
+
             # 🔧 修复1：检查数据就绪状态
             if not self._data_ready:
                 self.logger.debug("数据未就绪，跳过UI重建检查")
                 return
-            
+
             # 🔧 修复2：检查引擎就绪状态
             if not self.main_engine or not self.event_engine:
                 self.logger.warning("⚠️ 引擎未就绪，延迟500ms重试")
                 QTimer.singleShot(500, self._check_and_rebuild_ui)
                 return
-            
+
             # 🔧 修复3：检查布局状态
             layout = self.layout()
             if not layout or not isinstance(layout, QVBoxLayout):
                 self.logger.warning("⚠️ 布局不可用，延迟500ms重试")
                 QTimer.singleShot(500, self._check_and_rebuild_ui)
                 return
-            
+
             # 🔧 修复4：严格检查图表UI状态
             has_chart_wizard = False
             try:
@@ -467,7 +473,7 @@ class ChartWizardEnhanced(BaseWidget):
             except Exception as e:
                 self.logger.debug(f"检查chart_wizard失败: {e}")
                 has_chart_wizard = False
-            
+
             # 🔧 修复5：检查等待UI状态（waiting_label可能已被删除）
             has_waiting_ui = False
             try:
@@ -481,26 +487,26 @@ class ChartWizardEnhanced(BaseWidget):
             except Exception as e:
                 self.logger.debug(f"检查waiting_label失败: {e}")
                 has_waiting_ui = False
-            
+
             self.logger.info(
                 f"📊 UI状态检查: 数据就绪={self._data_ready}, "
                 f"图表UI存在={has_chart_wizard}, 等待UI可见={has_waiting_ui}"
             )
-            
+
             # 🔧 修复6：决策逻辑 - 只有在需要时才重建
             if not has_chart_wizard or has_waiting_ui:
                 self.logger.info("✅ 检测到需要重建UI（图表UI不存在或等待UI可见）")
                 self._rebuild_ui_with_chart()
             else:
                 self.logger.info("✅ UI已就绪，无需重建")
-                
+
         except Exception as e:
             self.logger.error(f"❌ 延迟检查UI失败: {e}", exc_info=True)
 
     def _initialize_engines(self):
         """初始化VnPy引擎引用（不检查数据接口，等待UnifiedDataManager就绪后再检查）."""
         try:
-            from backend.core.base import get_main_engine, get_event_engine
+            from backend.framework import get_main_engine, get_event_engine
 
             self.main_engine = get_main_engine()
             self.event_engine = get_event_engine()
@@ -546,7 +552,7 @@ class ChartWizardEnhanced(BaseWidget):
             f"📊 setup_ui状态检查: 数据就绪={self._data_ready}, "
             f"引擎就绪={self.main_engine is not None and self.event_engine is not None}"
         )
-        
+
         if self._data_ready and self.main_engine and self.event_engine:
             # 数据和引擎都就绪，直接创建图表UI
             self.logger.info("✅ 数据和引擎已就绪，直接创建图表UI")
@@ -555,7 +561,7 @@ class ChartWizardEnhanced(BaseWidget):
             # 显示等待UI（等待UnifiedDataManager就绪事件）
             self.logger.info("⚠️ 数据或引擎未就绪，显示等待UI")
             self._setup_waiting_ui(main_layout)
-            
+
             # 🔧 修复4：延迟检查（以防事件在setup_ui之前到达）
             # 注意：这个检查会在 _check_and_rebuild_ui 中防止重复执行
             QTimer.singleShot(1000, self._check_and_rebuild_ui)
@@ -859,15 +865,15 @@ class ChartWizardEnhanced(BaseWidget):
         """
         try:
             # 从缓存查找对应的交易所
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_mgr = get_service_manager()
+            service_mgr = get_service_registry()
             if not service_mgr:
                 self.logger.warning("服务管理器不可用，使用默认推测")
             else:
-                data_center = service_mgr.get_service("data_center_service")
+                data_center = service_mgr.get("data_center_service")
                 if data_center and hasattr(data_center, "_symbol_cache"):
-                    cache = data_center._symbol_cache
+                    cache = getattr(data_center, "_symbol_cache")
                     if cache and "symbols" in cache:
                         for symbol_info in cache["symbols"]:
                             if symbol_info.get("symbol") == symbol_code:
@@ -1035,15 +1041,15 @@ class ChartWizardEnhanced(BaseWidget):
             base_symbol = self.chart_wizard.tab.tabText(current_index)
 
             # 查询两个品种的数据
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
             from datetime import datetime, timedelta
 
-            service_mgr = get_service_manager()
+            service_mgr = get_service_registry()
             if not service_mgr:
                 self.show_error("服务管理器不可用")
                 return
 
-            market_service = service_mgr.get_service("market_board_service")
+            market_service = service_mgr.get("market_board_service")
             if not market_service:
                 self.show_error("行情服务不可用")
                 return
@@ -1053,7 +1059,7 @@ class ChartWizardEnhanced(BaseWidget):
             start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
 
             # 查询主品种数据
-            base_result = market_service.query_historical_data(
+            base_result = cast("MarketBoardService", market_service).query_historical_data(
                 symbol=base_symbol.split(".")[0],
                 start_date=start_date,
                 end_date=end_date,
@@ -1062,7 +1068,7 @@ class ChartWizardEnhanced(BaseWidget):
             )
 
             # 查询叠加品种数据
-            overlay_result = market_service.query_historical_data(
+            overlay_result = cast("MarketBoardService", market_service).query_historical_data(
                 symbol=vt_symbol.split(".")[0],
                 start_date=start_date,
                 end_date=end_date,
@@ -1232,15 +1238,15 @@ class ChartWizardEnhanced(BaseWidget):
             vt_symbol = self.chart_wizard.tab.tabText(current_index)
 
             # 查询历史数据
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
             from datetime import datetime, timedelta
 
-            service_mgr = get_service_manager()
+            service_mgr = get_service_registry()
             if not service_mgr:
                 self.show_error("服务管理器不可用")
                 return
 
-            market_service = service_mgr.get_service("market_board_service")
+            market_service = service_mgr.get("market_board_service")
             if not market_service:
                 self.show_error("行情服务不可用")
                 return
@@ -1250,7 +1256,7 @@ class ChartWizardEnhanced(BaseWidget):
             start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
 
             # 查询K线数据
-            result = market_service.query_historical_data(
+            result = cast("MarketBoardService", market_service).query_historical_data(
                 symbol=vt_symbol.split(".")[0],
                 start_date=start_date,
                 end_date=end_date,
@@ -1289,7 +1295,7 @@ class ChartWizardEnhanced(BaseWidget):
                 except ValueError:
                     period = params.get("period", 5)
 
-                indicator_result = market_service.calculate_indicator(
+                indicator_result = cast("MarketBoardService", market_service).calculate_indicator(
                     data=close_prices,
                     indicator_name="SMA",
                     params={"period": period},
@@ -1297,7 +1303,7 @@ class ChartWizardEnhanced(BaseWidget):
 
             elif indicator_name.upper() == "BOLL":
                 # 布林带
-                indicator_result = market_service.calculate_indicator(
+                indicator_result = cast("MarketBoardService", market_service).calculate_indicator(
                     data=close_prices,
                     indicator_name="BBANDS",
                     params={"period": params.get("period", 20)},
@@ -1305,7 +1311,7 @@ class ChartWizardEnhanced(BaseWidget):
 
             elif indicator_name.upper() == "EMA":
                 # 指数移动平均
-                indicator_result = market_service.calculate_indicator(
+                indicator_result = cast("MarketBoardService", market_service).calculate_indicator(
                     data=close_prices,
                     indicator_name="EMA",
                     params={"period": params.get("period", 12)},
@@ -1423,12 +1429,12 @@ class ChartWizardEnhanced(BaseWidget):
             vt_symbol = self.chart_wizard.tab.tabText(self.chart_wizard.tab.currentIndex())
 
             # 计算MACD
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
             from datetime import datetime, timedelta
 
-            service_mgr = get_service_manager()
+            service_mgr = get_service_registry()
             market_service = (
-                service_mgr.get_service("market_board_service") if service_mgr else None
+                service_mgr.get("market_board_service") if service_mgr else None
             )
 
             if not market_service:
@@ -1439,7 +1445,7 @@ class ChartWizardEnhanced(BaseWidget):
             end_date = datetime.now().strftime("%Y-%m-%d")
             start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
 
-            result = market_service.query_historical_data(
+            result = cast("MarketBoardService", market_service).query_historical_data(
                 symbol=vt_symbol.split(".")[0],
                 start_date=start_date,
                 end_date=end_date,
@@ -1502,12 +1508,12 @@ class ChartWizardEnhanced(BaseWidget):
             vt_symbol = self.chart_wizard.tab.tabText(self.chart_wizard.tab.currentIndex())
 
             # 计算RSI
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
             from datetime import datetime, timedelta
 
-            service_mgr = get_service_manager()
+            service_mgr = get_service_registry()
             market_service = (
-                service_mgr.get_service("market_board_service") if service_mgr else None
+                service_mgr.get("market_board_service") if service_mgr else None
             )
 
             if not market_service:
@@ -1518,7 +1524,7 @@ class ChartWizardEnhanced(BaseWidget):
             end_date = datetime.now().strftime("%Y-%m-%d")
             start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
 
-            result = market_service.query_historical_data(
+            result = cast("MarketBoardService", market_service).query_historical_data(
                 symbol=vt_symbol.split(".")[0],
                 start_date=start_date,
                 end_date=end_date,
@@ -1679,19 +1685,19 @@ class ChartWizardEnhanced(BaseWidget):
     def _load_symbols_to_overlay_combo(self):
         """加载品种列表到叠加选择器."""
         try:
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_mgr = get_service_manager()
+            service_mgr = get_service_registry()
             if not service_mgr:
                 return
 
-            data_center = service_mgr.get_service("data_center_service")
+            data_center = service_mgr.get("data_center_service")
             if not data_center:
                 return
 
             # 从缓存获取品种列表（避免触发API请求）
-            if hasattr(data_center, "_symbol_cache") and data_center._symbol_cache:
-                symbols = data_center._symbol_cache.get("data", [])
+            if hasattr(data_center, "_symbol_cache") and getattr(data_center, "_symbol_cache", None):
+                symbols = getattr(data_center, "_symbol_cache").get("data", [])
                 if symbols and self.overlay_symbol_combo:
                     for symbol in symbols[:100]:  # 限制100个常用品种
                         code = symbol.get("symbol", "")
@@ -1728,12 +1734,12 @@ class ChartWizardEnhanced(BaseWidget):
             symbol = vt_symbol.split(".")[0]
 
             # 调用market_board_service检测断点
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
             from datetime import datetime, timedelta
 
-            service_mgr = get_service_manager()
+            service_mgr = get_service_registry()
             market_service = (
-                service_mgr.get_service("market_board_service") if service_mgr else None
+                service_mgr.get("market_board_service") if service_mgr else None
             )
 
             if not market_service:
@@ -1743,7 +1749,7 @@ class ChartWizardEnhanced(BaseWidget):
             end_date = datetime.now().strftime("%Y-%m-%d")
             start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
-            gap_result = market_service.detect_data_gaps(
+            gap_result = cast("MarketBoardService", market_service).detect_data_gaps(
                 symbol=symbol, start_date=start_date, end_date=end_date, interval="1d"
             )
 
@@ -1974,12 +1980,12 @@ class ChartWizardEnhanced(BaseWidget):
             vt_symbol = self.chart_wizard.tab.tabText(self.chart_wizard.tab.currentIndex())
 
             # 计算KDJ
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
             from datetime import datetime, timedelta
 
-            service_mgr = get_service_manager()
+            service_mgr = get_service_registry()
             market_service = (
-                service_mgr.get_service("market_board_service") if service_mgr else None
+                service_mgr.get("market_board_service") if service_mgr else None
             )
 
             if not market_service:
@@ -1990,7 +1996,7 @@ class ChartWizardEnhanced(BaseWidget):
             end_date = datetime.now().strftime("%Y-%m-%d")
             start_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
 
-            result = market_service.query_historical_data(
+            result = cast("MarketBoardService", market_service).query_historical_data(
                 symbol=vt_symbol.split(".")[0],
                 start_date=start_date,
                 end_date=end_date,
@@ -2063,7 +2069,7 @@ class ChartWizardEnhanced(BaseWidget):
                 f"📊 事件数据: {event.data}",
                 extra={"log_type": "PROGRESS", "scenario": "market_board_ready"}
             )
-            
+
             contract_count = event.data.get("contract_count", 0)
             mode = event.data.get("mode", "unknown")
 
@@ -2097,7 +2103,7 @@ class ChartWizardEnhanced(BaseWidget):
             self._data_ready = True
             self._data_mode = mode
             self.initialization_state = "ready"
-            
+
             self.logger.info(f"🛠️ 设置数据就绪标志: _data_ready=True, _data_mode={mode}")
 
             # 根据模式初始化UI
@@ -2108,7 +2114,7 @@ class ChartWizardEnhanced(BaseWidget):
                 # 初始化数据相关组件
                 self.logger.info("🚀 调用 _initialize_data_components...")
                 self._initialize_data_components()
-            
+
             self.logger.info("🔔 ===== UnifiedDataManager 就绪事件处理完成 =====")
 
         except Exception as e:
@@ -2122,10 +2128,10 @@ class ChartWizardEnhanced(BaseWidget):
 
         try:
             self.logger.info("📍 开始初始化数据组件...")
-            
+
             # 加载品种列表到叠加选择器
             self._load_symbols_to_overlay_combo()
-            
+
             # 注册vnpy事件监听器（监听实时数据）
             self._register_vnpy_events()
 
@@ -2135,11 +2141,11 @@ class ChartWizardEnhanced(BaseWidget):
                 self.logger.warning("⚠️ 布局未就绪，延迟500ms重试")
                 QTimer.singleShot(500, self._initialize_data_components)
                 return
-            
+
             if not isinstance(layout, QVBoxLayout):
                 self.logger.error("❌ 布局类型错误，无法继续")
                 return
-            
+
             # 🔧 修复：检查图表UI是否存在且有效
             has_valid_chart_ui = False
             try:
@@ -2152,12 +2158,12 @@ class ChartWizardEnhanced(BaseWidget):
                     has_valid_chart_ui = has_parent and is_in_layout
             except Exception as e:
                 self.logger.debug(f"检查chart_wizard失败: {e}")
-            
+
             self.logger.info(
                 f"📊 检查UI状态: 数据就绪={self._data_ready}, "
                 f"模式={self._data_mode}, 图表UI有效={has_valid_chart_ui}"
             )
-            
+
             # 🔧 关键修复：只在图表UI无效时才重建
             if not has_valid_chart_ui:
                 self.logger.info("✅ 检测到需要重建图表UI")
@@ -2261,17 +2267,17 @@ class ChartWizardEnhanced(BaseWidget):
         """重建UI为完整图表界面（修复版）."""
         try:
             self.logger.info("🔧 开始重建UI：移除等待界面，创建图表界面")
-            
+
             # 清空当前UI
             layout = self.layout()
             if not layout:
                 self.logger.error("❌ 布局为空，无法重建UI")
                 return
-            
+
             # 🔧 关键修复1：立即清除等待UI引用，避免后续检查失效
             self.waiting_label = None
             self.waiting_progress = None
-            
+
             # 🔧 关键修复2：同步删除所有子组件（使用setParent(None)立即删除）
             widgets_to_delete = []
             while layout.count():
@@ -2281,32 +2287,32 @@ class ChartWizardEnhanced(BaseWidget):
                     widgets_to_delete.append(widget)
                     widget.setParent(None)  # 立即从父组件移除
                     widget.hide()  # 立即隐藏
-            
+
             # 延迟删除（避免Qt崩溃）
             for widget in widgets_to_delete:
                 widget.deleteLater()
-            
+
             # 🔧 关键修复3：确保布局正确类型
             if not isinstance(layout, QVBoxLayout):
                 self.logger.error("❌ 布局类型不是QVBoxLayout，无法重建UI")
                 return
-            
+
             # 🔧 关键修复4：验证引擎就绪后再创建图表UI
             if not self.main_engine or not self.event_engine:
                 self.logger.warning("⚠️ 引擎未就绪，延迟500ms重试重建UI")
                 QTimer.singleShot(500, self._rebuild_ui_with_chart)
                 return
-            
+
             # 重新创建图表UI
             self.logger.info("📍 创建图表UI组件...")
             self._setup_chart_ui(layout)
-            
+
             # 🔧 关键修复5：验证图表UI是否成功创建
             if self.chart_wizard is None:
                 self.logger.error("❌ 图表UI创建失败，chart_wizard为None")
                 self.show_error("图表组件创建失败，请重试")
                 return
-            
+
             self.logger.info("✅ 图表界面重建完成")
             self.show_info("后端初始化完成，图表功能已就绪")
 

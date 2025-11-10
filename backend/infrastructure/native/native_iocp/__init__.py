@@ -11,21 +11,9 @@ import logging
 import platform
 
 from backend.infrastructure.native.logging_bridge import native_call_guard
-from backend.infrastructure.system_vnpy.logging_system import (
-    LogType,
-    bind_logger_defaults,
-    get_alert_logger,
-)
 
-_LOGGER = bind_logger_defaults(
-    logging.getLogger("backend.native.iocp"),
-    log_type=LogType.SYSTEM.value,
-    scenario="backend.native.iocp",
-)
-_ALERT_LOGGER = get_alert_logger(
-    "backend.native.iocp.alert",
-    scenario="backend.native.iocp",
-)
+_LOGGER = logging.getLogger("backend.native.iocp")
+_ALERT_LOGGER = logging.getLogger("backend.native.iocp.alert")
 
 # 平台检测
 IS_WINDOWS = platform.system() == "Windows"
@@ -50,10 +38,10 @@ if IS_WINDOWS:
             BATCH_AVAILABLE = True
         except ImportError:
             BATCH_AVAILABLE = False
-            def _raise_batch_error():
+            def _raise_batch_error_unavailable():
                 raise ImportError("Batch file operations not available")
-            batch_file_exists = batch_file_delete = batch_file_stat = _raise_batch_error
-            fast_dir_walk = fast_dir_list = _raise_batch_error
+            batch_file_exists = batch_file_delete = batch_file_stat = _raise_batch_error_unavailable
+            fast_dir_walk = fast_dir_list = _raise_batch_error_unavailable
         IOCP_AVAILABLE = True
         _LOGGER.debug(
             "native_iocp C 扩展已加载",
@@ -88,7 +76,7 @@ if IS_WINDOWS:
             _ALERT_LOGGER.error(
                 "native_iocp C 扩展未编译，已降级至 Python 兼容实现",
                 extra={
-                    "log_type": LogType.ALERT.value,
+                    "log_type": "ALERT",
                     "scenario": "backend.native.iocp",
                     "action_required": "compile_extension",
                     "fallback": "python_async_file",
@@ -107,10 +95,10 @@ if IS_WINDOWS:
         get_loop_extension = _raise_import_error
         setup_iocp_loop = _raise_import_error
         BATCH_AVAILABLE = False
-        def _raise_batch_error():
+        def _raise_batch_error_iocp():
             _raise_import_error()
-        batch_file_exists = batch_file_delete = batch_file_stat = _raise_batch_error
-        fast_dir_walk = fast_dir_list = _raise_batch_error
+        batch_file_exists = batch_file_delete = batch_file_stat = _raise_batch_error_iocp
+        fast_dir_walk = fast_dir_list = _raise_batch_error_iocp
 else:
     IOCP_AVAILABLE = False
     __all__ = []
@@ -119,7 +107,7 @@ else:
         _ALERT_LOGGER.critical(
             "IOCP异步文件I/O仅支持Windows平台，当前平台不受支持",
             extra={
-                "log_type": LogType.ALERT.value,
+                "log_type": "ALERT",
                 "scenario": "backend.native.iocp",
                 "current_platform": platform.system(),
                 "action_required": "unsupported_platform",
@@ -135,10 +123,10 @@ else:
     get_loop_extension = _raise_platform_error
     setup_iocp_loop = _raise_platform_error
     BATCH_AVAILABLE = False
-    def _raise_batch_error():
+    def _raise_batch_error_platform():
         _raise_platform_error()
-    batch_file_exists = batch_file_delete = batch_file_stat = _raise_batch_error
-    fast_dir_walk = fast_dir_list = _raise_batch_error
+    batch_file_exists = batch_file_delete = batch_file_stat = _raise_batch_error_platform
+    fast_dir_walk = fast_dir_list = _raise_batch_error_platform
 
 # 导入兼容层
 try:

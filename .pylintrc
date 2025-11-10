@@ -4,8 +4,8 @@
 [MASTER]
 # Add PySide6 to the extension modules
 extension-pkg-whitelist=PySide6
-# Exclude template files that contain Jinja2 placeholders
-ignore-patterns=.*strategies/templates/.*\.py$
+# Exclude template files and type stub files that contain placeholders or are auto-generated
+ignore-patterns=.*strategies/templates/.*\.py$,.*\.pyi$
 
 [MESSAGES CONTROL]
 # Disable specific warnings that are false positives for PySide6

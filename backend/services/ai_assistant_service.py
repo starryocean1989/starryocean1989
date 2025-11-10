@@ -15,8 +15,7 @@ from typing import Any, Dict, List, Optional, Callable, Union
 from pathlib import Path
 from datetime import datetime
 
-from backend.core.service_base import BaseService
-from backend.core.config import get_settings
+from backend.framework import ServiceBase, get_settings
 
 # 必需依赖：native_iocp（异步文件I/O）
 try:
@@ -38,7 +37,7 @@ except ImportError:
     HAS_REQUESTS = False
 
 
-class AIAssistantService(BaseService):
+class AIAssistantService(ServiceBase):
     """AI助手服务.
 
     封装DeepSeek API调用，提供智能策略编写辅助功能。
@@ -58,7 +57,7 @@ class AIAssistantService(BaseService):
 
         # API配置
         self.api_url = self.ai_config.api_url
-        self.api_key = self.ai_config.api_key
+        self._api_key = self.ai_config.api_key
         self.model = self.ai_config.model
         self.max_tokens = self.ai_config.max_tokens
         self.temperature = self.ai_config.temperature
@@ -86,7 +85,7 @@ class AIAssistantService(BaseService):
                 return False
 
             # 检查API密钥（使用最新配置）
-            from backend.core.config import get_settings
+            from backend.framework import get_settings
 
             current_settings = get_settings()
             current_api_key = current_settings.ai.api_key
@@ -174,7 +173,7 @@ class AIAssistantService(BaseService):
                 }
 
             # 检查API密钥（使用最新配置）
-            from backend.core.config import get_settings
+            from backend.framework import get_settings
 
             current_settings = get_settings()
             current_api_key = current_settings.ai.api_key
@@ -267,7 +266,7 @@ class AIAssistantService(BaseService):
         """
         try:
             # 每次调用时重新获取最新配置（支持热更新）
-            from backend.core.config import get_settings
+            from backend.framework import get_settings
 
             current_settings = get_settings()
             current_api_key = current_settings.ai.api_key
@@ -1280,3 +1279,30 @@ class AIAssistantService(BaseService):
         except Exception as e:
             self.logger.error("列出策略文件失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return f"错误：列出文件失败 - {str(e)}"
+
+    def initialize(self) -> bool:
+        """初始化服务"""
+        try:
+            self.logger.info("初始化AI助手服务")
+            # TODO: 实现具体的初始化逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"AI助手服务初始化失败: {e}")
+            return False
+
+    def shutdown(self) -> bool:
+        """关闭服务"""
+        try:
+            self.logger.info("关闭AI助手服务")
+            # TODO: 实现具体的关闭逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"AI助手服务关闭失败: {e}")
+            return False
+
+    def get_status(self) -> Dict:
+        """获取服务状态"""
+        return {
+            "name": self.name,
+            "status": "active",  # TODO: 实现真实的状态检查
+        }

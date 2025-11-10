@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from types import MappingProxyType
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from backend.infrastructure.native.logging_bridge import log_from_native, NativeLogLevel
 from backend.infrastructure.system_vnpy.logging_system import (
@@ -29,7 +29,7 @@ try:
 
     LOCKFREE_HASHMAP_AVAILABLE = True
 except Exception as exc:  # noqa: BLE001 - 捕获所有导入异常
-    LockFreeHashMap = None  # type: ignore
+    LockFreeHashMap = None  # type: ignore[assignment]
     LOCKFREE_HASHMAP_AVAILABLE = False
     log_from_native(
         NativeLogLevel.WARNING,
@@ -68,11 +68,11 @@ class PythonSymbolIndex:
     ENGINE = "python"
 
     def __init__(self) -> None:
-        self._code_index: Dict[str, Dict[str, object]] = {}
+        self._code_index: Dict[str, Dict[str, Any]] = {}
         self._market_index: Dict[str, List[str]] = {}
         self._sorted_codes: List[str] = []
 
-    def build(self, records: Iterable[Dict[str, object]]) -> None:
+    def build(self, records: Iterable[Dict[str, Any]]) -> None:
         self._code_index.clear()
         self._market_index.clear()
 
@@ -97,7 +97,7 @@ class PythonSymbolIndex:
             },
         )
 
-    def get_symbol(self, code: str) -> Optional[Dict[str, object]]:
+    def get_symbol(self, code: str) -> Optional[Dict[str, Any]]:
         return self._code_index.get(code.zfill(6))
 
     def get_codes_by_market(self, market: str) -> List[str]:
@@ -123,13 +123,13 @@ if LOCKFREE_HASHMAP_AVAILABLE:
                 raise RuntimeError("LockFreeHashMap is not available")
 
             self._capacity_hint = max(32, _next_power_of_two(capacity_hint))
-            self._code_index = LockFreeHashMap(self._capacity_hint)
-            self._market_index = LockFreeHashMap(max(32, self._capacity_hint // 2))
+            self._code_index: Any = LockFreeHashMap(self._capacity_hint)
+            self._market_index: Any = LockFreeHashMap(max(32, self._capacity_hint // 2))
             self._python_code_index: Dict[str, MappingProxyType] = {}
             self._python_market_index: Dict[str, List[str]] = {}
             self._sorted_codes: List[str] = []
 
-        def build(self, records: Iterable[Dict[str, object]]) -> None:
+        def build(self, records: Iterable[Dict[str, Any]]) -> None:
             materialised = []
             for record in records:
                 if not record:
@@ -144,29 +144,36 @@ if LOCKFREE_HASHMAP_AVAILABLE:
                 materialised.append((code, market, normalised))
 
             capacity = max(len(materialised) * 2, 16)
-            self._code_index = LockFreeHashMap(max(32, _next_power_of_two(capacity)))
-            self._market_index = LockFreeHashMap(max(32, _next_power_of_two(max(16, capacity // 2))))
+            if LockFreeHashMap is not None:
+                self._code_index = LockFreeHashMap(
+                    max(32, _next_power_of_two(capacity))
+                )
+                self._market_index = LockFreeHashMap(
+                    max(32, _next_power_of_two(max(16, capacity // 2)))
+                )
+            else:
+                raise RuntimeError("LockFreeHashMap is not available")
 
             self._python_code_index.clear()
             self._python_market_index.clear()
 
             for code, market, payload in materialised:
-                self._code_index.set(code, payload)
+                self._code_index.set(code, payload)  # type: ignore[attr-defined]
                 self._python_code_index[code] = MappingProxyType(payload)
                 bucket = self._python_market_index.setdefault(market, [])
                 bucket.append(code)
 
             for market, codes in self._python_market_index.items():
                 deduped = sorted(set(codes))
-                self._market_index.set(market, tuple(deduped))
+                self._market_index.set(market, tuple(deduped))  # type: ignore[attr-defined]
                 self._python_market_index[market] = deduped
 
             self._sorted_codes = sorted(self._python_code_index.keys())
 
-        def get_symbol(self, code: str) -> Optional[Dict[str, object]]:
+        def get_symbol(self, code: str) -> Optional[Dict[str, Any]]:
             key = code.zfill(6)
             try:
-                result = self._code_index.get(key)
+                result = self._code_index.get(key)  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001 - KeyError 或其他异常
                 result = None
 
@@ -178,7 +185,7 @@ if LOCKFREE_HASHMAP_AVAILABLE:
 
         def get_codes_by_market(self, market: str) -> List[str]:
             try:
-                result = self._market_index.get(market)
+                result = self._market_index.get(market)  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001
                 result = None
 
@@ -193,11 +200,10 @@ if LOCKFREE_HASHMAP_AVAILABLE:
         def size(self) -> int:
             return len(self._sorted_codes)
 
-else:  # pragma: no cover - LockFreeHashMap 不可用
-    LockFreeSymbolIndex = None  # type: ignore
+else:
+    LockFreeSymbolIndex = None  # type: ignore[assignment]
 
-LOCKFREE_INDEX_AVAILABLE = LOCKFREE_HASHMAP_AVAILABLE and LockFreeSymbolIndex is not None
-
+LOCKFREE_INDEX_AVAILABLE = LOCKFREE_HASHMAP_AVAILABLE
 
 if SYMBOL_INDEX_AVAILABLE and _NativeSymbolIndex is not None:
 
@@ -207,8 +213,8 @@ if SYMBOL_INDEX_AVAILABLE and _NativeSymbolIndex is not None:
         IS_NATIVE = True
         ENGINE = "cpp"
 
-else:  # pragma: no cover - 原生扩展缺失时
-    NativeSymbolIndex = None  # type: ignore
+else:
+    NativeSymbolIndex = None  # type: ignore[assignment]
 
 
 def _resolve_impl(preferred: Optional[str]) -> str:
@@ -241,7 +247,11 @@ def create_symbol_index(*, use_native: bool = True, impl: Optional[str] = None):
             )
             return LockFreeSymbolIndex()
 
-        if selected_impl in {"auto", "cpp"} and SYMBOL_INDEX_AVAILABLE and NativeSymbolIndex is not None:
+        if (
+            selected_impl in {"auto", "cpp"}
+            and SYMBOL_INDEX_AVAILABLE
+            and NativeSymbolIndex is not None
+        ):
             log_from_native(
                 NativeLogLevel.INFO,
                 "backend.native.native_symbol_index.wrapper",
@@ -283,5 +293,3 @@ __all__ = [
     "PythonSymbolIndex",
     "create_symbol_index",
 ]
-
-

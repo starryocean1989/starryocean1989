@@ -8,8 +8,9 @@ import importlib.util
 def _import_logging_system_from_file(project_root: str):
     path = os.path.join(project_root, "backend", "infrastructure", "system_vnpy", "logging_system.py")
     spec = importlib.util.spec_from_file_location("u_logging_system_child", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载模块: {path}")
     mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
     spec.loader.exec_module(mod)  # type: ignore
     return mod
 

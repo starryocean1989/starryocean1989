@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 try:
-    from backend.infrastructure.native.logging_bridge import native_call_guard
+    from backend.infrastructure.native.logging_bridge import native_call_guard  # type: ignore[assignment]
 except Exception:  # pragma: no cover - 在独立安装包环境下允许退化
-    def native_call_guard(component: str | None = None):  # type: ignore[override]
+    def native_call_guard(component: str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:  # type: ignore[override]
         def _decorator(func):
             return func
         return _decorator
@@ -22,7 +22,7 @@ try:
         convert_one as _convert_one,
         get_version,
     )
-    
+
     @native_call_guard(component="native_vnpy_conversion")
     def batch_convert(objects: Iterable[object], data_type: Optional[str] = None, output: str = "dict", fields: Optional[Iterable[str]] = None):  # type: ignore[override]
         return _batch_convert(objects, data_type, output, fields)

@@ -7,11 +7,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Any, Dict
 
-from backend.core.service_base import BaseService, LoggerMixin
+from backend.framework import ServiceBase
+from backend.core.contracts import DataServiceContract
 from backend.infrastructure.data_module_vnpy.data_process_client import (
     get_data_process_client,
 )
@@ -19,7 +21,7 @@ from backend.infrastructure.data_module_vnpy.data_process_client import (
 ROOT_PATH = Path(__file__).resolve().parent.parent.parent
 
 
-class DataCenterServiceProxy(BaseService, LoggerMixin):
+class DataCenterServiceProxy(ServiceBase, DataServiceContract):
     """数据中心服务代理."""
 
     class _RemoteDownloadTasks:
@@ -43,8 +45,8 @@ class DataCenterServiceProxy(BaseService, LoggerMixin):
             return len(self)
 
     def __init__(self) -> None:
-        BaseService.__init__(self)
-        LoggerMixin.__init__(self)
+        ServiceBase.__init__(self)
+        self.logger = logging.getLogger(self.__class__.__name__)
         self._client = get_data_process_client()
         self._download_tasks_proxy = DataCenterServiceProxy._RemoteDownloadTasks(self)
 
@@ -135,6 +137,10 @@ class DataCenterServiceProxy(BaseService, LoggerMixin):
                 return {"success": False, "message": f"远程方法调用失败: {exc}"}
 
         return wrapper
+
+    def refresh_symbol_list(self) -> Dict[str, Any]:
+        """刷新品种列表."""
+        return self._rpc_call("refresh_symbol_list")
 
     @property
     def _download_tasks(self) -> "DataCenterServiceProxy._RemoteDownloadTasks":  # pragma: no cover

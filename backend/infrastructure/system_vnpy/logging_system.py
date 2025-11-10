@@ -16,57 +16,273 @@
 import base64
 import json
 import logging
-import time
 import asyncio
-import multiprocessing
-import threading
 import heapq
+import multiprocessing
 import os
 import pickle
 import queue
 import secrets
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from functools import wraps
 from pathlib import Path
 from threading import Lock, RLock
-from typing import Any, Dict, List, Optional, Callable, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 from logging.handlers import QueueHandler, QueueListener, MemoryHandler
 from multiprocessing.managers import SyncManager
 
 from vnpy.event import Event, EventEngine
 
-# 可选：native 优先队列和LRU缓存（仅 Windows 支持）
-try:
-    from backend.infrastructure.native.native_collections import (
-        HighPerfPriorityQueue,
-        HighPerfLRUCache,
-        COLLECTIONS_AVAILABLE as NATIVE_COLLECTIONS_AVAILABLE,
-    )
-except Exception:
-    HighPerfPriorityQueue = None  # type: ignore
-    HighPerfLRUCache = None  # type: ignore
-    NATIVE_COLLECTIONS_AVAILABLE = False  # type: ignore
+_HighPerfPriorityQueue, _HighPerfLRUCache, NATIVE_COLLECTIONS_AVAILABLE = None, None, False
+
+# 向后兼容：定义缺失的变量为None
+HighPerfPriorityQueue = None
+HighPerfLRUCache = None
+SharedLogRing = None
+SharedRingConsumer = None
+
+
+def _load_native_collections():
+    """延迟加载 native_collections（包含纯 Python 降级实现）."""
+
+    try:
+        from backend.infrastructure.native.native_collections import (
+            HighPerfPriorityQueue as _pq,
+            HighPerfLRUCache as _lru,
+            COLLECTIONS_AVAILABLE as _available,
+        )
+    except Exception:  # pragma: no cover - 降级路径
+        return None, None, False
+    return _pq, _lru, bool(_available or _pq or _lru)
+
+
+_HighPerfPriorityQueue, _HighPerfLRUCache, NATIVE_COLLECTIONS_AVAILABLE = _load_native_collections()
+if _HighPerfPriorityQueue is not None:
+    HighPerfPriorityQueue = _HighPerfPriorityQueue
+if _HighPerfLRUCache is not None:
+    HighPerfLRUCache = _HighPerfLRUCache
+
+LAZY_LOGGER_DISABLED_ENV = "TERMINAL_DISABLE_LAZY_LOGGER"
+
 
 # 可选的native序列化（Windows C扩展，存在则用于批量写库打包）
-try:
-    from backend.infrastructure.native.native_serialization import (
-        zero_copy_serialize,
-    )
-    NATIVE_SERIALIZATION_AVAILABLE = True
-except Exception:
-    zero_copy_serialize = None  # type: ignore
-    NATIVE_SERIALIZATION_AVAILABLE = False
+
+
+def _get_native_serialization():
+    """延迟导入native_serialization以避免循环导入"""
+
+    try:
+        from backend.infrastructure.native.native_serialization import (
+            zero_copy_serialize,
+        )
+
+        return zero_copy_serialize, True
+    except Exception:
+        return None, False
+
+
+zero_copy_serialize, NATIVE_SERIALIZATION_AVAILABLE = _get_native_serialization()
+
 
 # 日志配置
 logger = logging.getLogger("backend.infrastructure.system_vnpy.logging_system")
 
 # 子进程通过环境变量接收日志队列代理
 LOGGING_QUEUE_TOKEN_ENV = "LOGGING_QUEUE_TOKEN"
+
+
+# =============================================================================
+# LazyLogger集成 - 避免logger初始化阻塞
+# =============================================================================
+
+
+def _should_enable_lazy_logger() -> bool:
+    """判断是否应启用 LazyLogger."""
+
+    disable_flag = os.environ.get(LAZY_LOGGER_DISABLED_ENV, "").strip().lower()
+    if disable_flag in {"1", "true", "yes", "on"}:
+        return False
+
+    # 默认启用
+    return True
+
+
+_lazy_logger_enabled = _should_enable_lazy_logger()
+_lazy_logger_error_reason: Optional[str] = None
+
+
+def _disable_lazy_logger(reason: str) -> None:
+    """在运行时禁用 LazyLogger 并记录原因."""
+
+    global _lazy_logger_enabled, _lazy_logger_imports, _lazy_logger_available, _lazy_logger_error_reason
+
+    if not _lazy_logger_enabled:
+        return
+
+    _lazy_logger_enabled = False
+    _lazy_logger_error_reason = reason
+    _lazy_logger_imports = (None, None, None, False)
+    _lazy_logger_available = False
+    print(f"LazyLogger已禁用: {reason}")
+
+
+# 延迟导入LazyLogger，避免循环依赖
+
+
+def _get_lazy_logger_imports():
+    """延迟导入LazyLogger相关函数"""
+
+    if not _lazy_logger_enabled:
+        return None, None, None, False
+
+    try:
+        from backend.infrastructure.system_vnpy.lazy_logger import (
+            get_lazy_logger,
+            get_lazy_logger_manager,
+            get_logger as get_lazy_logger_compat,
+        )
+    except Exception as exc:  # pragma: no cover - 容错路径
+        _disable_lazy_logger(str(exc))
+        return None, None, None, False
+
+    return get_lazy_logger, get_lazy_logger_manager, get_lazy_logger_compat, True
+
+
+_lazy_logger_imports = None
+
+
+_lazy_logger_available = None
+
+
+def _ensure_lazy_logger_imports():
+    """确保LazyLogger导入完成（幂等）"""
+
+    global _lazy_logger_imports, _lazy_logger_available
+
+    if _lazy_logger_available is not None:
+        # 确保返回有效的元组
+        if _lazy_logger_imports is None:
+            _lazy_logger_imports = (None, None, None, False)
+        return _lazy_logger_imports
+
+    if not _lazy_logger_enabled:
+        _lazy_logger_imports = (None, None, None, False)
+        _lazy_logger_available = False
+        return _lazy_logger_imports
+
+    _lazy_logger_imports = _get_lazy_logger_imports()
+    _lazy_logger_available = _lazy_logger_imports[3]
+    return _lazy_logger_imports
+
+
+def _is_lazy_logger_available():
+    """检查LazyLogger是否可用"""
+
+    global _lazy_logger_available
+    if _lazy_logger_available is None:
+        _, _, _, available_flag = _ensure_lazy_logger_imports()
+        _lazy_logger_available = bool(available_flag)
+    return _lazy_logger_available
+
+
+def _get_lazy_logger(name: str):
+    """获取LazyLogger实例（带可用性检查）"""
+
+    if not _is_lazy_logger_available():
+        return None
+
+    get_lazy_logger, _, _, _ = _ensure_lazy_logger_imports()
+    if get_lazy_logger is None:
+        return None
+    return get_lazy_logger(name)
+
+
+def _get_lazy_logger_manager():
+    """获取LazyLogger管理器（带可用性检查）"""
+
+    if not _is_lazy_logger_available():
+        return None
+
+    _, get_lazy_logger_manager, _, _ = _ensure_lazy_logger_imports()
+    if get_lazy_logger_manager is None:
+        return None
+    return get_lazy_logger_manager()
+
+
+def _get_lazy_logger_compat(name: str):
+    """获取兼容的logger实例（带可用性检查）"""
+
+    if not _is_lazy_logger_available():
+        return None
+
+    _, _, get_lazy_logger_compat, _ = _ensure_lazy_logger_imports()
+    if get_lazy_logger_compat is None:
+        return None
+    return get_lazy_logger_compat(name)
+
+
+def get_configured_logger(
+    name: str,
+    *,
+    log_type: str = "SYSTEM",
+    scenario: Optional[str] = None,
+) -> logging.Logger:
+    """获取已绑定默认log_type与场景的LazyLogger."""
+    if _is_lazy_logger_available():
+        get_lazy_logger, _, _, _ = _ensure_lazy_logger_imports()
+        if get_lazy_logger is not None:
+            lazy_logger = get_lazy_logger(name)
+            return bind_logger_defaults(lazy_logger.get_logger(), log_type=log_type, scenario=scenario)
+
+    base_logger = logging.getLogger(name)
+    return bind_logger_defaults(base_logger, log_type=log_type, scenario=scenario)
+
+
+def get_stage_logger(name: str, *, scenario: str = "application_startup") -> logging.Logger:
+    """获取阶段节点LazyLogger."""
+    if _is_lazy_logger_available():
+        get_lazy_logger, _, _, _ = _ensure_lazy_logger_imports()
+        if get_lazy_logger is not None:
+            lazy_logger = get_lazy_logger(name)
+            return bind_logger_defaults(lazy_logger.get_logger(), log_type="STAGE_NODE", scenario=scenario)
+        else:
+            return get_configured_logger(name, log_type="STAGE_NODE", scenario=scenario)
+    else:
+        return get_configured_logger(name, log_type="STAGE_NODE", scenario=scenario)
+
+
+def get_alert_logger(name: str, *, scenario: Optional[str] = None) -> logging.Logger:
+    """获取告警LazyLogger."""
+    if _is_lazy_logger_available():
+        get_lazy_logger, _, _, _ = _ensure_lazy_logger_imports()
+        if get_lazy_logger is not None:
+            lazy_logger = get_lazy_logger(name)
+            return bind_logger_defaults(lazy_logger.get_logger(), log_type="ALERT", scenario=scenario)
+        else:
+            return get_configured_logger(name, log_type="ALERT", scenario=scenario)
+    else:
+        return get_configured_logger(name, log_type="ALERT", scenario=scenario)
+
+
+def get_progress_logger(name: str, *, scenario: Optional[str] = None) -> logging.Logger:
+    """获取进度LazyLogger."""
+    if _is_lazy_logger_available():
+        get_lazy_logger, _, _, _ = _ensure_lazy_logger_imports()
+        if get_lazy_logger is not None:
+            lazy_logger = get_lazy_logger(name)
+            return bind_logger_defaults(lazy_logger.get_logger(), log_type="PROGRESS", scenario=scenario)
+        else:
+            return get_configured_logger(name, log_type="PROGRESS", scenario=scenario)
+    else:
+        return get_configured_logger(name, log_type="PROGRESS", scenario=scenario)
+
 
 # =============================================================================
 # Part 1: 数据结构定义
@@ -87,14 +303,14 @@ class LogType(Enum):
 
 class AsyncLoggingHandler(logging.Handler):
     """异步日志处理器
-    
+
     将日志记录放入队列中，由后台线程处理，避免阻塞主线程。
     """
-    
-    def __init__(self, target_handler: logging.Handler, max_queue_size: int = 10000, 
+
+    def __init__(self, target_handler: logging.Handler, max_queue_size: int = 10000,
                  worker_count: int = 1, drop_when_full: bool = False):
         """初始化异步日志处理器
-        
+
         Args:
             target_handler: 目标日志处理器，实际处理日志的处理器
             max_queue_size: 最大队列大小，超过此大小会根据drop_when_full决定是阻塞还是丢弃
@@ -113,7 +329,7 @@ class AsyncLoggingHandler(logging.Handler):
         )
         self._running = True
         self._workers = []
-        
+
         # 启动工作线程
         for i in range(worker_count):
             t = threading.Thread(
@@ -122,7 +338,7 @@ class AsyncLoggingHandler(logging.Handler):
                 daemon=True
             )
             t.start()
-    
+
     def _worker_loop(self):
         """工作线程主循环"""
         while self._running or not self._queue.empty():
@@ -141,12 +357,12 @@ class AsyncLoggingHandler(logging.Handler):
                 print(f"Error in async logging handler: {exc}", file=sys.stderr)
             finally:
                 self._queue.task_done()
-    
+
     def emit(self, record):
         """发送日志记录到队列"""
         if not self._running:
             return
-            
+
         try:
             if self.drop_when_full:
                 # 如果队列已满，尝试非阻塞放入
@@ -161,26 +377,26 @@ class AsyncLoggingHandler(logging.Handler):
         except Exception as e:
             # 避免递归调用，直接打印错误
             print(f"Error in async logging emit: {e}", file=sys.stderr)
-    
+
     def flush(self):
         """刷新日志"""
         self.target_handler.flush()
-    
+
     def close(self):
         """关闭处理器"""
         self._running = False
-        
+
         # 等待队列中的日志处理完成
         self._queue.join()
-        
+
         # 关闭线程池
         self._executor.shutdown(wait=True)
-        
+
         # 关闭目标处理器
         self.target_handler.close()
-        
+
         super().close()
-    
+
     def __getattr__(self, name):
         """将未定义的属性调用委托给目标处理器"""
         return getattr(self.target_handler, name)
@@ -268,7 +484,7 @@ def _infer_scenario_from_logger(logger_name: str) -> Optional[str]:
 
     # task.<scenario>.stage -> 取scenario作为场景名
     if lower_name.startswith("task.") and ".stage" in lower_name:
-        scenario_part = lower_name[len("task.") : lower_name.index(".stage")]
+        scenario_part = lower_name[len("task."):lower_name.index(".stage")]
         if scenario_part:
             return scenario_part.replace(".", "_")
 
@@ -283,33 +499,6 @@ def _infer_scenario_from_logger(logger_name: str) -> Optional[str]:
     return None
 
 
-def get_configured_logger(
-    name: str,
-    *,
-    log_type: str = "SYSTEM",
-    scenario: Optional[str] = None,
-) -> logging.Logger:
-    """获取已绑定默认log_type与场景的logger."""
-
-    return bind_logger_defaults(logging.getLogger(name), log_type=log_type, scenario=scenario)
-
-
-def get_stage_logger(name: str, *, scenario: str = "application_startup") -> logging.Logger:
-    """获取阶段节点日志logger."""
-
-    return get_configured_logger(name, log_type="STAGE_NODE", scenario=scenario)
-
-
-def get_alert_logger(name: str, *, scenario: Optional[str] = None) -> logging.Logger:
-    """获取告警日志logger."""
-
-    return get_configured_logger(name, log_type="ALERT", scenario=scenario)
-
-
-def get_progress_logger(name: str, *, scenario: Optional[str] = None) -> logging.Logger:
-    """获取进度日志logger."""
-
-    return get_configured_logger(name, log_type="PROGRESS", scenario=scenario)
 
 
 def _coerce_logger(
@@ -404,7 +593,7 @@ def progress_log(
 @dataclass
 class UnifiedLogRecord:
     """统一日志记录
-    
+
     扩展字段说明：
     - type: 日志类型（LogType枚举）
     - level: 日志级别（logging.INFO等）
@@ -441,31 +630,31 @@ class UnifiedLogRecord:
     thread: int = 0
     thread_name: str = ""
     exception: str = ""
-    
+
     # 请求和会话信息
     request_id: Optional[str] = None
     session_id: Optional[str] = None
     user_id: Optional[str] = None
-    
+
     # 组件和操作信息
     component: str = ""
     operation: str = ""
-    
+
     # 性能指标
     duration: Optional[float] = None  # 毫秒
-    
+
     # 额外自定义字段
     extra: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
         # 如果未设置component，使用logger_name
         if not self.component and self.logger_name:
             self.component = self.logger_name
-            
+
         # 如果未设置operation，使用function
         if not self.operation and self.function:
             self.operation = self.function
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """将日志记录转换为字典格式"""
         result = {
@@ -488,27 +677,27 @@ class UnifiedLogRecord:
             'operation': self.operation,
             'duration': self.duration,
         }
-        
+
         # 添加异常信息
         if self.exception:
             result['exception'] = self.exception
-            
+
         # 添加详细信息
         if self.details:
             result['details'] = self.details
-            
+
         # 添加额外字段
         if self.extra:
             result.update(self.extra)
-            
+
         return result
-    
+
     def to_json(self, **kwargs) -> str:
         """将日志记录转换为JSON字符串
-        
+
         Args:
             **kwargs: 传递给json.dumps的参数
-            
+
         Returns:
             JSON格式的字符串
         """
@@ -998,8 +1187,8 @@ class MultiProcessLogCollector:
         self.logging_hub = logging_hub
         self._manager: Optional[SyncManager] = None
         self._queue_token: Optional[str] = None
-        self._ring: Optional["SharedLogRing"] = None
-        self._ring_consumer: Optional["SharedRingConsumer"] = None
+        self._ring: Optional[Any] = None  # SharedLogRing
+        self._ring_consumer: Optional[Any] = None  # SharedRingConsumer
         self.queue = queue
         if self.queue is None:
             if not self._try_create_shared_ring():
@@ -1096,12 +1285,13 @@ class MultiProcessLogCollector:
                     return
 
                 # 创建QueueListener，将所有日志转发到LoggingHub
-                self.queue_listener = QueueListener(
-                    self.queue,
-                    self.logging_hub,
-                    respect_handler_level=True,
-                )
-                self.queue_listener.start()
+                if self.queue is not None:
+                    self.queue_listener = QueueListener(
+                        self.queue,
+                        self.logging_hub,
+                        respect_handler_level=True,
+                    )
+                    self.queue_listener.start()
                 self._running = True
                 self.logger.info("多进程日志收集器已启动")
         except Exception as e:
@@ -1167,7 +1357,7 @@ class MultiProcessLogCollector:
         return self._queue_token
 
 
-def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.DEBUG, process_name: str = None):
+def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.DEBUG, process_name: Optional[str] = None):
     """配置子进程日志（子进程调用）
 
     Args:
@@ -1179,16 +1369,16 @@ def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.
     import socket
     import getpass
     from typing import Dict, Any, Optional
-    
+
     # 获取进程信息
     process_name = process_name or multiprocessing.current_process().name
     hostname = socket.gethostname()
     username = getpass.getuser()
     pid = os.getpid()
-    
+
     # 创建日志记录工厂函数
     old_factory = logging.getLogRecordFactory()
-    
+
     def record_factory(*args, **kwargs):
         record = old_factory(*args, **kwargs)
         # 添加进程上下文信息
@@ -1196,20 +1386,20 @@ def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.
         record.hostname = hostname
         record.username = username
         record.pid = pid
-        
+
         # 确保extra字典存在
         if not hasattr(record, 'extra'):
-            record.extra = {}
-            
+            record.extra = {}  # type: ignore
+
         # 添加追踪ID（如果存在）
         if hasattr(record, 'trace_id'):
-            record.extra['trace_id'] = record.trace_id
-            
+            record.extra['trace_id'] = record.trace_id  # type: ignore
+
         return record
-    
+
     # 设置日志记录工厂
     logging.setLogRecordFactory(record_factory)
-    
+
     # 创建根logger
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
@@ -1222,7 +1412,7 @@ def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.
     # 添加QueueHandler
     queue_handler = QueueHandler(queue)
     queue_handler.setLevel(level)
-    
+
     # 优化日志格式，包含进程信息
     formatter = logging.Formatter(
         '%(asctime)s [%(process_name)s:%(pid)s] [%(levelname)-8s] %(name)-40s - %(message)s',
@@ -1230,13 +1420,13 @@ def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.
     )
     queue_handler.setFormatter(formatter)
     root_logger.addHandler(queue_handler)
-    
+
     # 配置常见库的日志级别
     logging.getLogger('asyncio').setLevel(logging.WARNING)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
     logging.getLogger('sqlalchemy').setLevel(logging.WARNING)
     logging.getLogger('matplotlib').setLevel(logging.WARNING)
-    
+
     # 记录启动信息
     logger = logging.getLogger(__name__)
     # 🔧 修复：避免在extra中使用process_name（与LogRecord内置属性冲突），改用格式化字符串
@@ -1246,7 +1436,7 @@ def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.
     )
 
 
-def restore_queue_from_token(token: str) -> Optional[multiprocessing.Queue]:
+def restore_queue_from_token(token: str) -> Optional[Any]:
     """根据token还原队列代理（供子进程使用）。"""
 
     try:
@@ -1679,35 +1869,35 @@ class LoggingHub(logging.Handler):
     @contextmanager
     def log_context(self, **context):
         """日志上下文管理器，用于在代码块中添加上下文信息到日志记录中。
-        
+
         Args:
             **context: 要添加到日志记录中的上下文信息，如 request_id, user_id, component 等
-            
+
         Example:
             with logging_hub.log_context(request_id=request_id, user_id=user_id):
                 logger.info("Processing request")
         """
         # 获取当前线程的上下文变量
         current_context = getattr(threading.current_thread(), '_log_context', {})
-        
+
         # 更新上下文
         new_context = {**current_context, **context}
-        
+
         # 设置新的上下文
         thread = threading.current_thread()
         original_context = getattr(thread, '_log_context', {})
-        thread._log_context = new_context
-        
+        thread._log_context = new_context  # type: ignore
+
         try:
             yield
         finally:
             # 恢复原始上下文
-            thread._log_context = original_context
-    
+            thread._log_context = original_context  # type: ignore
+
     def _get_current_context(self):
         """获取当前线程的日志上下文"""
         return getattr(threading.current_thread(), '_log_context', {})
-    
+
     def __init__(self):
         """初始化LoggingHub."""
         super().__init__()
@@ -1730,7 +1920,7 @@ class LoggingHub(logging.Handler):
         self._sequence_counter = 0
         self._sequence_lock = Lock()
         self._emit_lock = RLock()
-        
+
         # 批量处理相关
         self._batch_buffer: List[UnifiedLogRecord] = []
         self._batch_size = 100  # 每100条批量处理一次
@@ -1879,7 +2069,7 @@ class LoggingHub(logging.Handler):
             for key, value in context.items():
                 if not hasattr(record, key):
                     setattr(record, key, value)
-        
+
         emit_start = time.perf_counter()
         try:
             if self._in_emit:
@@ -1897,14 +2087,14 @@ class LoggingHub(logging.Handler):
             self._total_logs += 1
             unified_record = self._convert_to_unified(record)
             targets = self._get_targets(unified_record)
-            
+
             # 检查是否需要批量处理
             if self._should_batch_process(record):
                 self._add_to_batch(unified_record, targets)
             else:
                 # 直接处理高优先级日志
                 self._dispatch(targets, unified_record)
-                
+
             self._check_throttler()
             self._maybe_flush_batch()
 
@@ -1922,36 +2112,36 @@ class LoggingHub(logging.Handler):
             traceback.print_exc(file=sys.stderr)
         finally:
             self._in_emit = False
-            
+
     def _should_batch_process(self, record: logging.LogRecord) -> bool:
         """判断是否应该批量处理日志"""
         # 高优先级的日志（如ERROR、CRITICAL）立即处理
         if record.levelno >= logging.ERROR:
             return False
-            
+
         # 检查是否在启动阶段
         if self._is_startup_phase():
             return False
-            
+
         # 检查日志类型
         log_type = getattr(record, 'log_type', '')
         if log_type in ['ALERT', 'NOTIFICATION']:
             return False
-            
+
         return True
-        
-    def _add_to_batch(self, record, targets):
+
+    def _add_to_batch(self, record: UnifiedLogRecord, targets):
         """将日志添加到批量处理队列"""
         with self._batch_lock:
-            self._batch_buffer.append((record, targets))
-            
+            self._batch_buffer.append((record, targets))  # type: ignore
+
             # 检查是否达到批量大小或超时
             current_time = time.time()
-            if (len(self._batch_buffer) >= self._batch_size or 
+            if (len(self._batch_buffer) >= self._batch_size or
                 (current_time - self._last_flush) >= self._flush_interval):
                 self._flush_batch()
                 self._last_flush = current_time
-                
+
     def _maybe_flush_batch(self):
         """检查是否需要刷新批量日志"""
         with self._batch_lock:
@@ -1959,33 +2149,33 @@ class LoggingHub(logging.Handler):
             if self._batch_buffer and (current_time - self._last_flush) >= self._flush_interval:
                 self._flush_batch()
                 self._last_flush = current_time
-    
+
     def _flush_batch(self):
         """处理批量日志"""
         if not self._batch_buffer:
             return
-            
+
         # 获取当前批次的日志
         with self._batch_lock:
             batch = self._batch_buffer
             self._batch_buffer = []
-            
+
         if not batch:
             return
-            
+
         # 按目标分组
         target_records = {}
-        for record, targets in batch:
+        for record, targets in batch:  # type: ignore
             for target in targets:
                 if target not in target_records:
                     target_records[target] = []
                 target_records[target].append(record)
-        
+
         # 批量处理每个目标
         for target, records in target_records.items():
             if not records:
                 continue
-                
+
             try:
                 if target == 'console':
                     for record in records:
@@ -2003,24 +2193,24 @@ class LoggingHub(logging.Handler):
             except Exception as e:
                 import sys
                 print(f"批量处理日志到 {target} 失败: {e}", file=sys.stderr)
-                
+
     def _batch_to_file(self, records):
         """批量写入文件"""
         if not self._event_log_handler:
             return
-            
+
         try:
             for record in records:
                 self._to_file(record)
         except Exception as e:
             import sys
             print(f"批量写入文件失败: {e}", file=sys.stderr)
-            
+
     def _batch_to_database(self, records):
         """批量写入数据库"""
         if not self.db_manager or not records:
             return
-            
+
         try:
             # 转换为数据库记录
             db_records = []
@@ -2036,12 +2226,12 @@ class LoggingHub(logging.Handler):
                     'extra': json.dumps(record.extra) if hasattr(record, 'extra') and record.extra else None
                 }
                 db_records.append(db_record)
-                
+
             # 批量插入数据库
             if db_records:
                 self.db_manager.bulk_insert('logs', db_records)
                 self._db_writes += len(db_records)
-                
+
         except Exception as e:
             import sys
             import traceback
@@ -2165,7 +2355,7 @@ class LoggingHub(logging.Handler):
                     return LogType.SYSTEM
             except Exception:
                 pass
-                
+
         # 增强错误和异常检测
         error_keywords = [
             "error", "exception", "failed", "failure", "error occurred",
@@ -2364,7 +2554,7 @@ class LoggingHub(logging.Handler):
         - 数据库输出：与控制台一致，或根据自定义规则
         - 事件引擎：NOTIFICATION和ALERT类型（用于内部通知）
         - 节流事件：PROGRESS类型（500ms聚合）
-        
+
         动态路由规则：
         1. 支持通过 extra 参数动态指定目标
         2. 支持通过日志级别、类型、来源等条件进行路由
@@ -2372,20 +2562,20 @@ class LoggingHub(logging.Handler):
         """
         # 使用集合自动去重
         targets = {"file"}
-        
+
         # 1. 检查是否有显式指定的目标
-        if hasattr(record, 'targets') and isinstance(record.targets, (list, tuple, set)):
-            targets.update(record.targets)
+        if hasattr(record, 'targets') and isinstance(record.targets, (list, tuple, set)):  # type: ignore
+            targets.update(record.targets)  # type: ignore
             return list(targets)
-            
+
         # 2. 应用内置路由规则
-        
+
         # 控制台和数据库输出条件
         needs_console = (
             record.level >= logging.WARNING or  # WARNING及以上级别
             record.type in (LogType.ALERT, LogType.NOTIFICATION) or  # 告警和通知类型
             (record.type == LogType.STAGE_NODE and record.level == logging.INFO) or  # 阶段节点信息
-            (record.level == logging.INFO and hasattr(record, 'show_in_console') and record.show_in_console)  # 显式指定显示在控制台
+            (record.level == logging.INFO and hasattr(record, 'show_in_console') and record.show_in_console)  # type: ignore  # 显式指定显示在控制台
         )
 
         # 仅在启动阶段抑制普通INFO到控制台，保留STAGE_NODE和显式show_in_console
@@ -2397,7 +2587,7 @@ class LoggingHub(logging.Handler):
         # 数据库输出条件（可以单独控制）
         needs_database = (
             needs_console or  # 默认与控制台一致
-            (hasattr(record, 'save_to_database') and record.save_to_database)  # 显式指定保存到数据库
+            (hasattr(record, 'save_to_database') and record.save_to_database)  # type: ignore  # 显式指定保存到数据库
         )
 
         # 添加控制台和数据库目标
@@ -2413,7 +2603,7 @@ class LoggingHub(logging.Handler):
         # 节流事件：PROGRESS类型
         if record.type == LogType.PROGRESS:
             targets.add("event_throttled")
-            
+
         # 3. 应用自定义路由规则
         if hasattr(self, '_custom_routing_rules') and self._custom_routing_rules:
             for rule in self._custom_routing_rules:
@@ -2425,33 +2615,33 @@ class LoggingHub(logging.Handler):
             targets.add("console")
 
         return list(targets)
-        
+
     def _match_rule(self, rule: Dict, record: UnifiedLogRecord) -> bool:
         """检查日志记录是否匹配自定义路由规则"""
         # 检查日志级别
-        if 'min_level' in rule and record.levelno < getattr(logging, rule['min_level']):
+        if 'min_level' in rule and record.levelno < getattr(logging, rule['min_level']):  # type: ignore
             return False
-            
+
         # 检查日志类型
-        if 'log_types' in rule and record.type.name not in rule['log_types']:
+        if 'log_types' in rule and record.type.name not in rule['log_types']:  # type: ignore
             return False
-            
+
         # 检查记录器名称模式
         if 'logger_patterns' in rule:
-            if not any(pattern in record.name for pattern in rule['logger_patterns']):
+            if not any(pattern in record.name for pattern in rule['logger_patterns']):  # type: ignore
                 return False
-                
+
         # 检查消息内容模式
         if 'message_patterns' in rule:
-            message = record.getMessage().lower()
+            message = record.getMessage().lower()  # type: ignore
             if not any(pattern.lower() in message for pattern in rule['message_patterns']):
                 return False
-                
+
         return True
-        
+
     def add_routing_rule(self, rule: Dict) -> None:
         """添加自定义路由规则
-        
+
         Args:
             rule: 路由规则字典，包含以下可选键：
                 - targets: 目标列表，如 ["console", "database", "event"]
@@ -2462,10 +2652,10 @@ class LoggingHub(logging.Handler):
         """
         if not hasattr(self, '_custom_routing_rules'):
             self._custom_routing_rules = []
-            
+
         if 'targets' not in rule or not rule['targets']:
             raise ValueError("路由规则必须包含 'targets' 字段")
-            
+
         self._custom_routing_rules.append(rule)
 
     def _dispatch(self, targets: List[str], record: UnifiedLogRecord):
@@ -2771,7 +2961,7 @@ class LoggingHub(logging.Handler):
 
         try:
             # 优先使用native序列化打包，减少Python层传递开销
-            if NATIVE_SERIALIZATION_AVAILABLE and hasattr(self.db_manager, "batch_insert_logs_serialized"):
+            if NATIVE_SERIALIZATION_AVAILABLE and zero_copy_serialize is not None and hasattr(self.db_manager, "batch_insert_logs_serialized"):
                 try:
                     payload = zero_copy_serialize(self._db_batch_cache)  # type: ignore
                     self.db_manager.batch_insert_logs_serialized(payload)
@@ -3387,6 +3577,40 @@ async def initialize_logging_hub_complete(
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
+        # LazyLogger集成：批量初始化所有LazyLogger
+        if _is_lazy_logger_available():
+            logger.debug(
+                "[LOG-SETUP] 开始批量初始化LazyLogger",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            try:
+                _, get_lazy_logger_manager, _, _ = _ensure_lazy_logger_imports()
+                if get_lazy_logger_manager is not None:
+                    lazy_manager = get_lazy_logger_manager()
+                    lazy_config = {
+                        "handlers": [console_handler],
+                        "level": logging.INFO,
+                        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                    }
+                    init_results = await lazy_manager.initialize_all(lazy_config)
+                    initialized_count = sum(1 for result in init_results.values() if result)
+                    total_count = len(init_results)
+                    logger.info(
+                        f"[LOG-SETUP] LazyLogger批量初始化完成: {initialized_count}/{total_count} 个logger初始化成功",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    if initialized_count < total_count:
+                        failed_loggers = [name for name, success in init_results.items() if not success]
+                        logger.warning(
+                            f"[LOG-SETUP] ⚠️ {len(failed_loggers)} 个LazyLogger初始化失败: {failed_loggers[:5]}{'...' if len(failed_loggers) > 5 else ''}",
+                            extra={"log_type": "ALERT", "scenario": scenario}
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"[LOG-SETUP] ⚠️ LazyLogger批量初始化失败，将使用标准logging: {e}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+
         return logging_hub
 
     except Exception as e:
@@ -3557,13 +3781,13 @@ def ai_log_process(event_name: str, metadata: Optional[Dict[str, Any]] = None):
 
 @contextmanager
 def log_process_context(
-    process_name: str, 
+    process_name: str,
     logger_name: str = "process",
     log_level: int = logging.INFO,
     **metadata
 ):
     """记录流程开始和结束的上下文管理器。
-    
+
     Args:
         process_name: 流程名称
         logger_name: 记录器名称，默认为"process"
@@ -3572,7 +3796,7 @@ def log_process_context(
     """
     logger = logging.getLogger(f"{logger_name}.{process_name}")
     start_time = time.time()
-    
+
     # 记录开始
     logger.log(
         log_level,
@@ -3584,7 +3808,7 @@ def log_process_context(
             **metadata
         }
     )
-    
+
     try:
         yield
         # 记录成功完成
@@ -3620,32 +3844,6 @@ def log_process_context(
         raise
 
 
-def log_progress(
-    message: str,
-    progress: Optional[float] = None,
-    logger_name: str = "progress",
-    **details
-):
-    """记录进度日志。
-    
-    Args:
-        message: 进度消息
-        progress: 进度值 (0.0 到 1.0)
-        logger_name: 记录器名称
-        **details: 额外的详情信息
-    """
-    logger = logging.getLogger(logger_name)
-    extra = {
-        "log_type": "PROGRESS",
-        **details
-    }
-    if progress is not None:
-        extra["progress"] = max(0.0, min(1.0, float(progress)))
-    
-    logger.info(
-        f"⏳ {message}" + (f" ({progress*100:.1f}%)" if progress is not None else ""),
-        extra=extra
-    )
 
 
 def log_alert(
@@ -3655,7 +3853,7 @@ def log_alert(
     **details
 ):
     """记录告警日志。
-    
+
     Args:
         message: 告警消息
         severity: 严重程度 (WARNING, ERROR, CRITICAL)
@@ -3665,13 +3863,13 @@ def log_alert(
     logger = logging.getLogger(logger_name)
     severity = severity.upper()
     level = getattr(logging, severity, logging.WARNING)
-    
+
     emoji = "⚠️"
     if severity == "ERROR":
         emoji = "❌"
     elif severity == "CRITICAL":
         emoji = "🔥"
-    
+
     logger.log(
         level,
         f"{emoji} {message}",
@@ -3683,31 +3881,6 @@ def log_alert(
     )
 
 
-def log_system(
-    message: str,
-    level: str = "INFO",
-    logger_name: str = "system",
-    **details
-):
-    """记录系统日志。
-    
-    Args:
-        message: 系统消息
-        level: 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        logger_name: 记录器名称
-        **details: 额外的详情信息
-    """
-    logger = logging.getLogger(logger_name)
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    
-    logger.log(
-        log_level,
-        message,
-        extra={
-            "log_type": "SYSTEM",
-            **details
-        }
-    )
 
 
 # =============================================================================
@@ -3736,6 +3909,1029 @@ class ProcessNames:
 
 
 # =============================================================================
+# 超时与告警辅助工具
+# =============================================================================
+
+
+class TimeoutGuard:
+    """超时守护器 - 为异步操作提供统一超时控制和告警
+
+    特性：
+    - 统一超时管理：进程间通信、网络请求、文件等待等
+    - 智能告警：超时后自动记录上下文并触发告警
+    - 优雅降级：支持自定义降级策略
+    - 可追踪性：所有超时事件都有完整上下文信息
+    """
+
+    def __init__(self, logger: logging.Logger, operation_name: str, scenario: str = "application_startup"):
+        """初始化超时守护器
+
+        Args:
+            logger: 用于记录日志的logger实例
+            operation_name: 操作名称，用于日志标识
+            scenario: 场景标识，用于日志路由
+        """
+        self.logger = logger
+        self.operation_name = operation_name
+        self.scenario = scenario
+        self.start_time = None
+
+    @asynccontextmanager
+    async def guard_timeout(self, timeout_seconds: float, alert_message: Optional[str] = None,
+                          fallback: Optional[Callable[[], Any]] = None):
+        """守护异步操作的超时控制
+
+        Args:
+            timeout_seconds: 超时时间（秒）
+            alert_message: 超时时的告警消息，默认为标准消息
+            fallback: 超时后的降级处理函数
+
+        Usage:
+            async with timeout_guard.guard_timeout(30.0, "进程通信超时"):
+                result = await some_async_operation()
+        """
+        self.start_time = time.time()
+
+        try:
+            yield
+            # 操作成功，记录耗时
+            elapsed = (time.time() - self.start_time) * 1000
+            self.logger.debug(
+                f"[{self.operation_name}] 操作成功完成 ({elapsed:.0f}ms)",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
+
+        except asyncio.TimeoutError:
+            elapsed = (time.time() - self.start_time) * 1000
+            alert_msg = alert_message or f"[{self.operation_name}] 操作超时 ({elapsed:.0f}ms > {timeout_seconds*1000:.0f}ms)"
+
+            self.logger.warning(
+                alert_msg,
+                extra={"log_type": "ALERT", "scenario": self.scenario, "timeout": timeout_seconds, "elapsed": elapsed}
+            )
+
+            # 执行降级策略
+            if fallback:
+                try:
+                    fallback_result = fallback()
+                    self.logger.info(
+                        f"[{self.operation_name}] 降级策略执行成功",
+                        extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    )
+                    yield fallback_result
+                except Exception as e:
+                    self.logger.error(
+                        f"[{self.operation_name}] 降级策略执行失败: {e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT", "scenario": self.scenario}
+                    )
+
+            # 重新抛出TimeoutError，让调用方处理
+            raise
+
+        except Exception as e:
+            elapsed = (time.time() - self.start_time) * 1000
+            self.logger.error(
+                f"[{self.operation_name}] 操作异常 ({elapsed:.0f}ms): {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": self.scenario, "elapsed": elapsed}
+            )
+            raise
+
+
+def create_timeout_guard(logger: logging.Logger, operation_name: str, scenario: str = "application_startup") -> TimeoutGuard:
+    """创建超时守护器工厂函数
+
+    Args:
+        logger: 日志记录器
+        operation_name: 操作名称
+        scenario: 场景标识
+
+    Returns:
+        TimeoutGuard: 配置好的超时守护器实例
+    """
+    return TimeoutGuard(logger, operation_name, scenario)
+
+
+# =============================================================================
+# 取消识别与上下文追踪系统
+# =============================================================================
+
+
+class CancellationType(Enum):
+    """取消类型枚举 - 全面覆盖各种取消场景"""
+
+    # 用户主动取消
+    USER_CANCELLED = "user_cancelled"                    # 用户主动中断（Ctrl+C等）
+    UI_CANCELLED = "ui_cancelled"                       # UI界面取消操作
+
+    # 超时相关取消
+    TIMEOUT_CANCELLED = "timeout_cancelled"             # 通用超时取消
+    NETWORK_TIMEOUT = "network_timeout"                 # 网络请求超时
+    PROCESS_TIMEOUT = "process_timeout"                 # 进程启动超时
+    IPC_TIMEOUT = "ipc_timeout"                         # IPC通信超时
+    DATABASE_TIMEOUT = "database_timeout"               # 数据库操作超时
+
+    # 依赖失败取消
+    DEPENDENCY_FAILED = "dependency_failed"             # 依赖服务失败
+    PROCESS_CRASHED = "process_crashed"                 # 子进程崩溃
+    SERVICE_UNAVAILABLE = "service_unavailable"         # 服务不可用
+    RESOURCE_EXHAUSTED = "resource_exhausted"           # 资源耗尽
+
+    # 死锁与异常取消
+    DEADLOCK_DETECTED = "deadlock_detected"             # 死锁检测
+    CIRCULAR_DEPENDENCY = "circular_dependency"         # 循环依赖
+    EXCEPTION_OCCURRED = "exception_occurred"           # 异常发生
+    CASCADE_CANCEL = "cascade_cancel"                   # 级联取消
+
+    # 系统级取消
+    SYSTEM_SHUTDOWN = "system_shutdown"                 # 系统关闭
+    RESOURCE_CONSTRAINT = "resource_constraint"         # 资源限制
+    CONFIGURATION_ERROR = "configuration_error"         # 配置错误
+
+    # 未知取消（用于降级处理）
+    UNKNOWN = "unknown"                                 # 无法识别的取消类型
+
+
+@dataclass
+class CancellationContext:
+    """取消上下文 - 记录操作的完整生命周期信息"""
+
+    # 基本信息
+    operation_id: str                                    # 操作唯一标识
+    operation_name: str                                 # 操作名称（如"monitor_process_start"）
+    operation_type: str                                 # 操作类型（如"process_start", "ipc_connect"）
+
+    # 时间线信息
+    start_time: datetime                                 # 操作开始时间
+    last_activity_time: datetime                        # 最后活动时间
+    end_time: Optional[datetime] = None                 # 操作结束时间
+
+    # 进度信息
+    progress_percentage: float = 0.0                    # 进度百分比 (0.0-100.0)
+    current_step: str = ""                              # 当前步骤描述
+    total_steps: int = 1                               # 总步骤数
+    completed_steps: int = 0                           # 已完成步骤数
+
+    # 依赖关系
+    dependencies: List[str] = field(default_factory=list)  # 依赖的操作ID列表
+    dependent_operations: List[str] = field(default_factory=list)  # 被依赖的操作ID列表
+
+    # 状态信息
+    status: str = "running"                             # 状态: running, completed, cancelled, failed
+    cancellation_type: Optional[CancellationType] = None  # 取消类型
+
+    # 上下文数据
+    metadata: Dict[str, Any] = field(default_factory=dict)  # 扩展元数据
+    stack_trace: Optional[str] = None                    # 异常堆栈（如果有）
+    error_message: Optional[str] = None                 # 错误消息
+
+    def update_progress(self, step: str, completed: int, total: Optional[int] = None):
+        """更新进度信息"""
+        self.last_activity_time = datetime.now()
+        self.current_step = step
+        self.completed_steps = completed
+        if total is not None:
+            self.total_steps = total
+        self.progress_percentage = min(100.0, (completed / self.total_steps) * 100.0)
+
+    def mark_cancelled(self, cancel_type: CancellationType, error_msg: Optional[str] = None, stack_trace: Optional[str] = None):
+        """标记操作已取消"""
+        self.end_time = datetime.now()
+        self.status = "cancelled"
+        self.cancellation_type = cancel_type
+        if error_msg:
+            self.error_message = error_msg
+        if stack_trace:
+            self.stack_trace = stack_trace
+
+    def mark_completed(self):
+        """标记操作已完成"""
+        self.end_time = datetime.now()
+        self.status = "completed"
+        self.progress_percentage = 100.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式（用于日志记录）"""
+        return {
+            "operation_id": self.operation_id,
+            "operation_name": self.operation_name,
+            "operation_type": self.operation_type,
+            "start_time": self.start_time.isoformat(),
+            "last_activity_time": self.last_activity_time.isoformat(),
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "duration_ms": (self.end_time - self.start_time).total_seconds() * 1000 if self.end_time else None,
+            "progress_percentage": self.progress_percentage,
+            "current_step": self.current_step,
+            "status": self.status,
+            "cancellation_type": self.cancellation_type.value if self.cancellation_type else None,
+            "dependencies": self.dependencies,
+            "metadata": self.metadata,
+        }
+
+
+class CancellationTracker:
+    """取消上下文追踪器 - 管理所有操作的取消上下文"""
+
+    def __init__(self):
+        self._contexts: Dict[str, CancellationContext] = {}
+        self._lock = Lock()
+        self._next_operation_id = 0
+
+    def start_operation(self, operation_name: str, operation_type: str,
+                       dependencies: Optional[List[str]] = None,
+                       metadata: Optional[Dict[str, Any]] = None) -> str:
+        """开始跟踪一个操作
+
+        Args:
+            operation_name: 操作名称
+            operation_type: 操作类型
+            dependencies: 依赖的操作ID列表
+            metadata: 扩展元数据
+
+        Returns:
+            operation_id: 操作唯一标识
+        """
+        with self._lock:
+            operation_id = f"{operation_type}_{self._next_operation_id}"
+            self._next_operation_id += 1
+
+            context = CancellationContext(
+                operation_id=operation_id,
+                operation_name=operation_name,
+                operation_type=operation_type,
+                start_time=datetime.now(),
+                last_activity_time=datetime.now(),
+                dependencies=dependencies or [],
+                metadata=metadata or {}
+            )
+
+            self._contexts[operation_id] = context
+            return operation_id
+
+    def update_operation(self, operation_id: str, step: Optional[str] = None,
+                        completed_steps: Optional[int] = None, total_steps: Optional[int] = None):
+        """更新操作进度"""
+        with self._lock:
+            if operation_id in self._contexts:
+                context = self._contexts[operation_id]
+                if step is not None:
+                    context.current_step = step
+                if completed_steps is not None or total_steps is not None:
+                    completed = completed_steps if completed_steps is not None else context.completed_steps
+                    total = total_steps if total_steps is not None else context.total_steps
+                    context.update_progress(context.current_step, completed, total)
+
+    def cancel_operation(self, operation_id: str, cancel_type: CancellationType,
+                        error_message: Optional[str] = None, stack_trace: Optional[str] = None):
+        """取消操作"""
+        with self._lock:
+            if operation_id in self._contexts:
+                context = self._contexts[operation_id]
+                context.mark_cancelled(cancel_type, error_message, stack_trace)
+
+    def complete_operation(self, operation_id: str):
+        """完成操作"""
+        with self._lock:
+            if operation_id in self._contexts:
+                context = self._contexts[operation_id]
+                context.mark_completed()
+
+    def get_context(self, operation_id: str) -> Optional[CancellationContext]:
+        """获取操作上下文"""
+        with self._lock:
+            return self._contexts.get(operation_id)
+
+    def get_all_contexts(self) -> Dict[str, CancellationContext]:
+        """获取所有操作上下文"""
+        with self._lock:
+            return self._contexts.copy()
+
+    def get_active_operations(self) -> Dict[str, CancellationContext]:
+        """获取所有活跃操作"""
+        with self._lock:
+            return {
+                op_id: context for op_id, context in self._contexts.items()
+                if context.status == "running"
+            }
+
+    def cleanup_completed_operations(self, max_age_seconds: int = 3600):
+        """清理已完成的旧操作"""
+        with self._lock:
+            cutoff_time = datetime.now().timestamp() - max_age_seconds
+            to_remove = []
+
+            for op_id, context in self._contexts.items():
+                if context.status in ["completed", "cancelled", "failed"]:
+                    if context.end_time and context.end_time.timestamp() < cutoff_time:
+                        to_remove.append(op_id)
+
+            for op_id in to_remove:
+                del self._contexts[op_id]
+
+
+# 全局取消追踪器实例
+_global_cancellation_tracker = CancellationTracker()
+
+
+def get_cancellation_tracker() -> CancellationTracker:
+    """获取全局取消追踪器实例"""
+    return _global_cancellation_tracker
+
+
+def create_operation_context(operation_name: str, operation_type: str,
+                           dependencies: Optional[List[str]] = None,
+                           metadata: Optional[Dict[str, Any]] = None) -> str:
+    """创建操作上下文的便捷函数
+
+    Args:
+        operation_name: 操作名称
+        operation_type: 操作类型
+        dependencies: 依赖的操作ID列表
+        metadata: 扩展元数据
+
+    Returns:
+        operation_id: 操作唯一标识
+    """
+    return _global_cancellation_tracker.start_operation(
+        operation_name, operation_type, dependencies, metadata
+    )
+
+
+# =============================================================================
+# 取消类型智能识别组件
+# =============================================================================
+
+
+@dataclass
+class CancellationAnalysis:
+    """取消分析结果"""
+    primary_type: CancellationType                           # 最可能的取消类型
+    confidence: float                                       # 置信度 (0.0-1.0)
+    reasoning: str                                          # 分析推理过程
+    secondary_types: List[Tuple[CancellationType, float]] = field(default_factory=list)  # 次要可能性
+    evidence: Dict[str, Any] = field(default_factory=dict) # 支持证据
+    recommendations: List[str] = field(default_factory=list) # 修复建议
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            "primary_type": self.primary_type.value if hasattr(self.primary_type, 'value') else str(self.primary_type),
+            "confidence": self.confidence,
+            "reasoning": self.reasoning,
+            "secondary_types": [(ct.value if hasattr(ct, 'value') else str(ct), conf) for ct, conf in self.secondary_types],
+            "evidence": self.evidence,
+            "recommendations": self.recommendations,
+        }
+
+
+class CancellationAnalyzer:
+    """智能取消类型分析器 - 基于上下文信息进行取消类型判定"""
+
+    def __init__(self):
+        # 分析规则权重配置
+        self._rule_weights = {
+            # 时间模式规则
+            "immediate_cancel": 0.9,    # 立即取消（<1秒）
+            "quick_cancel": 0.7,        # 快速取消（1-5秒）
+            "delayed_cancel": 0.5,      # 延迟取消（>30秒）
+            "cascade_cancel": 0.8,      # 级联取消
+
+            # 错误模式规则
+            "timeout_error": 0.95,      # 明确的超时错误
+            "connection_error": 0.85,   # 连接错误
+            "resource_error": 0.8,      # 资源相关错误
+
+            # 依赖关系规则
+            "dependency_failure": 0.9,  # 依赖失败
+            "cascade_cancel": 0.8,      # 级联取消
+
+            # 系统状态规则
+            "system_shutdown": 0.95,    # 系统关闭信号
+            "resource_exhaustion": 0.85, # 资源耗尽
+            "deadlock_pattern": 0.75,   # 死锁模式
+        }
+
+    def analyze_cancellation(self, context: CancellationContext,
+                           related_contexts: Optional[Dict[str, CancellationContext]] = None) -> CancellationAnalysis:
+        """分析取消上下文并确定最可能的取消类型
+
+        Args:
+            context: 要分析的取消上下文
+            related_contexts: 相关的其他上下文（依赖、父子关系等）
+
+        Returns:
+            CancellationAnalysis: 分析结果
+        """
+        related_contexts = related_contexts or {}
+
+        # 1. 基于直接证据的快速判定
+        quick_analysis = self._quick_evidence_analysis(context, related_contexts)
+        if quick_analysis.confidence >= 0.9:
+            return quick_analysis
+
+        # 2. 基于时间模式的分析
+        time_analysis = self._time_pattern_analysis(context)
+
+        # 3. 基于错误信息的分析
+        error_analysis = self._error_pattern_analysis(context)
+
+        # 4. 基于依赖关系的分析
+        dependency_analysis = self._dependency_analysis(context, related_contexts)
+
+        # 5. 基于系统状态的分析
+        system_analysis = self._system_state_analysis(context)
+
+        # 6. 综合所有分析结果
+        return self._combine_analyses([
+            quick_analysis, time_analysis, error_analysis,
+            dependency_analysis, system_analysis
+        ])
+
+    def _quick_evidence_analysis(self, context: CancellationContext,
+                               related_contexts: Dict[str, CancellationContext]) -> CancellationAnalysis:
+        """基于直接证据的快速分析"""
+        evidence = {}
+        reasoning_parts = []
+
+        # 检查明确的超时错误
+        if context.error_message and "超时" in context.error_message:
+            evidence["timeout_in_message"] = True
+            reasoning_parts.append("错误信息包含超时关键词")
+            return CancellationAnalysis(
+                primary_type=CancellationType.TIMEOUT_CANCELLED,
+                confidence=self._rule_weights["timeout_error"],
+                reasoning="; ".join(reasoning_parts),
+                evidence=evidence,
+                recommendations=["检查网络连接", "调整超时设置", "优化系统性能"]
+            )
+
+        # 检查连接错误
+        if context.error_message and any(keyword in context.error_message.lower()
+                                       for keyword in ["连接", "connection", "pipe", "ipc"]):
+            evidence["connection_in_message"] = True
+            reasoning_parts.append("错误信息包含连接相关关键词")
+            return CancellationAnalysis(
+                primary_type=CancellationType.IPC_TIMEOUT,
+                confidence=self._rule_weights["connection_error"],
+                reasoning="; ".join(reasoning_parts),
+                evidence=evidence,
+                recommendations=["检查IPC管道状态", "验证进程间通信", "重启相关服务"]
+            )
+
+        # 检查系统关闭信号
+        if context.error_message and any(keyword in context.error_message.lower()
+                                       for keyword in ["shutdown", "关闭", "退出", "interrupt"]):
+            evidence["shutdown_signal"] = True
+            reasoning_parts.append("检测到系统关闭信号")
+            return CancellationAnalysis(
+                primary_type=CancellationType.SYSTEM_SHUTDOWN,
+                confidence=self._rule_weights["system_shutdown"],
+                reasoning="; ".join(reasoning_parts),
+                evidence=evidence,
+                recommendations=["确认是否为用户主动操作", "检查系统状态"]
+            )
+
+        # 检查资源耗尽
+        if context.error_message and any(keyword in context.error_message.lower()
+                                       for keyword in ["内存", "memory", "磁盘", "disk", "cpu"]):
+            evidence["resource_keyword"] = True
+            reasoning_parts.append("错误信息包含资源相关关键词")
+            return CancellationAnalysis(
+                primary_type=CancellationType.RESOURCE_EXHAUSTED,
+                confidence=self._rule_weights["resource_exhaustion"],
+                reasoning="; ".join(reasoning_parts),
+                evidence=evidence,
+                recommendations=["检查系统资源使用情况", "优化内存管理", "清理磁盘空间"]
+            )
+
+        return CancellationAnalysis(
+            primary_type=CancellationType.UNKNOWN,
+            confidence=0.0,
+            reasoning="无明确的直接证据",
+            evidence=evidence
+        )
+
+    def _time_pattern_analysis(self, context: CancellationContext) -> CancellationAnalysis:
+        """基于时间模式的分析"""
+        if not context.end_time or not context.start_time:
+            return CancellationAnalysis(
+                primary_type=CancellationType.UNKNOWN,
+                confidence=0.0,
+                reasoning="缺少时间信息"
+            )
+
+        duration = (context.end_time - context.start_time).total_seconds()
+
+        if duration < 1.0:
+            return CancellationAnalysis(
+                primary_type=CancellationType.USER_CANCELLED,
+                confidence=self._rule_weights["immediate_cancel"],
+                reasoning=f"操作持续时间仅 {duration:.1f} 秒，符合用户主动取消模式",
+                evidence={"duration": duration, "pattern": "immediate"},
+                recommendations=["确认是否为用户主动中断", "检查是否有意外的取消信号"]
+            )
+        elif duration < 5.0:
+            return CancellationAnalysis(
+                primary_type=CancellationType.USER_CANCELLED,
+                confidence=self._rule_weights["quick_cancel"],
+                reasoning=f"操作持续时间 {duration:.1f} 秒，可能为用户快速取消",
+                evidence={"duration": duration, "pattern": "quick"},
+                recommendations=["检查用户操作日志", "验证取消时机"]
+            )
+        elif duration > 120.0:  # 2分钟
+            return CancellationAnalysis(
+                primary_type=CancellationType.TIMEOUT_CANCELLED,
+                confidence=self._rule_weights["delayed_cancel"],
+                reasoning=f"操作持续时间 {duration:.1f} 秒，符合长时间运行后超时取消模式",
+                evidence={"duration": duration, "pattern": "delayed"},
+                recommendations=["检查超时设置", "优化操作性能", "考虑分阶段执行"]
+            )
+
+        return CancellationAnalysis(
+            primary_type=CancellationType.UNKNOWN,
+            confidence=0.0,
+            reasoning="时间模式不明确",
+            evidence={"duration": duration}
+        )
+
+    def _error_pattern_analysis(self, context: CancellationContext) -> CancellationAnalysis:
+        """基于错误信息的模式分析"""
+        if not context.error_message and not context.stack_trace:
+            return CancellationAnalysis(
+                primary_type=CancellationType.UNKNOWN,
+                confidence=0.0,
+                reasoning="无错误信息"
+            )
+
+        error_text = (context.error_message or "") + (context.stack_trace or "")
+
+        # 分析常见的错误模式
+        patterns = {
+            CancellationType.PROCESS_CRASHED: ["crash", "崩溃", "terminated", "exit code"],
+            CancellationType.DEPENDENCY_FAILED: ["dependency", "依赖", "not found", "unavailable"],
+            CancellationType.CONFIGURATION_ERROR: ["config", "配置", "invalid", "missing"],
+            CancellationType.DATABASE_TIMEOUT: ["database", "数据库", "query timeout"],
+            CancellationType.NETWORK_TIMEOUT: ["network", "网络", "connection timeout"],
+        }
+
+        for cancel_type, keywords in patterns.items():
+            if any(keyword in error_text.lower() for keyword in keywords):
+                return CancellationAnalysis(
+                    primary_type=cancel_type,
+                    confidence=0.7,  # 中等置信度，需要与其他分析结合
+                    reasoning=f"错误信息匹配 {cancel_type.value} 模式",
+                    evidence={"matched_keywords": [k for k in keywords if k in error_text.lower()]},
+                    recommendations=self._get_recommendations_for_type(cancel_type)
+                )
+
+        return CancellationAnalysis(
+            primary_type=CancellationType.EXCEPTION_OCCURRED,
+            confidence=0.4,
+            reasoning="检测到异常但无法确定具体类型",
+            evidence={"error_text_length": len(error_text)}
+        )
+
+    def _dependency_analysis(self, context: CancellationContext,
+                           related_contexts: Dict[str, CancellationContext]) -> CancellationAnalysis:
+        """基于依赖关系的分析"""
+        if not context.dependencies:
+            return CancellationAnalysis(
+                primary_type=CancellationType.UNKNOWN,
+                confidence=0.0,
+                reasoning="无依赖关系信息"
+            )
+
+        failed_dependencies = []
+        for dep_id in context.dependencies:
+            if dep_id in related_contexts:
+                dep_context = related_contexts[dep_id]
+                if dep_context.status == "cancelled":
+                    failed_dependencies.append(dep_context)
+
+        if failed_dependencies:
+            return CancellationAnalysis(
+                primary_type=CancellationType.DEPENDENCY_FAILED,
+                confidence=self._rule_weights["dependency_failure"],
+                reasoning=f"发现 {len(failed_dependencies)} 个依赖操作失败",
+                evidence={"failed_dependencies": [ctx.operation_name for ctx in failed_dependencies]},
+                recommendations=["检查依赖服务的状态", "修复依赖问题", "考虑降级策略"]
+            )
+
+        # 检查级联取消模式（多个相关操作同时取消）
+        cancelled_related = [
+            ctx for ctx in related_contexts.values()
+            if ctx.status == "cancelled" and ctx.end_time is not None and context.end_time is not None and
+            abs((ctx.end_time - context.end_time).total_seconds()) < 5.0  # 5秒内
+        ]
+
+        if len(cancelled_related) > 2:
+            return CancellationAnalysis(
+                primary_type=CancellationType.CASCADE_CANCEL,
+                confidence=self._rule_weights["cascade_cancel"],
+                reasoning=f"检测到级联取消模式，{len(cancelled_related)} 个相关操作同时取消",
+                evidence={"cascade_count": len(cancelled_related)},
+                recommendations=["调查根本原因", "检查系统稳定性", "实施故障隔离"]
+            )
+
+        return CancellationAnalysis(
+            primary_type=CancellationType.UNKNOWN,
+            confidence=0.0,
+            reasoning="依赖关系分析未发现问题"
+        )
+
+    def _system_state_analysis(self, context: CancellationContext) -> CancellationAnalysis:
+        """基于系统状态的分析"""
+        # 这里可以集成更多的系统状态检查
+        # 目前主要基于元数据进行分析
+
+        if context.metadata:
+            # 检查是否标记为死锁
+            if context.metadata.get("deadlock_detected"):
+                return CancellationAnalysis(
+                    primary_type=CancellationType.DEADLOCK_DETECTED,
+                    confidence=self._rule_weights["deadlock_pattern"],
+                    reasoning="元数据标记为死锁检测",
+                    evidence={"metadata_flag": "deadlock_detected"},
+                    recommendations=["检查线程状态", "优化并发逻辑", "增加超时保护"]
+                )
+
+            # 检查资源压力
+            if context.metadata.get("high_memory_usage") or context.metadata.get("high_cpu_usage"):
+                return CancellationAnalysis(
+                    primary_type=CancellationType.RESOURCE_CONSTRAINT,
+                    confidence=0.6,
+                    reasoning="检测到系统资源压力",
+                    evidence={"resource_pressure": True},
+                    recommendations=["监控系统资源", "优化资源使用", "考虑负载均衡"]
+                )
+
+        return CancellationAnalysis(
+            primary_type=CancellationType.UNKNOWN,
+            confidence=0.0,
+            reasoning="系统状态分析未发现异常"
+        )
+
+    def _combine_analyses(self, analyses: List[CancellationAnalysis]) -> CancellationAnalysis:
+        """综合多个分析结果"""
+        if not analyses:
+            return CancellationAnalysis(
+                primary_type=CancellationType.UNKNOWN,
+                confidence=0.0,
+                reasoning="无分析结果"
+            )
+
+        # 过滤掉低置信度的分析
+        valid_analyses = [a for a in analyses if a.confidence > 0.0]
+
+        if not valid_analyses:
+            return CancellationAnalysis(
+                primary_type=CancellationType.UNKNOWN,
+                confidence=0.0,
+                reasoning="所有分析结果置信度过低"
+            )
+
+        # 按置信度排序
+        valid_analyses.sort(key=lambda x: x.confidence, reverse=True)
+
+        # 主要结果
+        primary = valid_analyses[0]
+
+        # 次要结果（置信度>0.3的）
+        secondary = [
+            (a.primary_type, a.confidence)
+            for a in valid_analyses[1:]
+            if a.confidence > 0.3
+        ][:3]  # 最多3个次要结果
+
+        # 合并推理和证据
+        all_reasoning = [f"{a.primary_type.value}: {a.reasoning}" for a in valid_analyses[:3]]
+        combined_evidence = {}
+        for analysis in valid_analyses[:3]:
+            combined_evidence.update(analysis.evidence)
+
+        # 合并建议
+        all_recommendations = []
+        for analysis in valid_analyses:
+            all_recommendations.extend(analysis.recommendations)
+        unique_recommendations = list(dict.fromkeys(all_recommendations))  # 去重
+
+        return CancellationAnalysis(
+            primary_type=primary.primary_type,
+            confidence=min(primary.confidence + 0.1, 1.0),  # 综合分析略微提升置信度
+            secondary_types=secondary,
+            reasoning="综合分析: " + "; ".join(all_reasoning),
+            evidence=combined_evidence,
+            recommendations=unique_recommendations
+        )
+
+    def _get_recommendations_for_type(self, cancel_type: CancellationType) -> List[str]:
+        """根据取消类型获取修复建议"""
+        recommendations_map = {
+            CancellationType.TIMEOUT_CANCELLED: ["调整超时设置", "优化网络连接", "检查系统性能"],
+            CancellationType.IPC_TIMEOUT: ["检查IPC管道状态", "验证进程通信", "重启相关服务"],
+            CancellationType.PROCESS_CRASHED: ["检查进程日志", "分析崩溃原因", "实施进程监控"],
+            CancellationType.DEPENDENCY_FAILED: ["检查依赖服务状态", "修复依赖问题", "考虑服务降级"],
+            CancellationType.RESOURCE_EXHAUSTED: ["监控系统资源", "优化内存使用", "清理存储空间"],
+            CancellationType.DEADLOCK_DETECTED: ["检查线程状态", "优化并发逻辑", "增加超时保护"],
+            CancellationType.CONFIGURATION_ERROR: ["检查配置文件", "验证配置参数", "更新配置文档"],
+        }
+
+        return recommendations_map.get(cancel_type, ["进一步调查根本原因"])
+
+
+# 全局取消分析器实例
+_global_cancellation_analyzer = CancellationAnalyzer()
+
+
+def get_cancellation_analyzer() -> CancellationAnalyzer:
+    """获取全局取消分析器实例"""
+    return _global_cancellation_analyzer
+
+
+def analyze_cancellation(context: CancellationContext,
+                        related_contexts: Optional[Dict[str, CancellationContext]] = None) -> CancellationAnalysis:
+    """分析取消事件的便捷函数
+
+    Args:
+        context: 要分析的取消上下文
+        related_contexts: 相关的上下文
+
+    Returns:
+        CancellationAnalysis: 分析结果
+    """
+    return _global_cancellation_analyzer.analyze_cancellation(context, related_contexts)
+
+
+# =============================================================================
+# 实时状态反馈系统
+# =============================================================================
+
+
+@dataclass
+class StatusUpdate:
+    """状态更新信息"""
+    operation_id: str                                          # 操作ID
+    operation_name: str                                       # 操作名称
+    status: str                                              # 状态: running, completed, failed, cancelled
+    progress_percentage: float = 0.0                         # 进度百分比 (0.0-100.0)
+    current_step: str = ""                                   # 当前步骤描述
+    estimated_remaining_time: Optional[float] = None         # 预估剩余时间(秒)
+    message: str = ""                                        # 状态消息
+    metadata: Dict[str, Any] = field(default_factory=dict)   # 扩展元数据
+    timestamp: datetime = field(default_factory=datetime.now) # 更新时间戳
+
+
+@dataclass
+class ProgressEstimate:
+    """进度预估信息"""
+    total_operations: int                                     # 总操作数
+    completed_operations: int                                # 已完成操作数
+    current_operation_progress: float                        # 当前操作进度 (0.0-1.0)
+    estimated_total_time: Optional[float] = None             # 预估总时间(秒)
+    estimated_remaining_time: Optional[float] = None         # 预估剩余时间(秒)
+    bottleneck_operation: Optional[str] = None              # 瓶颈操作名称
+
+
+class StatusFeedbackCallback(Protocol):
+    """状态反馈回调协议"""
+    def on_status_update(self, update: StatusUpdate) -> None:
+        """状态更新回调
+
+        Args:
+            update: 状态更新信息
+        """
+        ...
+
+
+class StatusFeedbackManager:
+    """实时状态反馈管理器"""
+
+    def __init__(self):
+        self._callbacks: List[StatusFeedbackCallback] = []
+        self._operation_progress: Dict[str, List[StatusUpdate]] = {}
+        self._lock = Lock()
+        self._last_ui_update = 0.0
+        self._ui_update_interval = 0.5  # UI更新间隔(秒)
+
+    def register_callback(self, callback: StatusFeedbackCallback) -> None:
+        """注册状态反馈回调"""
+        with self._lock:
+            if callback not in self._callbacks:
+                self._callbacks.append(callback)
+
+    def unregister_callback(self, callback: StatusFeedbackCallback) -> None:
+        """取消注册状态反馈回调"""
+        with self._lock:
+            if callback in self._callbacks:
+                self._callbacks.remove(callback)
+
+    def update_status(self, operation_id: str, operation_name: str,
+                     status: str, progress_percentage: float = 0.0,
+                     current_step: str = "", estimated_remaining_time: Optional[float] = None,
+                     message: str = "", metadata: Optional[Dict[str, Any]] = None) -> None:
+        """更新操作状态
+
+        Args:
+            operation_id: 操作ID
+            operation_name: 操作名称
+            status: 状态
+            progress_percentage: 进度百分比
+            current_step: 当前步骤
+            estimated_remaining_time: 预估剩余时间
+            message: 状态消息
+            metadata: 扩展元数据
+        """
+        update = StatusUpdate(
+            operation_id=operation_id,
+            operation_name=operation_name,
+            status=status,
+            progress_percentage=progress_percentage,
+            current_step=current_step,
+            estimated_remaining_time=estimated_remaining_time,
+            message=message,
+            metadata=metadata or {}
+        )
+
+        with self._lock:
+            # 记录操作进度历史
+            if operation_id not in self._operation_progress:
+                self._operation_progress[operation_id] = []
+            self._operation_progress[operation_id].append(update)
+
+            # 限制历史记录数量（保留最近10个）
+            if len(self._operation_progress[operation_id]) > 10:
+                self._operation_progress[operation_id] = self._operation_progress[operation_id][-10:]
+
+        # 控制UI更新频率
+        current_time = time.time()
+        if current_time - self._last_ui_update >= self._ui_update_interval or status in ["completed", "failed", "cancelled"]:
+            self._notify_callbacks(update)
+            self._last_ui_update = current_time
+
+    def get_operation_progress(self, operation_id: str) -> List[StatusUpdate]:
+        """获取操作进度历史"""
+        with self._lock:
+            return self._operation_progress.get(operation_id, []).copy()
+
+    def get_all_active_operations(self) -> Dict[str, StatusUpdate]:
+        """获取所有活跃操作的最新状态"""
+        with self._lock:
+            active_ops = {}
+            for op_id, updates in self._operation_progress.items():
+                if updates and updates[-1].status == "running":
+                    active_ops[op_id] = updates[-1]
+            return active_ops
+
+    def estimate_overall_progress(self, operation_ids: List[str]) -> ProgressEstimate:
+        """预估整体进度
+
+        Args:
+            operation_ids: 要预估的操作ID列表
+
+        Returns:
+            ProgressEstimate: 进度预估
+        """
+        with self._lock:
+            total_ops = len(operation_ids)
+            completed_ops = 0
+            current_progress = 0.0
+            total_estimated_time = 0.0
+            bottleneck_remaining = 0.0
+            bottleneck_name = None
+
+            for op_id in operation_ids:
+                updates = self._operation_progress.get(op_id, [])
+                if not updates:
+                    continue
+
+                latest = updates[-1]
+
+                if latest.status == "completed":
+                    completed_ops += 1
+                    current_progress += 1.0
+                elif latest.status == "running":
+                    current_progress += latest.progress_percentage / 100.0
+                    if latest.estimated_remaining_time:
+                        total_estimated_time += latest.estimated_remaining_time
+                        if latest.estimated_remaining_time > bottleneck_remaining:
+                            bottleneck_remaining = latest.estimated_remaining_time
+                            bottleneck_name = latest.operation_name
+                # failed/cancelled 操作不计入进度
+
+            return ProgressEstimate(
+                total_operations=total_ops,
+                completed_operations=completed_ops,
+                current_operation_progress=current_progress / max(total_ops, 1),
+                estimated_total_time=total_estimated_time if total_estimated_time > 0 else None,
+                estimated_remaining_time=total_estimated_time if total_estimated_time > 0 else None,
+                bottleneck_operation=bottleneck_name
+            )
+
+    def _notify_callbacks(self, update: StatusUpdate) -> None:
+        """通知所有回调"""
+        for callback in self._callbacks:
+            try:
+                callback.on_status_update(update)
+            except Exception as e:
+                # 避免回调异常影响主流程
+                print(f"Status feedback callback error: {e}")
+
+
+class LogBasedStatusCallback:
+    """基于日志的状态反馈回调"""
+
+    def __init__(self, logger: logging.Logger, scenario: str = "application_startup"):
+        self.logger = logger
+        self.scenario = scenario
+
+    def on_status_update(self, update: StatusUpdate) -> None:
+        """状态更新回调 - 输出到日志"""
+        if update.status == "running":
+            if update.progress_percentage > 0:
+                progress_msg = f"{update.progress_percentage:.1f}%"
+                if update.estimated_remaining_time:
+                    progress_msg += f" (剩余≈{update.estimated_remaining_time:.1f}s)"
+                if update.current_step:
+                    progress_msg += f" - {update.current_step}"
+
+                self.logger.info(
+                    f"[STATUS] {update.operation_name}: {progress_msg}",
+                    extra={
+                        "log_type": "PROGRESS",
+                        "scenario": self.scenario,
+                        "operation_id": update.operation_id,
+                        "progress": update.progress_percentage,
+                        "remaining_time": update.estimated_remaining_time
+                    }
+                )
+            elif update.message:
+                self.logger.info(
+                    f"[STATUS] {update.operation_name}: {update.message}",
+                    extra={
+                        "log_type": "SYSTEM",
+                        "scenario": self.scenario,
+                        "operation_id": update.operation_id
+                    }
+                )
+        elif update.status in ["completed", "failed", "cancelled"]:
+            status_emoji = "✅" if update.status == "completed" else "❌" if update.status == "failed" else "⚠️"
+            self.logger.info(
+                f"[STATUS] {status_emoji} {update.operation_name}: {update.status.upper()}",
+                extra={
+                    "log_type": "SYSTEM" if update.status == "completed" else "ALERT",
+                    "scenario": self.scenario,
+                    "operation_id": update.operation_id,
+                    "final_status": update.status
+                }
+            )
+
+
+# 全局状态反馈管理器实例
+_global_status_feedback_manager = StatusFeedbackManager()
+
+
+def get_status_feedback_manager() -> StatusFeedbackManager:
+    """获取全局状态反馈管理器实例"""
+    return _global_status_feedback_manager
+
+
+def create_log_based_status_callback(logger: logging.Logger, scenario: str = "application_startup") -> LogBasedStatusCallback:
+    """创建基于日志的状态反馈回调
+
+    Args:
+        logger: 日志记录器
+        scenario: 场景标识
+
+    Returns:
+        LogBasedStatusCallback: 日志状态回调实例
+    """
+    return LogBasedStatusCallback(logger, scenario)
+
+
+def update_operation_status(operation_id: str, operation_name: str, status: str,
+                           progress_percentage: float = 0.0, current_step: str = "",
+                           estimated_remaining_time: Optional[float] = None,
+                           message: str = "", metadata: Optional[Dict[str, Any]] = None) -> None:
+    """更新操作状态的便捷函数
+
+    Args:
+        operation_id: 操作ID
+        operation_name: 操作名称
+        status: 状态
+        progress_percentage: 进度百分比
+        current_step: 当前步骤
+        estimated_remaining_time: 预估剩余时间
+        message: 状态消息
+        metadata: 扩展元数据
+    """
+    _global_status_feedback_manager.update_status(
+        operation_id, operation_name, status, progress_percentage,
+        current_step, estimated_remaining_time, message, metadata
+    )
+
+
+# =============================================================================
 # 导出
 # =============================================================================
 
@@ -3752,6 +4948,29 @@ __all__ = [
     "stage_log",
     "alert_log",
     "progress_log",
+    # 超时与告警辅助工具
+    "TimeoutGuard",
+    "create_timeout_guard",
+    # 取消识别与上下文追踪系统
+    "CancellationType",
+    "CancellationContext",
+    "CancellationTracker",
+    "get_cancellation_tracker",
+    "create_operation_context",
+    # 取消类型智能识别组件
+    "CancellationAnalysis",
+    "CancellationAnalyzer",
+    "get_cancellation_analyzer",
+    "analyze_cancellation",
+    # 实时状态反馈系统
+    "StatusUpdate",
+    "ProgressEstimate",
+    "StatusFeedbackCallback",
+    "StatusFeedbackManager",
+    "LogBasedStatusCallback",
+    "get_status_feedback_manager",
+    "create_log_based_status_callback",
+    "update_operation_status",
     # 核心类
     "LoggingHub",
     "OrderedLogQueue",

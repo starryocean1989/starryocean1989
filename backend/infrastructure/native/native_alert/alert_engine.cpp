@@ -94,7 +94,7 @@ py::list evaluate_rules(const py::list &records, const py::list &rules) {
     return alerts;
 }
 
-PYBIND11_MODULE(alert_native, m) {
+PYBIND11_MODULE(native_alert, m) {
     m.doc() = "Native AlertEngine evaluator for simple threshold/comparison rules";
     m.def("evaluate_rules", &evaluate_rules, py::arg("records"), py::arg("rules"),
           "Evaluate rules over records, returning alert dicts");

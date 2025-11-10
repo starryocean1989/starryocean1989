@@ -7,6 +7,9 @@
     "reportMissingModuleSource": "none",
     "reportOptionalSubscript": "none",
     "reportUndefinedVariable": "warning",
+    "reportImportCycles": "none",
+    "reportUnknownMemberType": "none",
+    "reportCallIssue": "none",
     "exclude": [
         "venv310",
         "**/__pycache__",

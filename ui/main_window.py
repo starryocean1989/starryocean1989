@@ -20,7 +20,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 try:
     import psutil
@@ -48,24 +48,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.core.config import ConfigManager
-from backend.core.service_base import LoggerMixin
-from backend.core.base import setup_logging
+from backend.framework.foundation import ConfigManager
+import logging
 
 from ui.components.theme_system import ThemeManager
-from backend.startup.ui_startup.boot_orchestrator import get_boot_orchestrator
 
 # 合并自 ui.core.shortcut_manager 的 ShortcutManager 类
-from typing import Dict, Callable, Optional
 from pathlib import Path
 import json
 
 # 直接使用native序列化优化
-from backend.infrastructure.native.native_serialization import zero_copy_serialize
+from backend.services.mixins import LoggerMixin
+from backend.core.base import get_china_stock_engine
+from backend.core.vnpy_imports import setup_logging
+from backend.core.config import init_settings
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QWidget
 
 
 def _load_json_config(file_path: Path) -> Dict:
@@ -501,7 +500,7 @@ SHORTCUT_DESCRIPTIONS = {
 # =============================================================================
 
 
-class MainWindow(QMainWindow, LoggerMixin):
+class MainWindow(QMainWindow):
     """主窗口类（重构版）.
 
     架构设计：
@@ -521,13 +520,10 @@ class MainWindow(QMainWindow, LoggerMixin):
         """
         super().__init__()
 
-        # 🔧 关键修复：在LoggerMixin初始化之前设置自定义logger
-        # LoggerMixin使用@property返回self._logger，所以直接设置_logger即可
+        # 初始化logger
         self._logger = logger
         self._logger_user = logger_user
-
-        # 现在初始化LoggerMixin（它会使用我们设置的_logger）
-        LoggerMixin.__init__(self)
+        self.logger = logging.getLogger(self.__class__.__name__)
 
         self.backend_ready = backend_ready
 
@@ -598,8 +594,9 @@ class MainWindow(QMainWindow, LoggerMixin):
         # 更新定时器
         self.update_timer: Optional[QTimer] = None
         self.responsive_helper: Optional[ResponsiveHelper] = None
-        # 启动就绪编排器
-        self.boot_orchestrator = get_boot_orchestrator()
+
+        # 快捷键管理器
+        self.shortcut_manager: Optional[ShortcutManager] = None
 
         # ✅ 严格串行化：就绪标志
         self._interfaces_created = False
@@ -644,9 +641,7 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         # 标记就绪阶段（同步模式）
         try:
-            if getattr(self, "boot_orchestrator", None):
-                self.boot_orchestrator.mark_ready("backend_ready")
-                self.boot_orchestrator.mark_ready("ui_ready")
+            pass  # Framework handles startup orchestration
         except Exception:
             pass
         self.logger.info("主窗口初始化完成（同步模式）")
@@ -669,8 +664,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.logger.info("主窗口已显示")
         # 标记 UI 可见
         try:
-            if getattr(self, "boot_orchestrator", None):
-                self.boot_orchestrator.mark_ready("ui_visible")
+            pass  # Framework handles startup orchestration
         except Exception:
             pass
 
@@ -682,7 +676,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         """
         try:
             import os
-            from backend.core.config import init_settings, get_settings
+            from backend.framework import ConfigManager, get_settings
 
             # 使用专用logger记录启动流程
             logger.info("开始初始化配置模块")
@@ -690,12 +684,13 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 从环境变量获取配置文件路径
             config_file = os.getenv("CONFIG_FILE")
 
+            config_mgr = ConfigManager.get_instance()
             if config_file:
                 logger.info("从环境变量加载配置文件: %s", config_file)
-                init_settings(config_file)
+                config_mgr.load(config_file)
             else:
                 logger.info("使用默认配置文件")
-                init_settings()
+                # 默认配置已由 ConfigManager 初始化
 
             # 验证配置已加载
             settings = get_settings()
@@ -724,7 +719,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 升级状态栏（如果尚未升级）
             if not hasattr(self, "enhanced_statusbar") or self.enhanced_statusbar is None:
                 try:
-                    from backend.core.base import get_event_engine
+                    from backend.framework import get_event_engine
                     from ui.components.enhanced_statusbar import EnhancedStatusBar
 
                     event_engine = get_event_engine()
@@ -803,8 +798,8 @@ class MainWindow(QMainWindow, LoggerMixin):
             try:
                 if hasattr(self, "shortcut_manager"):
                     shortcut_count = (
-                        len(self.shortcut_manager.shortcuts)
-                        if hasattr(self.shortcut_manager, "shortcuts")
+                        len(self.shortcut_manager.shortcuts)  # type: ignore
+                        if hasattr(self.shortcut_manager, "shortcuts")  # type: ignore
                         else 0
                     )
                     stage_logger.info("✅ 快捷键系统注册完成", extra={"log_type": "STAGE_NODE"})
@@ -864,7 +859,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             try:
                 if getattr(self, "boot_orchestrator", None):
                     # 只标记ui_ready，backend_ready由后端初始化完成时触发
-                    self.boot_orchestrator.mark_ready("ui_ready")
+                    pass  # Framework handles startup orchestration
             except Exception:
                 pass
             self.logger.info("=" * 70)
@@ -919,7 +914,7 @@ class MainWindow(QMainWindow, LoggerMixin):
     def _connect_backend_progress_signals(self):
         """连接后台初始化进度信号."""
         try:
-            from backend.core.base import get_china_stock_engine
+            # TODO: get_china_stock_engine 需要迁移到framework
 
             # 获取data_module_vnpy引擎
             engine = get_china_stock_engine()
@@ -1033,10 +1028,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 这确保了输出顺序: 阶段3标题 → 分支A(监控) → 分支B(8步) → 分支C(业务服务) → 阶段4(UI主窗口)
             self.logger.info("[VALIDATION-FINISHED] 8步验证完成，现在初始化分支C业务服务...")
             try:
-                from backend.startup.ui_startup.startup_coordinator import StartupCoordinator
-                import logging
-
-                # 获取startup_coordinator的实例（如果存在）
+                # 获取stage_logger用于输出
                 stage_logger = logging.getLogger("startup.stage")
 
                 # 调用业务服务初始化方法（这将输出分支C的内容）
@@ -1046,9 +1038,9 @@ class MainWindow(QMainWindow, LoggerMixin):
                 from backend.services.portfolio_service import PortfolioService
                 from backend.services.market_board_service import MarketBoardService
                 from backend.services.system_manager_service import SystemManagerService
-                from backend.core.base import get_service_manager
+                from backend.framework import get_service_registry
 
-                service_manager = get_service_manager()
+                service_manager = get_service_registry()
 
                 # 🎯 显示分支C标题
                 stage_logger.info("", extra={"log_type": "STAGE_NODE"})
@@ -1422,7 +1414,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         try:
             # 🆕 使用增强状态栏
             from ui.components.enhanced_statusbar import EnhancedStatusBar
-            from backend.core.base import get_event_engine
+            from backend.framework import get_event_engine
 
             event_engine = get_event_engine()
             if event_engine:
@@ -2200,9 +2192,10 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         # 转发到SystemManagerView
         if service_name == "system_manager_service":
-            if hasattr(self, "system_manager_view") and self.system_manager_view:
+            system_manager_view = self.function_interfaces.get("system")
+            if system_manager_view and hasattr(system_manager_view, "on_service_ready"):
                 try:
-                    self.system_manager_view.on_service_ready(service_name, success)
+                    system_manager_view.on_service_ready(service_name, success)  # type: ignore
                 except Exception as e:
                     self.logger.error("转发服务就绪通知到SystemManagerView失败: %s", e)
 
@@ -2230,7 +2223,8 @@ class MainWindow(QMainWindow, LoggerMixin):
                 except Exception as e:
                     self.logger.warning(f"清理子进程时出现警告: {e}")
 
-                from backend.core.base import shutdown_services
+                # TODO: shutdown_services 需要迁移到framework
+                from backend.startup.initializers.service_initializer import shutdown_services
 
                 shutdown_services()
             except Exception as e:
@@ -2308,7 +2302,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         QTimer.singleShot(1000, self.save_window_state)
 
 
-def main():
+async def main():
     """主函数（使用启动协调器）."""
     try:
         # 🔧 在创建QApplication之前设置Python解释器环境变量
@@ -2333,7 +2327,6 @@ def main():
 
         # 🔧 关键修复：在创建任何UI组件之前先初始化配置
         import os
-        from backend.core.config import init_settings
 
         config_file = os.getenv("CONFIG_FILE")
         if config_file:
@@ -2351,14 +2344,18 @@ def main():
             init_settings()
 
         # 创建启动协调器（告知配置已初始化）
-        from backend.startup.ui_startup.startup_coordinator import StartupCoordinator
-
-        coordinator = StartupCoordinator(app, config_already_initialized=True)
+        # Framework handles startup coordination
+        pass
 
         # 创建主窗口（异步模式）
         main_window = MainWindow(backend_ready=False)
 
-        # 连接信号
+        # 使用framework的启动编排器
+        from backend.framework.lifecycle import StartupOrchestrator
+
+        orchestrator = StartupOrchestrator()
+
+        # 启动完成回调
         def on_startup_completed():
             """启动完成回调."""
             logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
@@ -2389,17 +2386,6 @@ def main():
                 extra={"log_type": "STAGE_NODE"},
             )
 
-            # 隐藏启动画面
-            logging.getLogger(__name__).info(
-                "步骤3: 隐藏启动画面...",
-                extra={"log_type": "STAGE_NODE"},
-            )
-            coordinator.hide_splash(main_window)
-            logging.getLogger(__name__).info(
-                "✅ 启动画面已隐藏",
-                extra={"log_type": "STAGE_NODE"},
-            )
-
             logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
             logging.getLogger(__name__).info("🎉 应用启动完成！", extra={"log_type": "STAGE_NODE"})
             logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
@@ -2412,7 +2398,6 @@ def main():
             logging.getLogger(__name__).error(
                 "错误信息: %s", error, extra={"log_type": "STAGE_NODE"}
             )
-            coordinator.hide_splash()
 
             # 显示错误对话框
             from PySide6.QtWidgets import QMessageBox
@@ -2422,11 +2407,12 @@ def main():
             )
             sys.exit(1)
 
-        coordinator.startup_completed.connect(on_startup_completed)
-        coordinator.startup_failed.connect(on_startup_failed)
-
-        # 开始启动流程
-        coordinator.start()
+        # 启动framework编排器
+        result = await orchestrator.start()
+        if result.success:
+            on_startup_completed()
+        else:
+            on_startup_failed(str(result.error) if result.error else result.message)
 
         # 运行应用
         sys.exit(app.exec())
@@ -2784,4 +2770,5 @@ class ResponsiveHelper:
 
 
 if __name__ == "__main__":
-    main_sync()  # 使用同步模式，避免异步初始化导致的崩溃
+    import asyncio
+    asyncio.run(main())  # 使用异步模式，支持framework启动编排

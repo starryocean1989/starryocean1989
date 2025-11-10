@@ -156,7 +156,7 @@ if platform.system() == "Windows":
             def scan_quality(  # type: ignore[override]
                 df: pd.DataFrame, columns: Iterable[str]
             ) -> Dict[str, Any]:
-                return cast(Dict[str, Any], _native_scan_quality(df, list(columns)))
+                return cast(Dict[str, Any], _native_scan_quality(df, list(columns)))  # type: ignore[union-attr]
         else:
             scan_quality = _scan_quality_py  # type: ignore[assignment]
 
@@ -171,7 +171,7 @@ if platform.system() == "Windows":
             ) -> pd.DataFrame:
                 return cast(
                     pd.DataFrame,
-                    _native_validate_numeric(df, list(columns), fill_value=fill_value),
+                    _native_validate_numeric(df, list(columns), fill_value=fill_value),  # type: ignore[union-attr]
                 )
         else:
             validate_numeric = _validate_numeric_py  # type: ignore[assignment]
@@ -188,7 +188,7 @@ if platform.system() == "Windows":
             ) -> List[Dict[str, Any]]:
                 return cast(
                     List[Dict[str, Any]],
-                    _native_filter_symbols(
+                    _native_filter_symbols(  # type: ignore[union-attr]
                         list(records),
                         deduplicate=deduplicate,
                         drop_empty_code=drop_empty_code,

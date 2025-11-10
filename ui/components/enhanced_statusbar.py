@@ -498,7 +498,7 @@ class EnhancedStatusBar(QWidget):
             return
 
         try:
-            cpu_percent = float(psutil.cpu_percent(interval=0.1))
+            cpu_percent = float(psutil.cpu_percent(interval=0.1))  # type: ignore
             memory = psutil.virtual_memory()
             memory_percent = float(memory.percent)
 

@@ -1314,7 +1314,7 @@ class ServiceHealthChecker:
 
         # 1. 检查EventEngine
         try:
-            from backend.core.base import get_event_engine
+            from backend.framework import get_event_engine
 
             event_engine_instance = get_event_engine()
             if event_engine_instance and hasattr(event_engine_instance, "_active"):

@@ -45,8 +45,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.core.base import get_service_manager
-from backend.core.service_base import LoggerMixin
+from backend.framework import get_service_registry
+import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.services.strategy_center_service import StrategyCenterService
+    from backend.services.ai_assistant_service import AIAssistantService
+
 from ui.components.widgets import BaseWidget
 
 
@@ -79,7 +85,7 @@ except ImportError as e:
 
 
 # ==================== 编辑器标签组件 ====================
-class EditorTabWidget(QTabWidget, LoggerMixin):
+class EditorTabWidget(QTabWidget):
     """多标签编辑器组件.
 
     功能：
@@ -99,6 +105,7 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
     def __init__(self, parent: Optional[QWidget] = None):
         """初始化多标签编辑器."""
         super().__init__(parent)
+        self.logger = logging.getLogger(self.__class__.__name__)
 
         # 编辑器字典：{file_path: 编辑器组件}
         self.editors: Dict[str, Any] = {}
@@ -684,8 +691,10 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
 
 
 # ==================== 文件管理器组件 ====================
-class FileExplorerTree(QTreeWidget, LoggerMixin):
+class FileExplorerTree(QTreeWidget):
     """增强文件管理器树形组件."""
+
+    logger: logging.Logger
 
     # 信号
     file_double_clicked = Signal(str)  # 文件双击信号
@@ -700,6 +709,7 @@ class FileExplorerTree(QTreeWidget, LoggerMixin):
         """
         super().__init__(parent)
 
+        self.logger = logging.getLogger(self.__class__.__name__)
         self.root_dir = Path(root_dir).resolve()
 
         # 剪贴板（用于复制/剪切/粘贴）
@@ -1179,8 +1189,10 @@ class FileExplorerTree(QTreeWidget, LoggerMixin):
         QMessageBox.information(self, "成功", "粘贴成功")
 
 
-class FileExplorerWidget(QWidget, LoggerMixin):
+class FileExplorerWidget(QWidget):
     """文件管理器组件（包含搜索框）."""
+
+    logger: logging.Logger
 
     # 信号
     file_double_clicked = Signal(str)
@@ -1195,6 +1207,7 @@ class FileExplorerWidget(QWidget, LoggerMixin):
         """
         super().__init__(parent)
 
+        self.logger = logging.getLogger(self.__class__.__name__)
         self.root_dir = root_dir
 
         # 设置UI
@@ -1291,8 +1304,10 @@ class FileExplorerWidget(QWidget, LoggerMixin):
 
 
 # ==================== 搜索面板组件 ====================
-class SearchPanel(QWidget, LoggerMixin):
+class SearchPanel(QWidget):
     """全局搜索和替换面板."""
+
+    logger: logging.Logger
 
     # 信号
     file_selected = Signal(str, int)  # 选择文件和行号
@@ -1306,6 +1321,7 @@ class SearchPanel(QWidget, LoggerMixin):
         """
         super().__init__(parent)
 
+        self.logger = logging.getLogger(self.__class__.__name__)
         self.search_root = Path(search_root)
         self.search_results: List[Dict] = []
 
@@ -1617,8 +1633,10 @@ class SearchPanel(QWidget, LoggerMixin):
 
 
 # ==================== 终端组件 ====================
-class TerminalWidget(QWidget, LoggerMixin):
+class TerminalWidget(QWidget):
     """内置终端组件."""
+
+    logger: logging.Logger
 
     # 信号
     command_executed = Signal(str)  # 命令执行信号
@@ -1626,6 +1644,8 @@ class TerminalWidget(QWidget, LoggerMixin):
     def __init__(self, parent: Optional[QWidget] = None):
         """初始化终端组件."""
         super().__init__(parent)
+
+        self.logger = logging.getLogger(self.__class__.__name__)
 
         # 命令历史
         self.command_history: List[str] = []
@@ -1657,10 +1677,10 @@ class TerminalWidget(QWidget, LoggerMixin):
         self.output_text.setReadOnly(True)
         font = QFont("Consolas, Monaco, Courier New", 14)
         self.output_text.setFont(font)
-        
+
         # 设置文档使用HTML格式，通过HTML样式设置行高
         self.output_text.setAcceptRichText(True)
-        
+
         # 设置文档的默认样式，使用HTML格式增加行间距
         document = self.output_text.document()
         default_style = """
@@ -1681,7 +1701,7 @@ class TerminalWidget(QWidget, LoggerMixin):
         </style>
         """
         self.output_text.setHtml(default_style)
-        
+
         self.output_text.setStyleSheet(
             """
             QTextEdit {
@@ -1965,14 +1985,17 @@ class TerminalWidget(QWidget, LoggerMixin):
         self._execute_python(code)
 
 
-class StrategyCenter(BaseWidget, LoggerMixin):
+class StrategyCenter(BaseWidget):
     """策略中心主界面 - 现代IDE风格."""
 
     def __init__(self, parent=None):
         """初始化策略中心."""
+        # 初始化logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+
         # 初始化服务管理器
-        self.service_manager = get_service_manager()
-        self.strategy_service = None
+        self.service_manager = get_service_registry()
+        self.strategy_service: Optional["StrategyCenterService"] = None
 
         # 初始化UI组件
         self.file_explorer: Optional[FileExplorerWidget] = None
@@ -2016,7 +2039,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
     def _initialize_service(self):
         """获取策略中心服务."""
         try:
-            self.strategy_service = self.service_manager.get_service("strategy_center_service")
+            self.strategy_service = self.service_manager.get_service("strategy_center_service")  # type: ignore
             if self.strategy_service:
                 self.logger.info("策略中心服务获取成功")
             else:
@@ -2601,7 +2624,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
         # 获取AI助手服务
         try:
-            ai_service = self.service_manager.get_service("ai_assistant_service")
+            ai_service = self.service_manager.get_service("ai_assistant_service")  # type: ignore
             if not ai_service:
                 self.ai_response.append("❌ AI助手服务不可用\n")
                 return
@@ -2615,7 +2638,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                     context["strategy_code"] = current_code
 
             # 调用AI服务
-            response = ai_service.chat(message, context=context)
+            response = ai_service.chat(message, context=context)  # type: ignore
 
             if not response.get("success"):
                 error_msg = response.get("message", "未知错误")
@@ -2810,7 +2833,8 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         if not self.strategy_service or not hasattr(self, "current_backtest_task_id"):
             return
 
-        status = self.strategy_service.get_backtest_status(self.current_backtest_task_id)
+        if self.current_backtest_task_id:
+            status = self.strategy_service.get_backtest_status(self.current_backtest_task_id)
 
         if not status:
             return

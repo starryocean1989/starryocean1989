@@ -10,7 +10,7 @@ import logging
 import asyncio
 import time
 from pathlib import Path
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List
 from datetime import datetime
 
 # 添加项目根目录到路径
@@ -49,10 +49,10 @@ async def test_server(name: str, ip: str, port: int, timeout: float = 5.0) -> Tu
 
 
 async def test_servers_batch(
-    servers: list,
+    servers: List[Tuple[str, str, int]],
     timeout: float = 5.0,
     batch_size: int = 10
-) -> Dict[Tuple[str, str, int], Tuple[bool, float]]:
+) -> Tuple[Dict[Tuple[str, str, int], Tuple[bool, float]], float]:
     """批量测试服务器"""
     results = {}
     total = len(servers)

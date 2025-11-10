@@ -67,7 +67,7 @@ def test_compute_return_metrics():
     random.seed(42)
 
     pnl_series = [random.uniform(-500, 1000) for _ in range(100)]
-    equity_series = [1000000]  # 初始资金100万
+    equity_series = [1000000.0]  # 初始资金100万
 
     for pnl in pnl_series:
         equity_series.append(equity_series[-1] + pnl)

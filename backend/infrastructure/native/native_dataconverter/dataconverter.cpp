@@ -182,7 +182,7 @@ py::list convert_records_to_bar_fields(const py::list &records,
   return out;
 }
 
-PYBIND11_MODULE(dataconverter, m) {
+PYBIND11_MODULE(native_dataconverter, m) {
   m.doc() = "Native DataConverter for fast record-to-bar field conversion "
             "(vnpy-friendly)";
   m.def("convert_records_to_bar_fields", &convert_records_to_bar_fields,

@@ -12,7 +12,7 @@ if "native_calendar" not in sys.modules:
         def __init__(self, *args, **kwargs):
             pass
 
-    stub_module.NativeCalendar = _StubNativeCalendar
+    setattr(stub_module, "NativeCalendar", _StubNativeCalendar)
     sys.modules["native_calendar"] = stub_module
 
 

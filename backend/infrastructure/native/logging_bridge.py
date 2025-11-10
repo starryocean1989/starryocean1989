@@ -12,11 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from backend.infrastructure.system_vnpy.logging_system import (
-    LogType,
-    bind_logger_defaults,
-    get_alert_logger,
-)
+# 移除对 logging_system 的依赖，使用标准 logging
 
 __all__ = [
     "NativeLogLevel",
@@ -39,12 +35,8 @@ class NativeLogLevel:
 
 
 # 默认 logger 设置
-_logger = bind_logger_defaults(
-    logging.getLogger("backend.native.bridge"),
-    log_type=LogType.SYSTEM.value,
-    scenario="native.bridge",
-)
-_alert_logger = get_alert_logger("backend.native.bridge.alert", scenario="native.bridge")
+_logger = logging.getLogger("backend.native.bridge")
+_alert_logger = logging.getLogger("backend.native.bridge.alert")
 
 # 映射 C 端等级到 logging 模块等级
 _LEVEL_MAP: Dict[int, int] = {
@@ -78,11 +70,7 @@ def install_native_logging_bridge(
     global _logger, _alert_logger, _LEVEL_MAP, _custom_handler
 
     if logger is not None:
-        _logger = bind_logger_defaults(
-            logger,
-            log_type=LogType.SYSTEM.value,
-            scenario="native.bridge",
-        )
+        _logger = logger
     if alert_logger is not None:
         _alert_logger = alert_logger
     if level_map:
@@ -101,7 +89,7 @@ def _emit_log(record: Dict[str, Any]) -> None:
     python_level = _LEVEL_MAP.get(level, logging.INFO)
 
     extra = {
-        "log_type": LogType.SYSTEM.value,
+        "log_type": "SYSTEM",
         "scenario": component or "native.bridge",
         "native_module": component,
         "native_function": function,

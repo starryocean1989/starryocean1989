@@ -179,7 +179,7 @@ except ImportError:
 
 # 尝试导入原生统计扩展
 try:
-    from backend.infrastructure.native import (
+    from backend.infrastructure.native.native_statistics import (
         STATISTICS_AVAILABLE as NATIVE_STATISTICS_AVAILABLE,
         create_streaming_metric,
         StreamingMetricHandle,
@@ -198,41 +198,42 @@ except ImportError:
     HAS_WMI = False
     logger.debug("WMI模块未安装，将使用简化磁盘检测")
 
+# 临时禁用所有native扩展警告，避免启动阻塞
 # 记录原生能力降级提示
-if not NATIVE_PROCESS_METRICS_AVAILABLE:
-    alert_log(
-        "⚠️ native_process_metrics扩展不可用，系统监控将使用psutil回退",
-        scenario=MONITOR_LAUNCH_SCENARIO,
-        stacklevel=3,
-    )
+# if not NATIVE_PROCESS_METRICS_AVAILABLE:
+#     alert_log(
+#         "⚠️ native_process_metrics扩展不可用，系统监控将使用psutil回退",
+#         scenario=MONITOR_LAUNCH_SCENARIO,
+#         stacklevel=3,
+#     )
 
-if not NATIVE_NETPROBE_AVAILABLE:
-    alert_log(
-        "⚠️ native_netprobe扩展不可用，网络探测将使用Python回退",
-        scenario=MONITOR_LAUNCH_SCENARIO,
-        stacklevel=3,
-    )
+# if not NATIVE_NETPROBE_AVAILABLE:
+#     alert_log(
+#         "⚠️ native_netprobe扩展不可用，网络探测将使用Python回退",
+#         scenario=MONITOR_LAUNCH_SCENARIO,
+#         stacklevel=3,
+#     )
 
-if not SOCKET_METRICS_AVAILABLE:
-    alert_log(
-        "⚠️ native_socket_metrics扩展不可用，Socket缓冲监控将部分受限",
-        scenario=MONITOR_LAUNCH_SCENARIO,
-        stacklevel=3,
-    )
+# if not SOCKET_METRICS_AVAILABLE:
+#     alert_log(
+#         "⚠️ native_socket_metrics扩展不可用，Socket缓冲监控将部分受限",
+#         scenario=MONITOR_LAUNCH_SCENARIO,
+#         stacklevel=3,
+#     )
 
-if not NATIVE_STATISTICS_AVAILABLE:
-    alert_log(
-        "⚠️ native_statistics扩展不可用，流式统计将使用Python回退",
-        scenario=MONITOR_LAUNCH_SCENARIO,
-        stacklevel=3,
-    )
+# if not NATIVE_STATISTICS_AVAILABLE:
+#     alert_log(
+#         "⚠️ native_statistics扩展不可用，流式统计将使用Python回退",
+#         scenario=MONITOR_LAUNCH_SCENARIO,
+#         stacklevel=3,
+#     )
 
-if not HAS_WMI:
-    alert_log(
-        "⚠️ WMI 模块不可用，SMART 监控将受限",
-        scenario=MONITOR_LAUNCH_SCENARIO,
-        stacklevel=3,
-    )
+# if not HAS_WMI:
+#     alert_log(
+#         "⚠️ WMI 模块不可用，SMART 监控将受限",
+#         scenario=MONITOR_LAUNCH_SCENARIO,
+#         stacklevel=3,
+#     )
 
 # 网络测速功能使用自研模块（基于公共测速站点，无第三方依赖）
 # NetworkSpeedTester 类已集成到本文件中
@@ -2916,42 +2917,12 @@ class MonitoringProcessV2:
 
         logger.info("[IPC] ✅ 所有管道已配置完成")
 
-        # ✅ 优化：在后台异步创建硬件监控器（避免阻塞主循环）
+        # ✅ 优化：真正的后台异步创建硬件监控器（不阻塞主循环）
         if self.hardware_monitor is None:
-            logger.info("[INIT] 开始后台初始化硬件监控器（LibreHardwareMonitor可能需要30-60秒）...")
+            logger.info("[INIT] 开始真正的后台初始化硬件监控器（LibreHardwareMonitor可能需要30-60秒）...")
 
-            def _create_hardware_monitor():
-                """在后台线程中创建硬件监控器"""
-                import time
-
-                start_time = time.time()
-                try:
-                    monitor = HardwareMonitorFactory.create_monitor()
-                    elapsed = time.time() - start_time
-                    logger.info("[INIT] ✅ 硬件监控器初始化完成（耗时: %.1fs）", elapsed)
-                    return monitor
-                except Exception as e:
-                    logger.warning(
-                        "[INIT] ⚠️ 硬件监控器初始化失败: %s (硬件监控为可选功能，不影响核心功能)",
-                        e,
-                        exc_info=True,
-                        extra={"log_type": "SYSTEM"},
-                    )
-                    return None
-
-            # 在后台线程池中创建（不阻塞主循环）
-            loop = asyncio.get_event_loop()
-            self.hardware_monitor = await loop.run_in_executor(
-                self.executor, _create_hardware_monitor
-            )
-
-            if self.hardware_monitor:
-                logger.info("[INIT] ✅ 硬件监控器已就绪，功能完整")
-            else:
-                logger.warning(
-                    "[INIT] ⚠️ 硬件监控器初始化失败，系统将以降级模式运行（无硬件温度监控）",
-                    extra={"log_type": "SYSTEM"},
-                )
+            # 创建真正的异步任务，不阻塞当前协程
+            asyncio.create_task(self._init_hardware_monitor_async())
 
         # 初始化队列
         self.db_write_queue = asyncio.Queue()
@@ -2973,6 +2944,52 @@ class MonitoringProcessV2:
         # 不需要单独的日志代理
 
         logger.info("[INIT] ✅ 组件初始化完成")
+
+    async def _init_hardware_monitor_async(self):
+        """真正的异步硬件监控器初始化（不阻塞主循环）."""
+        try:
+            logger.info("[INIT-ASYNC] 开始异步初始化硬件监控器...")
+
+            def _create_hardware_monitor():
+                """在后台线程中创建硬件监控器"""
+                import time
+
+                start_time = time.time()
+                try:
+                    monitor = HardwareMonitorFactory.create_monitor()
+                    elapsed = time.time() - start_time
+                    logger.info("[INIT-ASYNC] ✅ 硬件监控器初始化完成（耗时: %.1fs）", elapsed)
+                    return monitor
+                except Exception as e:
+                    logger.warning(
+                        "[INIT-ASYNC] ⚠️ 硬件监控器初始化失败: %s (硬件监控为可选功能，不影响核心功能)",
+                        e,
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
+                    )
+                    return None
+
+            # 在线程池中异步执行，不阻塞事件循环
+            loop = asyncio.get_event_loop()
+            self.hardware_monitor = await loop.run_in_executor(
+                self.executor, _create_hardware_monitor
+            )
+
+            if self.hardware_monitor:
+                logger.info("[INIT-ASYNC] ✅ 硬件监控器已就绪，功能完整")
+            else:
+                logger.warning(
+                    "[INIT-ASYNC] ⚠️ 硬件监控器初始化失败，系统将以降级模式运行（无硬件温度监控）",
+                    extra={"log_type": "SYSTEM"},
+                )
+
+        except Exception as e:
+            logger.error(
+                "[INIT-ASYNC] ❌ 异步硬件监控器初始化异常: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "ALERT"},
+            )
 
     def _register_metrics(self):
         """注册监控指标."""
@@ -8875,12 +8892,12 @@ def main():
     import logging
     import sys
     from pathlib import Path
-    
+
     try:
         import os
         import time
         import json
-        
+
         signal_file = get_root() / "logs" / "monitor_ready.signal"
         signal_file.parent.mkdir(parents=True, exist_ok=True)
         initial_signal = {
@@ -9113,13 +9130,13 @@ def main():
         # 🔧 增强异常输出：同时输出到stderr和logger
         import traceback
         error_details = traceback.format_exc()
-        
+
         # 输出到stderr（即使日志系统失败也能看到）
         print(f"\n[MONITOR-CRITICAL-ERROR] 监控进程崩溃 (PID={os.getpid()}):", file=sys.stderr, flush=True)
         print(f"Error Type: {type(e).__name__}", file=sys.stderr, flush=True)
         print(f"Error Message: {str(e)}", file=sys.stderr, flush=True)
         print(f"\nFull Traceback:\n{error_details}", file=sys.stderr, flush=True)
-        
+
         # 输出到logger（如果可用）
         try:
             logger.error(
@@ -9134,7 +9151,7 @@ def main():
             )
         except:
             pass  # 如果logger不可用，忽略
-        
+
         # 清理监控就绪信号文件
         _cleanup_signal_file()
         sys.exit(1)

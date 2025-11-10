@@ -37,7 +37,7 @@ def test_resource_monitor_prefers_native(monkeypatch):
         },
     ]
 
-    monitor._native_get_system_metrics = lambda: snapshots.pop(0)
+    monitor._native_get_system_metrics = lambda *, use_native=True: snapshots.pop(0)
 
     first = monitor.get_metrics()
     assert first.source == "native"
@@ -55,7 +55,7 @@ def test_resource_monitor_fallback_on_error(monkeypatch):
     monitor._native_degraded = False
     monitor._native_disabled_reason = None
 
-    def _raise():
+    def _raise(*, use_native=True):
         raise RuntimeError("boom")
 
     monitor._native_get_system_metrics = _raise

@@ -73,10 +73,10 @@ async def test_query_pipe_retries_after_initial_timeout_and_processes_request():
         "analysis": {},
     }
     monitor.adaptive_threshold = None
-    monitor.business_metrics_collector = SimpleNamespace(
+    monitor.business_metrics_collector = SimpleNamespace(  # type: ignore
         get_concurrent_tasks=lambda: {"download": 0, "backtest": 0, "trading": 0, "total": 0}
     )
-    monitor.system_monitor = SimpleNamespace(
+    monitor.system_monitor = SimpleNamespace(  # type: ignore
         bandwidth_monitor=SimpleNamespace(test_bandwidth_full_async=lambda: asyncio.sleep(0)),
         get_bandwidth_info=lambda: {"sent": 0, "recv": 0},
     )

@@ -15,8 +15,11 @@ Native扩展模块统一导入
 """
 
 import importlib
+from typing import TYPE_CHECKING
 
 __all__ = []
+
+# Native模块的类型将在使用时通过直接导入获得
 
 # 并发/同步 - native_gil
 try:
@@ -45,116 +48,31 @@ try:
 except ImportError:
     pass
 
-# I/O操作 - native_iocp
-try:
-    from .native_iocp import (
-        aopen,
-        AsyncIOCPFile,
-    )
-    __all__.extend([
-        'aopen',
-        'AsyncIOCPFile',
-    ])
-    # 批量文件操作（可选）
-    try:
-        from .native_iocp import (
-            batch_file_exists,
-            batch_file_delete,
-            batch_file_stat,
-            fast_dir_walk,
-            fast_dir_list,
-        )
-        __all__.extend([
-            'batch_file_exists',
-            'batch_file_delete',
-            'batch_file_stat',
-            'fast_dir_walk',
-            'fast_dir_list',
-        ])
-    except ImportError:
-        pass
-except ImportError:
-    pass
+# 所有native模块的导入将在需要时通过各自的子模块进行
+# 这里只提供统一的访问接口
 
-# 文件监控 - native_fs
+# 进程指标 - native_process_metrics
 try:
-    from .native_fs import (
-        FS_WATCH_AVAILABLE,
-        DirectoryWatcher,
-        watch_directory,
+    from .native_process_metrics import (
+        PROCESS_METRICS_AVAILABLE,
+        get_system_metrics,
+        get_process_snapshot,
+        enumerate_processes,
+        get_last_error,
+        NativeProcessMetricsError,
     )
     __all__.extend([
-        'FS_WATCH_AVAILABLE',
-        'DirectoryWatcher',
-        'watch_directory',
-    ])
-except ImportError:
-    FS_WATCH_AVAILABLE = False  # type: ignore
-    DirectoryWatcher = None  # type: ignore
-    watch_directory = None  # type: ignore
-
-# IPC通信 - native_ipc
-try:
-    from .native_ipc import (
-        AsyncIPCPipe,
-        aopen_server,
-        aopen_client,
-    )
-    __all__.extend([
-        'AsyncIPCPipe',
-        'aopen_server',
-        'aopen_client',
+        'PROCESS_METRICS_AVAILABLE',
+        'get_system_metrics',
+        'get_process_snapshot',
+        'enumerate_processes',
+        'get_last_error',
+        'NativeProcessMetricsError',
     ])
 except ImportError:
     pass
 
-# 负载均衡优化 - native_load_balancer
-try:
-    from .native_load_balancer import (
-        LOAD_BALANCER_AVAILABLE as NATIVE_LOAD_BALANCER_AVAILABLE,
-        optimize as native_load_balancer_optimize,
-    )
-    __all__.extend([
-        'NATIVE_LOAD_BALANCER_AVAILABLE',
-        'native_load_balancer_optimize',
-    ])
-except ImportError:
-    NATIVE_LOAD_BALANCER_AVAILABLE = False  # type: ignore
-    native_load_balancer_optimize = None  # type: ignore
-
-# 内存操作 - native_memory
-try:
-    from .native_memory import (
-        ZeroCopyMemory,
-        MemoryPool,
-        batch_alloc,
-        batch_free,
-    )
-    __all__.extend([
-        'ZeroCopyMemory',
-        'MemoryPool',
-        'batch_alloc',
-        'batch_free',
-    ])
-except ImportError:
-    pass
-
-# 序列化 - native_serialization
-try:
-    from .native_serialization import (
-        batch_serialize,
-        batch_deserialize,
-        zero_copy_serialize,
-    )
-    __all__.extend([
-        'batch_serialize',
-        'batch_deserialize',
-        'zero_copy_serialize',
-    ])
-except ImportError:
-    pass
-
-# Socket 缓冲指标 - native_socket_metrics
+# Socket指标 - native_socket_metrics
 try:
     from .native_socket_metrics import (
         SOCKET_METRICS_AVAILABLE,
@@ -165,228 +83,92 @@ try:
         'get_socket_metrics',
     ])
 except ImportError:
-    SOCKET_METRICS_AVAILABLE = False  # type: ignore
-    get_socket_metrics = None  # type: ignore
-
-# 交易日历 - native_calendar
-try:
-    from .native_calendar import (
-        NativeCalendar,
-        NATIVE_CALENDAR_AVAILABLE,
-    )
-    __all__.extend([
-        'NativeCalendar',
-        'NATIVE_CALENDAR_AVAILABLE',
-    ])
-except ImportError:
-    NATIVE_CALENDAR_AVAILABLE = False  # type: ignore
-    NativeCalendar = None  # type: ignore
-
-# SMART 监控 - native_smart_monitor
-try:
-    _native_smart_monitor_module = importlib.import_module(
-        ".native_smart_monitor", __name__
-    )
-except ImportError:
-    SMART_MONITOR_AVAILABLE = False  # type: ignore
-    get_drive_temperature_data = None  # type: ignore
-else:
-    SMART_MONITOR_AVAILABLE = bool(
-        getattr(_native_smart_monitor_module, "SMART_MONITOR_AVAILABLE", False)
-    )
-    get_drive_temperature_data = getattr(
-        _native_smart_monitor_module, "get_drive_temperature_data", None
-    )
-    __all__.extend([
-        'SMART_MONITOR_AVAILABLE',
-        'get_drive_temperature_data',
-    ])
-
-# 数据转换 - native_conversion
-try:
-    from .native_conversion import (
-        batch_convert,
-        batch_encode,
-        batch_decode,
-    )
-    __all__.extend([
-        'batch_convert',
-        'batch_encode',
-        'batch_decode',
-    ])
-except ImportError:
     pass
 
-# DataFrame 扩展 - native_dataframe_ops
-try:
-    from .native_dataframe_ops import (
-        DATAFRAME_OPS_AVAILABLE,
-        dataframe_to_records,
-        dataframe_quality_counters,
-    )
-    __all__.extend([
-        'DATAFRAME_OPS_AVAILABLE',
-        'dataframe_to_records',
-        'dataframe_quality_counters',
-    ])
-except ImportError:
-    DATAFRAME_OPS_AVAILABLE = False  # type: ignore
-    dataframe_to_records = None  # type: ignore
-    dataframe_quality_counters = None  # type: ignore
 
-# 流式统计 - native_statistics
-STATISTICS_AVAILABLE: bool = False
-create_streaming_metric = None
-StreamingMetricHandle = None
-try:
-    from .native_statistics import (
-        STATISTICS_AVAILABLE as _STATISTICS_AVAILABLE,
-        create_streaming_metric as _create_streaming_metric,
-        StreamingMetricHandle as _StreamingMetricHandle,
-    )
-    STATISTICS_AVAILABLE = bool(_STATISTICS_AVAILABLE)
-    create_streaming_metric = _create_streaming_metric
-    StreamingMetricHandle = _StreamingMetricHandle
-except ImportError:
-    pass
-__all__.extend([
-    'STATISTICS_AVAILABLE',
-    'create_streaming_metric',
-    'StreamingMetricHandle',
-])
+def get_native_module_info() -> dict:
+    """获取所有可用的native模块信息"""
+    info = {}
 
-# 高性能容器 - native_collections
-try:
-    from .native_collections import (
-        HighPerfLRUCache,
-        HighPerfPriorityQueue,
-    )
-    __all__.extend([
-        'HighPerfLRUCache',
-        'HighPerfPriorityQueue',
-    ])
-except ImportError:
-    pass
+    modules = [
+        'native_gil', 'native_iocp', 'native_ipc', 'native_memory',
+        'native_serialization', 'native_conversion', 'native_collections',
+        'native_compute', 'native_calendar', 'native_fs',
+        'native_process_metrics', 'native_socket_metrics'
+    ]
 
-# 数值计算 - native_compute
-try:
-    from .native_compute import (
-        batch_compute,
-        batch_hash,
-    )
-    __all__.extend([
-        'batch_compute',
-        'batch_hash',
-    ])
-except ImportError:
-    pass
+    for module_name in modules:
+        try:
+            module = importlib.import_module(f'.{module_name}', package=__name__)
+            info[module_name] = {
+                'available': True,
+                'version': getattr(module, '__version__', 'unknown'),
+                'functions': [name for name in dir(module) if not name.startswith('_')],
+            }
+        except ImportError:
+            info[module_name] = {
+                'available': False,
+                'error': 'Module not found or failed to load',
+            }
 
-# 日志缓冲 - native_log_pipeline
-try:
-    from .native_log_pipeline import (  # type: ignore
-        Pipeline,
-        create,
-        flush_and_close,
-        install,
-    )
-    __all__.extend([
-        'Pipeline',
-        'create',
-        'install',
-        'flush_and_close',
-        'create_log_pipeline',
-    ])
-    create_log_pipeline = install
-except ImportError:
-    Pipeline = None  # type: ignore
-    create = install = flush_and_close = None  # type: ignore
-    create_log_pipeline = None  # type: ignore
+    return info
 
-# 进程指标 - native_process_metrics
-try:
-    from .native_process_metrics import (  # type: ignore
-        PROCESS_METRICS_AVAILABLE,
-        get_process_snapshot,
-        get_system_metrics,
-    )
-    __all__.extend([
-        'PROCESS_METRICS_AVAILABLE',
-        'get_process_snapshot',
-        'get_system_metrics',
-    ])
-except ImportError:
-    PROCESS_METRICS_AVAILABLE = False  # type: ignore
-    get_process_snapshot = None  # type: ignore
-    get_system_metrics = None  # type: ignore
 
-# 网络探测 - native_netprobe
-try:
-    from .native_netprobe import (  # type: ignore
-        NETPROBE_AVAILABLE,
-        batch_test_connections,
-        test_connection,
-    )
-    __all__.extend([
-        'NETPROBE_AVAILABLE',
-        'batch_test_connections',
-        'test_connection',
-    ])
-except ImportError:
-    NETPROBE_AVAILABLE = False  # type: ignore
-    batch_test_connections = None  # type: ignore
-    test_connection = None  # type: ignore
+def list_available_features() -> list:
+    """列出所有可用的native功能"""
+    features = []
 
-# VNPY 数据转换 - native_vnpy_conversion
-try:
-    from . import native_vnpy_conversion as _vnpy_conversion  # type: ignore
-    VNPY_CONVERSION_AVAILABLE = getattr(_vnpy_conversion, "CONVERSION_AVAILABLE", False)
-    vnpy_batch_convert = getattr(_vnpy_conversion, "batch_convert", None)
-    vnpy_convert_one = getattr(_vnpy_conversion, "convert_one", None)
-    __all__.extend([
-        'VNPY_CONVERSION_AVAILABLE',
-        'vnpy_batch_convert',
-        'vnpy_convert_one',
-    ])
-except ImportError:
-    VNPY_CONVERSION_AVAILABLE = False  # type: ignore
-    vnpy_batch_convert = vnpy_convert_one = None  # type: ignore
+    if 'release_gil' in globals():
+        features.append('GIL管理')
+    if 'AsyncFileReader' in globals():
+        features.append('异步文件I/O')
+    if 'NamedPipeServer' in globals():
+        features.append('命名管道IPC')
+    if 'MemoryPool' in globals():
+        features.append('内存池')
+    if 'BatchSerializer' in globals():
+        features.append('批量序列化')
+    if 'BatchConverter' in globals():
+        features.append('批量数据转换')
+    if 'LRUCache' in globals():
+        features.append('LRU缓存')
+    if 'BatchCalculator' in globals():
+        features.append('批量数值计算')
+    if 'TradingCalendar' in globals():
+        features.append('交易日历')
+    if 'DirectoryWatcher' in globals():
+        features.append('目录监控')
 
-# 日志管道 - native_log_pipeline
-try:
-    from . import native_log_pipeline as log_pipeline  # type: ignore
-    LOG_PIPELINE_AVAILABLE = True
-    __all__.extend([
-        'log_pipeline',
-        'LOG_PIPELINE_AVAILABLE',
-    ])
-except ImportError:
-    LOG_PIPELINE_AVAILABLE = False  # type: ignore
-    log_pipeline = None  # type: ignore
+    return features
 
-# 技术指标 - native_indicator
-try:
-    from .native_indicator import (  # type: ignore
-        CORE_AVAILABLE as NATIVE_INDICATOR_CORE_AVAILABLE,
-        INDICATOR_AVAILABLE as NATIVE_INDICATOR_AVAILABLE,
-        calculate_indicator,
-        calculate_indicator_batch,
-        sma,
-        ema,
-        macd,
-        rsi,
-    )
-    __all__.extend([
-        'NATIVE_INDICATOR_CORE_AVAILABLE',
-        'NATIVE_INDICATOR_AVAILABLE',
-        'calculate_indicator',
-        'calculate_indicator_batch',
-        'sma',
-        'ema',
-        'macd',
-        'rsi',
-    ])
-except ImportError:
-    NATIVE_INDICATOR_CORE_AVAILABLE = False  # type: ignore
-    NATIVE_INDICATOR_AVAILABLE = False  # type: ignore
-    calculate_indicator = calculate_indicator_batch = None  # type: ignore
-    sma = ema = macd = rsi = None  # type: ignore
+
+# 模块级别的便利函数
+def is_native_available() -> bool:
+    """检查是否有任何native模块可用"""
+    return len(__all__) > 0
+
+
+def get_performance_boost() -> dict:
+    """获取性能提升信息"""
+    boosts = {}
+
+    if 'ThreadSafeQueue' in globals():
+        boosts['concurrency'] = '线程安全队列，支持高并发场景'
+    if 'AsyncFileReader' in globals():
+        boosts['io'] = '异步文件I/O，使用Windows IOCP提升性能'
+    if 'NamedPipeServer' in globals():
+        boosts['ipc'] = '命名管道通信，支持进程间高效数据传输'
+    if 'MemoryPool' in globals():
+        boosts['memory'] = '内存池管理，减少内存分配开销'
+    if 'BatchSerializer' in globals():
+        boosts['serialization'] = '批量序列化，提升数据处理效率'
+    if 'LRUCache' in globals():
+        boosts['cache'] = 'LRU缓存，优化内存使用和访问速度'
+    if 'BatchCalculator' in globals():
+        boosts['compute'] = '批量数值计算，加速数据处理任务'
+    if 'TradingCalendar' in globals():
+        boosts['calendar'] = '高性能交易日历查询'
+    if 'DirectoryWatcher' in globals():
+        boosts['fs'] = '文件系统监控，支持实时文件变更通知'
+
+    return boosts

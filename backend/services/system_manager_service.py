@@ -34,8 +34,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Callable, Union, TYPE_CHECKING, cast, Protocol
 
-from backend.core.service_base import BaseService
-from backend.core.models import UnifiedMarketData, get_data_model_manager
+from backend.framework import ServiceBase
+import logging
+from backend.framework import UnifiedMarketData
+from backend.core.models import get_data_model_manager
+from backend.core.config import init_settings
 from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor
 class SystemMonitorProtocol(Protocol):
     def get_resource_usage(self) -> Any:
@@ -61,10 +64,11 @@ from backend.infrastructure.system_vnpy.native_log_pipeline import (
     install_pipeline,
 )
 from backend.services.database_adapter import get_db_manager
+from backend.core.models import get_data_model_manager
 
 if TYPE_CHECKING:
     from backend.infrastructure.system_vnpy.native_log_pipeline import PipelineHandle as _PipelineHandle
-from backend.core.config import get_settings
+from backend.framework import get_settings
 
 # 专用logger
 logger = bind_logger_defaults(
@@ -2978,7 +2982,7 @@ __all__ = [
 # =============================================================================
 # Part 6: 系统管理服务主类
 # =============================================================================
-class SystemManagerService(BaseService):
+class SystemManagerService(ServiceBase):
     """系统管理服务.
 
     提供完整的系统监控和管理功能，支持8个子功能：
@@ -2992,9 +2996,10 @@ class SystemManagerService(BaseService):
     8. 工具集合
     """
 
-    def __init__(self):
+    def __init__(self, context=None):
         """初始化系统管理服务."""
-        super().__init__()
+        super().__init__("system_manager_service")
+        self._context = context
 
         # 监控数据
         self.monitoring_data: Dict[str, Any] = {}
@@ -3822,7 +3827,11 @@ class SystemManagerService(BaseService):
     def _push_service_status(self):
         """推送服务状态（在主线程通过QTimer调用）."""
         try:
-            from backend.core.base import get_service_manager
+            # 从context获取service_manager
+            service_manager = self._context.service_manager if self._context else None
+            if not service_manager:
+                from backend.framework import get_service_registry
+                service_manager = get_service_registry()
 
             if not self._status_pipe or not self._ipc_loop:
                 return
@@ -3835,7 +3844,6 @@ class SystemManagerService(BaseService):
             )
 
             # 采集服务状态
-            service_manager = get_service_manager()
             result = self.service_health_checker.check_all_services(service_manager)
 
             # 推送到监控进程（异步，非阻塞）
@@ -4330,6 +4338,42 @@ class SystemManagerService(BaseService):
     # 旧的 get_monitoring_data()、get_bottleneck_analysis()、get_scenario_analysis()
     # 已完全移除，UI组件应订阅相应的事件类型
 
+    async def get_process_health_overview(self) -> Dict[str, Any]:
+        """获取进程健康概览."""
+
+        try:
+            from backend.startup.health import (  # type: ignore import-not-found
+                get_health_integration,
+                get_system_health_status,
+            )
+        except ImportError:
+            self.logger.warning(
+                "健康监控框架不可用，无法提供进程健康概览",
+                extra={"log_type": "SYSTEM"},
+            )
+            return {"status": "unavailable"}
+
+        integration = get_health_integration()
+        if not integration or not integration.is_initialized:
+            return {"status": "not_initialized"}
+
+        processes = integration.get_process_overview()
+        try:
+            aggregated = await get_system_health_status()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "获取系统健康状态失败：%s",
+                exc,
+                extra={"log_type": "SYSTEM"},
+            )
+            aggregated = {"status": "error", "error": str(exc)}
+
+        return {
+            "status": "initialized",
+            "aggregated": aggregated,
+            "processes": processes,
+        }
+
     def get_performance_summary(self, scenario: Optional[str] = None) -> Dict[str, Any]:
         """获取性能指标摘要（按场景）.
 
@@ -4459,7 +4503,7 @@ class SystemManagerService(BaseService):
                 reason = "系统负载正常，保持当前并发"
 
             # 从配置读取基准并发数
-            from backend.core.config import get_settings
+            from backend.framework import get_settings
 
             config = get_settings()
             base_async = config.adaptive.baseline_async_concurrency
@@ -4477,7 +4521,7 @@ class SystemManagerService(BaseService):
             try:
                 from backend.infrastructure.data_module_vnpy.load_balancer import LoadBalancer
                 from backend.infrastructure.data_module_vnpy import ConfigManager
-                from backend.core.base import get_event_engine
+                from backend.framework import get_event_engine
 
                 event_engine = get_event_engine()
                 if event_engine:
@@ -5312,9 +5356,11 @@ class SystemManagerService(BaseService):
             Dict: 服务健康状态
         """
         try:
-            from backend.core.base import get_service_manager
-
-            service_manager = get_service_manager()
+            # 从context获取service_manager
+            service_manager = self._context.service_manager if self._context else None
+            if not service_manager:
+                from backend.framework import get_service_registry
+                service_manager = get_service_registry()
 
             # 使用增强的服务健康检查器
             result = self.service_health_checker.check_all_services(service_manager)
@@ -5335,9 +5381,10 @@ class SystemManagerService(BaseService):
             Dict: 健康检查结果
         """
         try:
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_manager = get_service_manager()
+            from backend.framework import get_service_registry
+            service_manager = get_service_registry()
 
             result = self.service_health_checker.quick_check(service_name, service_manager)
 
@@ -5361,9 +5408,10 @@ class SystemManagerService(BaseService):
             Dict: 重启结果
         """
         try:
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_manager = get_service_manager()
+            from backend.framework import get_service_registry
+            service_manager = get_service_registry()
 
             if graceful:
                 result = self.service_restarter.graceful_restart(service_name, service_manager)
@@ -5730,7 +5778,7 @@ class SystemManagerService(BaseService):
             Dict: 诊断结果
         """
         try:
-            from backend.core.config import get_settings
+            from backend.framework import get_settings
             import json
             import os
 
@@ -5774,9 +5822,10 @@ class SystemManagerService(BaseService):
             }
 
             # 检查AI服务状态
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_manager = get_service_manager()
+            from backend.framework import get_service_registry
+            service_manager = get_service_registry()
             ai_service = service_manager.get_service("ai_assistant_service")
 
             if ai_service:
@@ -5932,7 +5981,7 @@ class SystemManagerService(BaseService):
                 alert = alert_db.get_alert(alert_id)
                 if alert:
                     # AlertEventPublisher 在本文件中定义
-                    from backend.core.base import get_event_engine
+                    from backend.framework import get_event_engine
 
                     event_engine = get_event_engine()
                     if event_engine:
@@ -5973,7 +6022,7 @@ class SystemManagerService(BaseService):
                 alert = alert_db.get_alert(alert_id)
                 if alert:
                     # AlertEventPublisher 在本文件中定义
-                    from backend.core.base import get_event_engine
+                    from backend.framework import get_event_engine
 
                     event_engine = get_event_engine()
                     if event_engine:
@@ -6053,7 +6102,7 @@ class SystemManagerService(BaseService):
         except Exception as e:
             self._log_error("获取告警统计", e)
             return {"success": False, "message": str(e), "stats": {}}
-    def reload_ai_service(self) -> Dict[str, Any]:
+    async def reload_ai_service(self) -> Dict[str, Any]:
         """重新加载AI助手服务.
 
         当AI配置更新后，需要重新初始化AI服务以应用新配置。
@@ -6062,8 +6111,9 @@ class SystemManagerService(BaseService):
             Dict: 重载结果
         """
         try:
-            from backend.core.base import get_service_manager
-            from backend.core.config import init_settings, get_settings
+            from backend.framework import get_service_registry
+            from backend.framework.foundation import ConfigManager
+            from backend.framework import get_settings
             import os
 
             # 🔧 关键修复：强制重新加载配置文件，确保使用最新保存的配置
@@ -6090,13 +6140,14 @@ class SystemManagerService(BaseService):
                     "API Key未设置，AI服务重载可能失败", extra={"log_type": "SYSTEM"}
                 )
 
-            service_manager = get_service_manager()
+            from backend.framework import get_service_registry
+            service_manager = get_service_registry()
 
             # 关闭旧服务
             old_service = service_manager.get_service("ai_assistant_service")
             if old_service:
                 try:
-                    old_service.shutdown()
+                    result = old_service.shutdown()
                     self.logger.info("旧AI服务已关闭")
                 except Exception as e:
                     self.logger.warning("关闭旧AI服务时出错: %s", e, extra={"log_type": "SYSTEM"})
@@ -6144,9 +6195,10 @@ class SystemManagerService(BaseService):
             Dict: 业务指标数据
         """
         try:
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_manager = get_service_manager()
+            from backend.framework import get_service_registry
+            service_manager = get_service_registry()
             metrics = {}
 
             # 1. 数据中心指标
@@ -6203,8 +6255,8 @@ class SystemManagerService(BaseService):
             gateway_service = service_manager.get_service("trading_gateway_service")
             if gateway_service:
                 try:
-                    gateways = gateway_service.list_gateways()
-                    connected_gateways = sum(1 for g in gateways if g.get("connected"))
+                    gateways = cast(List[Dict[str, Any]], gateway_service.list_gateways())
+                    connected_gateways = sum(1 for g in gateways if g.get("connected"))  # type: ignore[union-attr]
 
                     total_strategies = sum(
                         len(strategies)
@@ -6231,7 +6283,7 @@ class SystemManagerService(BaseService):
             portfolio_service = service_manager.get_service("portfolio_service")
             if portfolio_service:
                 try:
-                    portfolios_result = portfolio_service.list_portfolios()
+                    portfolios_result = portfolio_service.list_portfolios()  # type: ignore[return-value]
                     if portfolios_result.get("success"):
                         portfolios = portfolios_result.get("portfolios", {})
                         auto_count = len(portfolios.get("auto_portfolios", []))
@@ -6252,7 +6304,7 @@ class SystemManagerService(BaseService):
             strategy_service = service_manager.get_service("strategy_center_service")
             if strategy_service:
                 try:
-                    strategies_result = strategy_service.get_available_strategies()
+                    strategies_result = strategy_service.get_available_strategies()  # type: ignore[return-value]
                     strategy_count = (
                         len(strategies_result.get("strategies", []))
                         if strategies_result.get("success")
@@ -6358,7 +6410,7 @@ class SystemManagerService(BaseService):
 
             # 2. VnPy配置
             try:
-                from backend.core.config import get_settings
+                from backend.framework import get_settings
 
                 settings = get_settings()
                 configs["vnpy"] = {
@@ -6373,7 +6425,7 @@ class SystemManagerService(BaseService):
 
             # 3. AI助手配置
             try:
-                from backend.core.config import get_settings
+                from backend.framework import get_settings
 
                 settings = get_settings()
                 configs["ai"] = {
@@ -6393,7 +6445,7 @@ class SystemManagerService(BaseService):
 
             # 4. 数据库配置
             try:
-                from backend.core.config import get_settings
+                from backend.framework import get_settings
 
                 settings = get_settings()
                 configs["database"] = {
@@ -6406,7 +6458,7 @@ class SystemManagerService(BaseService):
 
             # 5. 网络配置（API）
             try:
-                from backend.core.config import get_settings
+                from backend.framework import get_settings
 
                 settings = get_settings()
                 configs["network"] = {
@@ -6427,7 +6479,7 @@ class SystemManagerService(BaseService):
             self._log_error("获取所有配置", e)
             return {"success": False, "message": str(e)}
 
-    def update_config(self, module: str, config_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def update_config(self, module: str, config_data: Dict[str, Any]) -> Dict[str, Any]:
         """更新指定模块的配置.
 
         Args:
@@ -6506,7 +6558,7 @@ class SystemManagerService(BaseService):
 
             elif module in ["vnpy", "ai", "database", "network"]:
                 # 更新backend配置
-                from backend.core.config import get_settings
+                from backend.framework import get_settings
 
                 settings = get_settings()
 
@@ -6576,7 +6628,7 @@ class SystemManagerService(BaseService):
 
             if ai_config_updated:
                 self.logger.info("AI配置已更新，正在重新加载AI服务...")
-                reload_result = self.reload_ai_service()
+                reload_result: Dict[str, Any] = await self.reload_ai_service()
                 result["ai_reloaded"] = reload_result.get("success", False)
                 result["ai_reload_message"] = reload_result.get("message", "")
 
@@ -7461,9 +7513,10 @@ class SystemManagerService(BaseService):
         """
         try:
             # 获取服务管理器和数据中心服务
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_manager = get_service_manager()
+            from backend.framework import get_service_registry
+            service_manager = get_service_registry()
             data_center_service = service_manager.get_service("data_center_service")
 
             if not data_center_service:
@@ -7870,3 +7923,30 @@ class SystemManagerService(BaseService):
         except Exception as e:
             self.logger.error("获取系统摘要失败: %s", e)
             return {}
+
+    def initialize(self) -> bool:
+        """初始化服务"""
+        try:
+            self.logger.info("初始化系统管理服务")
+            # TODO: 实现具体的初始化逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"系统管理服务初始化失败: {e}")
+            return False
+
+    def shutdown(self) -> bool:
+        """关闭服务"""
+        try:
+            self.logger.info("关闭系统管理服务")
+            # TODO: 实现具体的关闭逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"系统管理服务关闭失败: {e}")
+            return False
+
+    def get_status(self) -> Dict:
+        """获取服务状态"""
+        return {
+            "name": self.name,
+            "status": "active",  # TODO: 实现真实的状态检查
+        }

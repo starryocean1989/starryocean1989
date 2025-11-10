@@ -11,7 +11,7 @@
 # pylint: disable=no-name-in-module
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 # Qt imports
 from PySide6.QtCore import QThread, Qt, Signal
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 # Third-party imports
+from backend.services.data_center_service import DataCenterService
 import numpy as np
 
 from ui.components.widgets import BaseWidget
@@ -1521,11 +1522,11 @@ class ChartWidget(BaseWidget):
     def _load_symbols_from_backend(self):
         """从后端服务加载品种列表."""
         try:
-            from backend.core.base import get_service_manager
+            from backend.framework import get_service_registry
 
-            service_manager = get_service_manager()
+            registry = get_service_registry()
             # 修复：使用data_center_service代替不存在的symbol_service
-            data_center_service = service_manager.get_service("data_center_service")
+            data_center_service = cast(Optional[DataCenterService], registry.get("data_center_service"))
 
             if data_center_service:
                 # 检查是否有缓存，避免在初始化时触发API加载

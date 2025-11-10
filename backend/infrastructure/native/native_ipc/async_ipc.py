@@ -465,12 +465,12 @@ class AsyncIPCPipe:
 
 
 # 简化API（对标aopen）
-async def aopen_server(
+def aopen_server(
     pipe_name: str,
     *,
     wait_for_client: bool = True,
     connect_timeout: Optional[float] = None,
-) -> AsyncIPCPipe:
+) -> _IPCPipeFactory:
     """
     创建服务端管道（简化API）
 
@@ -480,20 +480,20 @@ async def aopen_server(
         connect_timeout: 等待客户端连接的超时时间（秒），None为无限等待
 
     Returns:
-        AsyncIPCPipe对象
+        AsyncIPCPipe工厂对象
 
     Example:
         async with aopen_server("monitor_service") as pipe:
             data = await pipe.read()
     """
-    return await AsyncIPCPipe.server(
+    return AsyncIPCPipe.server(
         pipe_name,
         wait_for_client=wait_for_client,
         connect_timeout=connect_timeout,
     )
 
 
-async def aopen_client(pipe_name: str) -> AsyncIPCPipe:
+def aopen_client(pipe_name: str) -> _IPCPipeFactory:
     """
     连接到服务端管道（简化API）
 
@@ -501,13 +501,13 @@ async def aopen_client(pipe_name: str) -> AsyncIPCPipe:
         pipe_name: 管道名称
 
     Returns:
-        AsyncIPCPipe对象
+        AsyncIPCPipe工厂对象
 
     Example:
         async with aopen_client("monitor_service") as pipe:
             await pipe.write(b"request")
     """
-    return await AsyncIPCPipe.client(pipe_name)
+    return AsyncIPCPipe.client(pipe_name)
 
 
 __all__ = ["AsyncIPCPipe", "aopen_server", "aopen_client"]

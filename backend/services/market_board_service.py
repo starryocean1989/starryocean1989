@@ -15,7 +15,8 @@
 from typing import Any, Dict, List, Optional, cast
 import logging
 
-from backend.core.service_base import BaseService
+from backend.framework import ServiceBase
+import logging
 from backend.infrastructure.data_module_vnpy.arrow_utils import (
     ARROW_AVAILABLE as ARROW_IPC_AVAILABLE,
 )
@@ -28,7 +29,7 @@ from backend.infrastructure.native.native_serialization import (
 logger_alert = logging.getLogger("backend.market.alert")
 
 
-class MarketBoardService(BaseService):
+class MarketBoardService(ServiceBase):
     """行情看板服务（重构版）.
 
     核心职责：
@@ -41,9 +42,10 @@ class MarketBoardService(BaseService):
     - 数据录制 → 数据中心模块
     """
 
-    def __init__(self):
+    def __init__(self, context=None):
         """初始化行情看板服务."""
-        super().__init__()
+        super().__init__("market_board_service")
+        self._context = context
 
         # 技术指标库
         self.talib = None
@@ -167,10 +169,13 @@ class MarketBoardService(BaseService):
                     )
 
             # 备用方案：使用DataCenterService
-            from backend.core.base import get_service_manager
-
-            service_manager = get_service_manager()
-            data_center_service = service_manager.get_service("data_center_service")
+            # 从context获取service_manager
+            service_manager = self._context.service_manager if self._context else None
+            if not service_manager:
+                from backend.framework import get_service_registry
+                service_manager = get_service_registry()
+            assert service_manager is not None
+            data_center_service = service_manager.get("data_center_service")
 
             if not data_center_service:
                 return {
@@ -308,10 +313,85 @@ class MarketBoardService(BaseService):
                 "closes": data,
                 "params": params or {},
             }
-            
+
             result = self.data_client.call("calculate_indicator", **request_params)
             return result
 
         except Exception as e:
             self._log_error("计算技术指标", e)
             return {"success": False, "message": str(e), "data": []}
+
+    def initialize(self) -> bool:
+        """初始化服务"""
+        try:
+            self.logger.info("初始化行情面板服务")
+            # TODO: 实现具体的初始化逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"行情面板服务初始化失败: {e}")
+            return False
+
+    def shutdown(self) -> bool:
+        """关闭服务"""
+        try:
+            self.logger.info("关闭行情面板服务")
+            # TODO: 实现具体的关闭逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"行情面板服务关闭失败: {e}")
+            return False
+
+    def detect_data_gaps(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        interval: str = "1d"
+    ) -> Dict[str, Any]:
+        """检测数据断点（委托给data_module_vnpy）.
+
+        Args:
+            symbol: 品种代码
+            start_date: 开始日期
+            end_date: 结束日期
+            interval: 周期
+
+        Returns:
+            Dict: 断点检测结果
+        """
+        try:
+            # 通过数据进程客户端检测断点
+            if self.data_client is not None:
+                request_params = {
+                    "symbol": symbol,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "interval": interval,
+                }
+
+                result = self.data_client.call("detect_data_gaps", **request_params)
+                return result
+
+            # 备用方案：返回无断点（简化实现）
+            return {
+                "success": True,
+                "has_gaps": False,
+                "gaps": [],
+                "message": "数据断点检测不可用（数据服务未连接）"
+            }
+
+        except Exception as e:
+            self._log_error("检测数据断点", e)
+            return {
+                "success": False,
+                "has_gaps": False,
+                "gaps": [],
+                "message": str(e)
+            }
+
+    def get_status(self) -> Dict:
+        """获取服务状态"""
+        return {
+            "name": self.name,
+            "status": "active",  # TODO: 实现真实的状态检查
+        }

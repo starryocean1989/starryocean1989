@@ -18,7 +18,7 @@ def create_trading_calendar_bitmap(calendar_name, start_date, end_date, output_f
 
     # Get all trading days in the full range
     trading_days = calendar.valid_days(start_date=start_date, end_date=end_date)
-    trading_days_set = set(trading_days.date)
+    trading_days_set = set(dt.date() for dt in trading_days)
 
     # Correct for 1990 SSE history
     if calendar_name == 'SSE' and start_date.year <= 1990:
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     CALENDAR_NAME = 'SSE'  # Shanghai Stock Exchange
     START_DATE = date(1990, 1, 1)
     END_DATE = date(2049, 12, 31)
-    
+
     # Output file will be in the same directory as the script
     output_dir = os.path.dirname(os.path.abspath(__file__))
     OUTPUT_FILE = os.path.join(output_dir, f"{CALENDAR_NAME.lower()}_calendar.bin")

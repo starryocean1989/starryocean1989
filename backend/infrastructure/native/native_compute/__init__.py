@@ -22,7 +22,7 @@ IS_WINDOWS = platform.system() == "Windows"
 
 if IS_WINDOWS:
     try:
-        from . import native_compute as _native
+        from . import native_compute as _native  # type: ignore
     except ImportError:
         COMPUTE_AVAILABLE = False
         PREFIX_SUM_AVAILABLE = False
@@ -38,12 +38,12 @@ if IS_WINDOWS:
 
         batch_compute = batch_hash = batch_get_price = batch_validate_iso_dates = batch_compare_dates = prefix_sum_scale = _raise_error  # type: ignore
     else:
-        batch_compute = getattr(_native, "batch_compute", None)
-        batch_hash = getattr(_native, "batch_hash", None)
-        batch_get_price = getattr(_native, "batch_get_price", None)
-        batch_validate_iso_dates = getattr(_native, "batch_validate_iso_dates", None)
-        batch_compare_dates = getattr(_native, "batch_compare_dates", None)
-        prefix_sum_scale = getattr(_native, "prefix_sum_scale", None)
+        batch_compute = getattr(_native, "batch_compute", None)  # type: ignore
+        batch_hash = getattr(_native, "batch_hash", None)  # type: ignore
+        batch_get_price = getattr(_native, "batch_get_price", None)  # type: ignore
+        batch_validate_iso_dates = getattr(_native, "batch_validate_iso_dates", None)  # type: ignore
+        batch_compare_dates = getattr(_native, "batch_compare_dates", None)  # type: ignore
+        prefix_sum_scale = getattr(_native, "prefix_sum_scale", None)  # type: ignore[assignment]
 
         essential_funcs = [batch_compute, batch_hash, batch_get_price]
         COMPUTE_AVAILABLE = all(callable(func) for func in essential_funcs)

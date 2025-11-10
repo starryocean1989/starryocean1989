@@ -33,8 +33,8 @@ import pandas as pd
 try:
     from backend.infrastructure.native.native_iocp import (
         compat_aopen,
-        is_iocp_available,
-        get_backend,
+        is_iocp_available,  # type: ignore[assignment]
+        get_backend,  # type: ignore[assignment]
     )
 
     _USE_IOCP = True
@@ -44,10 +44,10 @@ except ImportError:
 
     compat_aopen = None
 
-    def is_iocp_available():
+    def is_iocp_available() -> bool:
         return False
 
-    def get_backend():
+    def get_backend() -> str:
         return "aiofiles"
 
     _USE_IOCP = False

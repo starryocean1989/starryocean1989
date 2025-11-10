@@ -19,7 +19,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 
 # 导入 talib 和 numpy
 try:
@@ -96,6 +96,20 @@ try:
         compute_return_metrics as native_compute_return_metrics,
         compute_period_statistics as native_compute_period_statistics,
         compute_risk_profile as native_compute_risk_profile,
+    )
+    # 使用cast解决pyright无法识别C扩展函数签名的问题
+    # 注意：这些函数实际上接受关键字参数，但我们用**kwargs来兼容
+    native_compute_return_metrics = cast(
+        Optional[Callable[..., Dict[str, Any]]],
+        native_compute_return_metrics
+    )
+    native_compute_period_statistics = cast(
+        Optional[Callable[..., Dict[str, Any]]],
+        native_compute_period_statistics
+    )
+    native_compute_risk_profile = cast(
+        Optional[Callable[..., Dict[str, Any]]],
+        native_compute_risk_profile
     )
 except ImportError:
     FINANCE_OPS_AVAILABLE = False
@@ -1063,9 +1077,9 @@ class DataProcess:
                 try:
                     pnl_series = returns.tolist()
                     equity_series = cumulative.tolist()
-                    native_metrics = native_compute_return_metrics(
-                        pnl_series,
-                        equity_series,
+                    native_metrics = native_compute_return_metrics(  # pyright: ignore[reportCallIssue]
+                        pnl_series=pnl_series,
+                        equity_series=equity_series,
                         trading_days_per_year=252,
                     )
                     if isinstance(native_metrics, dict) and native_metrics:
@@ -1136,9 +1150,9 @@ class DataProcess:
 
         if FINANCE_OPS_AVAILABLE and native_compute_period_statistics:
             try:
-                result = native_compute_period_statistics(
-                    dates,
-                    pnl,
+                result = native_compute_period_statistics(  # pyright: ignore[reportCallIssue]
+                    dates=dates,
+                    pnl=pnl,
                     initial_equity=initial_equity,
                     risk_free_rate=risk_free_rate,
                     trading_days_per_year=trading_days,
@@ -1364,8 +1378,8 @@ class DataProcess:
 
         if FINANCE_OPS_AVAILABLE and native_compute_risk_profile:
             try:
-                result = native_compute_risk_profile(
-                    returns,
+                result = native_compute_risk_profile(  # pyright: ignore[reportCallIssue]
+                    returns=returns,
                     scale=scale,
                     risk_free_rate=risk_free_rate,
                     trading_days_per_year=trading_days,
@@ -1508,13 +1522,8 @@ class DataProcess:
             )
 
             with open(signal_file, "w", encoding="utf-8") as f:
-                if HAS_ORJSON:
-                    # orjson不支持直接写入文件，先序列化为bytes再解码写入
-                    json_bytes = orjson.dumps(signal_data, option=orjson.OPT_INDENT_2)
-                    f.write(json_bytes.decode("utf-8"))
-                else:
-                    # 降级到标准json
-                    json.dump(signal_data, f, indent=2)
+                # 使用标准json以确保格式正确（orjson的OPT_INDENT_2会省略逗号）
+                json.dump(signal_data, f, indent=2)
             logger.debug(
                 f"[DEBUG] 数据进程就绪信号文件已写入: {signal_file}",
                 extra={"log_type": "DEBUG", "scenario": "data_process_init"},

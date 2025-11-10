@@ -298,6 +298,12 @@ data_module_vnpy/
 | 主进程代理 | UI / 业务进程 | `data_process_client.py`、`core_engine.py` | 在 `BackendInitStage` Level 2 后获取 `LOGGING_QUEUE_TOKEN`、`pipes` 等元数据；维护 RPC 客户端连接；为 `DataCenterService`、`MarketBoardService` 等注入远程调用能力。|
 | 日志桥接 | 主进程 | `backend.infrastructure.system_vnpy.logging_system` | `DataLauncherWorker` 将 `LOGGING_QUEUE_TOKEN` 注入子进程环境；子进程通过 `load_queue_from_env()` + `setup_subprocess_logging()` 将日志回传至主进程的 `LoggingHub`；异常时自动降级至本地文件日志并输出 `WARNING`。|
 
+**启动编排（v1.5+）**
+
+- `backend.startup.processes.ProcessOrchestrator` 统一管理数据/监控进程的生命周期，提供 `ProcessState` 状态机、依赖拓扑、自动重启逻辑。`data_module_vnpy` 不再直接拉起子进程，而是挂载到编排器的 `ProcessSpec`。
+- `BackendInitStage` 通过 `ProcessSupervisor` 并发执行 `DataLauncherWorker`，并使用 `ReadinessBarrier` 等待 `backend_init.data:level0/1/2` 事件；`StartupCoordinator` 根据事件更新 UI 启动画面。
+- `NativeStartupRuntime` 将 `ChinaStockEngine` 骨架初始化与 UI 预加载解耦：主进程只注册 RPC 代理，数据进程完成 Level 2 后再注入远程依赖，相关进度通过 `service_tracker.snapshot()` 回传。
+
 **握手流程**
 1. `DataLauncherWorker` 启动 `data_process_main.py`，清理旧的 `data_process_ready.signal`，并将 `LOGGING_QUEUE_TOKEN` 写入环境变量。
 2. 子进程完成初始化后写入 `logs/data_process_ready.signal`，包含 `pid`、`timestamp`、`level`、`pipes` 等信息，并启动 watchdog。

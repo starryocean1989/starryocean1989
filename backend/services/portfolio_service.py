@@ -13,14 +13,15 @@ from datetime import datetime
 from threading import Timer
 import logging
 
-from backend.core.service_base import BaseService
+from backend.framework import ServiceBase
+import logging
 from backend.infrastructure.native.match_cache import create_match_cache
 
 # 专用logger - 日志埋点v4.0
 logger_alert = logging.getLogger("backend.portfolio.alert")
 
 
-class PortfolioService(BaseService):
+class PortfolioService(ServiceBase):
     """组合投资服务.
 
     管理投资组合，提供：
@@ -29,9 +30,10 @@ class PortfolioService(BaseService):
     3. 组合监控 - 实时业绩、风险指标、历史分析
     """
 
-    def __init__(self):
+    def __init__(self, context=None):
         """初始化组合投资服务."""
-        super().__init__()
+        super().__init__("portfolio_service")
+        self._context = context
 
         # 自动识别的组合（不可删除）
         self.auto_portfolios: Dict[str, Dict[str, Any]] = {}
@@ -100,9 +102,12 @@ class PortfolioService(BaseService):
     def _register_trading_events(self):
         """注册vnpy事件处理器（获取实时交易数据）."""
         try:
-            from backend.core.base import get_event_engine
-
-            event_engine = get_event_engine()
+            # 从context获取event_engine
+            event_engine = self._context.event_engine if self._context else None
+            if not event_engine:
+                from backend.startup.runtime.locator import get_runtime_locator
+                locator = get_runtime_locator()
+                event_engine = locator.get_event_engine()
             if not event_engine:
                 self.logger.warning("EventEngine不可用，无法注册事件处理器", extra={"log_type": "SYSTEM"})
                 return
@@ -328,10 +333,13 @@ class PortfolioService(BaseService):
         """扫描并创建自动识别的组合."""
         try:
             # 从trading_gateway_service获取网关和策略信息
-            from backend.core.base import get_service_manager
-
-            service_manager = get_service_manager()
-            gateway_service = service_manager.get_service("trading_gateway_service")
+            # 从context获取service_manager
+            service_manager = self._context.service_manager if self._context else None
+            if not service_manager:
+                from backend.framework import get_service_registry
+                service_manager = get_service_registry()
+            assert service_manager is not None
+            gateway_service = service_manager.get("trading_gateway_service")
 
             if not gateway_service:
                 self.logger.warning("TradingGatewayService不可用，无法扫描自动组合", extra={"log_type": "SYSTEM"})
@@ -776,10 +784,13 @@ class PortfolioService(BaseService):
                 }
 
             # 从TradingGatewayService获取监控数据
-            from backend.core.base import get_service_manager
-
-            service_manager = get_service_manager()
-            gateway_service = service_manager.get_service("trading_gateway_service")
+            # 从context获取service_manager
+            service_manager = self._context.service_manager if self._context else None
+            if not service_manager:
+                from backend.framework import get_service_registry
+                service_manager = get_service_registry()
+            assert service_manager is not None
+            gateway_service = service_manager.get("trading_gateway_service")
 
             if not gateway_service:
                 return {
@@ -2253,10 +2264,14 @@ class PortfolioService(BaseService):
                     return self._get_mock_benchmark_returns(lookback_days)
             else:
                 # 降级：尝试从data_center_service获取（兼容模式）
-                from backend.core.base import get_service_manager
-
-                service_manager = get_service_manager()
-                data_center = service_manager.get_service("data_center_service")
+                # 从context获取service_manager
+                service_manager = self._context.service_manager if self._context else None
+                if not service_manager:
+                    from backend.startup.runtime.locator import get_runtime_locator
+                    locator = get_runtime_locator()
+                    service_manager = locator.get_service_manager()
+                assert service_manager is not None
+                data_center = service_manager.get("data_center_service")  # type: ignore[attr-defined]
 
                 if not data_center:
                     self.logger.warning("数据中心服务不可用，使用模拟数据", extra={"log_type": "SYSTEM"})
@@ -2343,3 +2358,30 @@ class PortfolioService(BaseService):
         except Exception as e:
             self.logger.warning(f"计算回撤持续时间失败: {e}", extra={"log_type": "SYSTEM"})
             return 0
+
+    def initialize(self) -> bool:
+        """初始化服务"""
+        try:
+            self.logger.info("初始化投资组合服务")
+            # TODO: 实现具体的初始化逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"投资组合服务初始化失败: {e}")
+            return False
+
+    def shutdown(self) -> bool:
+        """关闭服务"""
+        try:
+            self.logger.info("关闭投资组合服务")
+            # TODO: 实现具体的关闭逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"投资组合服务关闭失败: {e}")
+            return False
+
+    def get_status(self) -> Dict:
+        """获取服务状态"""
+        return {
+            "name": self.name,
+            "status": "active",  # TODO: 实现真实的状态检查
+        }

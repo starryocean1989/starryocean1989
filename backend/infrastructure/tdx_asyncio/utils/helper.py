@@ -4,7 +4,7 @@ import struct
 import threading
 import logging
 from datetime import datetime
-from typing import Dict, Optional, Tuple, List, Sequence, Iterable
+from typing import Dict, Optional, Tuple, List, Sequence, Iterable, cast
 
 # 🚀 性能优化：导入native_compute用于批量get_price解析
 try:
@@ -33,6 +33,10 @@ else:
     if "_batch_convert_native" not in locals():
         _batch_convert_native = None  # type: ignore
         _NATIVE_CONVERSION_AVAILABLE = False
+
+# 类型注解：_batch_get_price_native 返回 (List[int], List[int]) 元组
+if _batch_get_price_native is not None:
+    _batch_get_price_native = _batch_get_price_native  # type: ignore[assignment]
 
 from ..network.constants import SECURITY_COEFFICIENT, TDXParams
 from .logger import logger
@@ -105,7 +109,8 @@ def batch_get_price(data: bytes, start_pos: int, count: int) -> Tuple[List[int],
         return values, pos
 
     try:
-        values_list, positions_list = _batch_get_price_native(data, start_pos, count)  # type: ignore[call-arg]
+        result = _batch_get_price_native(data, start_pos, count)  # type: ignore[call-arg]
+        values_list, positions_list = cast(Tuple[List[int], List[int]], result)
         # 转换为Python列表
         values = [int(v) for v in values_list]
         final_pos = int(positions_list[-1]) if len(positions_list) > 0 else start_pos

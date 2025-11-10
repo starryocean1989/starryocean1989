@@ -29,7 +29,7 @@ ext_modules = [
     ext_cls(
         "native_dataconverter",
         ["dataconverter.cpp"],
-        include_dirs=[],
+        include_dirs=['..'],
         language="c++",
     )
 ]

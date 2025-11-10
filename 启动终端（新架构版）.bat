@@ -7,7 +7,9 @@ REM 星辰金融终端 - 新架构版启动脚本
 REM ========================================
 
 REM 默认启用静默模式，避免在Python阶段日志输出前刷屏
-set "QUIET_MODE=1"
+REM set "QUIET_MODE=1"
+REM 调试期间禁用静默模式，查看详细启动信息
+set "QUIET_MODE="
 
 if defined QUIET_MODE goto :quiet_mode_entry
 

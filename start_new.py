@@ -32,15 +32,11 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # 导入启动架构
-from backend.startup import (
+from backend.framework.lifecycle import (
     StartupOrchestrator,
-    EnvSetupStage,
-    LoggingInitStage,
-    QtFrameworkStage,
-    BackendInitStage,
-    UIActivationStage,
+    StartupResult,
 )
-from backend.startup.cleanup_utils import run_backend_process_cleanup
+from backend.framework.integration import cleanup_temp_files
 
 
 def setup_process_cleanup():
@@ -52,10 +48,10 @@ def setup_process_cleanup():
     - 窗口关闭（Qt事件）
     - 异常退出（finally块）
     """
-    def signal_handler(signum, frame):
+    def signal_handler(signum, _frame):
         """信号处理器"""
         print(f"\n⚠️ 收到信号 {signum}，正在清理进程...")
-        run_backend_process_cleanup(label="进程清理")
+        cleanup_temp_files()
         sys.exit(1)
 
     # 注册信号处理器（Windows上只支持SIGINT和SIGTERM）
@@ -70,7 +66,7 @@ def setup_process_cleanup():
 
     # 注册atexit清理（作为后备）
     def cleanup_on_exit():
-        run_backend_process_cleanup(label="进程清理")
+        cleanup_temp_files()
 
     atexit.register(cleanup_on_exit)
 
@@ -80,19 +76,12 @@ async def main():
     # 🔧 新增：设置进程清理
     setup_process_cleanup()
 
-    # 创建启动编排器
+    # 创建启动编排器（内置所有必要阶段）
     orchestrator = StartupOrchestrator()
-
-    # 添加所有启动阶段（按顺序）
-    orchestrator.add_stage(EnvSetupStage())
-    orchestrator.add_stage(LoggingInitStage())
-    orchestrator.add_stage(QtFrameworkStage())
-    orchestrator.add_stage(BackendInitStage())
-    orchestrator.add_stage(UIActivationStage())
 
     # 执行启动流程
     # 注意：ai_log_process已在LoggingInitStage中启动，这里不需要再次包裹
-    result = await orchestrator.startup()
+    result = await orchestrator.start()
 
     # 检查启动结果
     if not result.success:
@@ -102,7 +91,7 @@ async def main():
             traceback.print_exception(type(result.error), result.error, result.error.__traceback__)
         return 1
 
-    # 启动成功，运行Qt应用
+    # 启动成功，运行Qt应用（由UIActivationStage创建的app）
     context = orchestrator.get_context()
     if context.app:
         print(f"✅ 启动成功（总耗时: {result.elapsed_ms:.0f}ms）")
@@ -113,8 +102,11 @@ async def main():
 
 if __name__ == "__main__":
     # 运行异步主函数
+    print("🔷 开始启动流程...")
     try:
+        print("🔷 调用 asyncio.run(main())...")
         exit_code = asyncio.run(main())
+        print(f"🔷 启动完成，退出码: {exit_code}")
         sys.exit(exit_code)
     except KeyboardInterrupt:
         print("\n⚠️ 启动被用户中断", file=sys.stderr)

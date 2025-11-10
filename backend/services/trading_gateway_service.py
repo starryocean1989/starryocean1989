@@ -11,11 +11,15 @@
 import contextlib
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from datetime import datetime
 from enum import Enum
 
-from backend.core.service_base import BaseService, LoggerMixin
+from backend.framework import ServiceBase
+
+if TYPE_CHECKING:
+    from backend.services.strategy_center_service import StrategyCenterService
+import logging
 from backend.services.database_adapter import get_db_manager
 
 # 直接使用native序列化优化
@@ -78,7 +82,7 @@ class StrategyEngineType(Enum):
     SPREAD_TRADING = "spreadtrading"  # 价差交易
 
 
-class TradingGatewayService(BaseService, LoggerMixin):
+class TradingGatewayService(ServiceBase):
     """交易网关服务.
 
     管理所有交易网关和策略实例，提供：
@@ -143,9 +147,11 @@ class TradingGatewayService(BaseService, LoggerMixin):
         except (ImportError, ValueError, AttributeError):
             return False
 
-    def __init__(self):
+    def __init__(self, context=None):
         """初始化交易网关服务."""
-        super().__init__()
+        super().__init__("trading_gateway_service")
+        self._context = context
+        self.logger = logging.getLogger(self.__class__.__name__)
 
         # 记录已加载的策略应用
         self.loaded_apps = set()
@@ -874,10 +880,13 @@ class TradingGatewayService(BaseService, LoggerMixin):
         """
         try:
             # 从服务管理器获取策略中心服务
-            from backend.core.base import get_service_manager
-
-            service_manager = get_service_manager()
-            strategy_service = service_manager.get_service("strategy_center_service")
+            # 从context获取service_manager
+            service_manager = self._context.service_manager if self._context else None
+            if not service_manager:
+                from backend.framework import get_service_registry
+                service_manager = get_service_registry()
+            assert service_manager is not None
+            strategy_service = service_manager.get("strategy_center_service")
 
             if not strategy_service:
                 self.logger.warning("策略中心服务不可用", extra={"log_type": "SYSTEM"})
@@ -908,15 +917,20 @@ class TradingGatewayService(BaseService, LoggerMixin):
             str: 策略引擎类型，如果无法识别则返回None
         """
         try:
-            from backend.core.base import get_service_manager
-
-            service_manager = get_service_manager()
-            strategy_service = service_manager.get_service("strategy_center_service")
+            # 从context获取service_manager
+            service_manager = self._context.service_manager if self._context else None
+            if not service_manager:
+                from backend.framework import get_service_registry
+                service_manager = get_service_registry()
+            assert service_manager is not None
+            strategy_service = service_manager.get("strategy_center_service")
 
             if not strategy_service:
                 self.logger.warning("策略中心服务不可用", extra={"log_type": "SYSTEM"})
                 return None
 
+            # 类型断言以帮助类型检查器
+            assert isinstance(strategy_service, StrategyCenterService)
             return strategy_service.identify_strategy_type(file_path)
 
         except Exception as e:
@@ -958,16 +972,22 @@ class TradingGatewayService(BaseService, LoggerMixin):
             )
 
             # 从策略中心加载策略模块信息
-            from backend.core.base import get_service_manager
-
-            service_manager = get_service_manager()
-            strategy_service = service_manager.get_service("strategy_center_service")
+            # 从context获取service_manager
+            service_manager = self._context.service_manager if self._context else None
+            if not service_manager:
+                from backend.framework import get_service_registry
+                service_manager = get_service_registry()
+            assert service_manager is not None
+            strategy_service = service_manager.get("strategy_center_service")
 
             if not strategy_service:
                 return {
                     "success": False,
                     "message": "策略中心服务不可用",
                 }
+
+            # 类型断言以帮助类型检查器
+            assert isinstance(strategy_service, StrategyCenterService)
 
             # 加载策略模块信息
             module_info = strategy_service.load_strategy_module_info(file_path)
@@ -2292,13 +2312,17 @@ class TradingGatewayService(BaseService, LoggerMixin):
             engine_name: 引擎名称
         """
         try:
-            from backend.core.base import get_event_engine
             from backend.infrastructure.system_vnpy import (
                 EVENT_STRATEGY_STATUS_CHANGED,
             )
             from vnpy.event import Event
 
-            event_engine = get_event_engine()
+            # 从context获取event_engine
+            event_engine = self._context.event_engine if self._context else None
+            if not event_engine:
+                from backend.startup.runtime.locator import get_runtime_locator
+                locator = get_runtime_locator()
+                event_engine = locator.get_event_engine()
             if not event_engine:
                 return
 
@@ -2335,13 +2359,17 @@ class TradingGatewayService(BaseService, LoggerMixin):
             gateway_type: 网关类型
         """
         try:
-            from backend.core.base import get_event_engine
             from backend.infrastructure.system_vnpy import (
                 EVENT_GATEWAY_STATUS_CHANGED,
             )
             from vnpy.event import Event
 
-            event_engine = get_event_engine()
+            # 从context获取event_engine
+            event_engine = self._context.event_engine if self._context else None
+            if not event_engine:
+                from backend.startup.runtime.locator import get_runtime_locator
+                locator = get_runtime_locator()
+                event_engine = locator.get_event_engine()
             if not event_engine:
                 return
 
@@ -2684,6 +2712,35 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
         return base_data
 
+    def initialize(self) -> bool:
+        """初始化服务"""
+        try:
+            self.logger.info("初始化交易网关服务")
+            # TODO: 实现具体的初始化逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"交易网关服务初始化失败: {e}")
+            return False
+
+    def shutdown(self) -> bool:
+        """关闭服务"""
+        try:
+            self.logger.info("关闭交易网关服务")
+            # TODO: 实现具体的关闭逻辑
+            return True
+        except Exception as e:
+            self.logger.error(f"交易网关服务关闭失败: {e}")
+            return False
+
+    def get_status(self) -> Dict:
+        """获取服务状态"""
+        return {
+            "name": self.name,
+            "status": "active",  # TODO: 实现真实的状态检查
+            "gateway_count": len(self.gateway_instances),
+            "strategy_count": 0,  # TODO: 实现策略计数
+        }
+
 
 # =============================================================================
 # Part 2: Gateway Adapters (整合自infrastructure/gateway_adapters)
@@ -2986,3 +3043,4 @@ class TradeXGatewayAdapter:
             return result_str, error_msg
         except Exception as e:
             return "", str(e)
+

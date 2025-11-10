@@ -3057,6 +3057,8 @@ class TaskQueueManager:
     - 任务统计
     """
 
+    _task_queue: Union["HighPerfPriorityQueue", "queue.Queue"]  # type: ignore
+
     def __init__(self, max_queue_size: int = 10000):
         """初始化任务队列管理器
 
@@ -5581,10 +5583,9 @@ def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
         return {}
 
     # 配置子进程日志记录
-    from backend.infrastructure.system_vnpy.logging_system import configure_subprocess_logging
     configure_subprocess_logging(
-        logger_name="data_module.ipo_download",
-        log_type="SYSTEM",
+        worker_id=os.getpid(),
+        task_type="ipo_download",
         scenario="data_module.download"
     )
 

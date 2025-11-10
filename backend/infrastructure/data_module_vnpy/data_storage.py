@@ -36,7 +36,6 @@ v3.6 更新：
 # ==============================================================================
 
 import logging
-import asyncio
 import time
 import os
 import struct
@@ -47,18 +46,22 @@ from dataclasses import dataclass
 from threading import Lock
 from datetime import date
 from io import BytesIO
-from multiprocessing import managers, Manager
+from multiprocessing import Manager
+
 try:  # Python 3.8+
-    from multiprocessing import shared_memory as _shared_memory  # type: ignore
+    from multiprocessing import shared_memory as _SHARED_MEMORY  # type: ignore
+
     HAS_SHARED_MEMORY = True
 except Exception:
-    _shared_memory = None  # type: ignore
+    _SHARED_MEMORY = None  # type: ignore
     HAS_SHARED_MEMORY = False
 try:
     import orjson as _orjson  # type: ignore
+
     HAS_ORJSON = True
 except Exception:  # pragma: no cover - 稀有环境回退
     import json as _orjson  # type: ignore
+
     HAS_ORJSON = False
 
 # Pandas和PyArrow
@@ -66,29 +69,39 @@ import pandas as pd
 
 # 可选依赖：native_iocp
 try:
-    from backend.infrastructure.native.native_iocp.compat import aopen as compat_aopen
+    from backend.infrastructure.native.native_iocp.compat import aopen as COMPAT_AOPEN  # type: ignore
+    from backend.infrastructure.native.native_iocp import fast_dir_walk, BATCH_AVAILABLE
 
     IOCP_AVAILABLE = True
+    NATIVE_IOCP_BATCH_AVAILABLE = BATCH_AVAILABLE
 except ImportError:
     try:
         import aiofiles
 
-        async def compat_aopen(file, mode="r", **kwargs):
-            return aiofiles.open(file, mode, **kwargs)
+        async def COMPAT_AOPEN(file, mode="r", **kwargs):
+            """
+            异步文件打开函数（aiofiles兼容版本）
+
+            当native_iocp不可用时，使用aiofiles作为降级方案。
+
+            Args:
+                file: 文件路径
+                mode: 打开模式，默认为"r"
+                **kwargs: 其他参数传递给aiofiles.open
+
+            Returns:
+                异步文件对象
+            """
+            return await aiofiles.open(file, mode, **kwargs)
 
         IOCP_AVAILABLE = False
+        fast_dir_walk = None  # type: ignore
+        NATIVE_IOCP_BATCH_AVAILABLE = False
     except ImportError:
-        compat_aopen = None
+        COMPAT_AOPEN = None  # type: ignore
         IOCP_AVAILABLE = False
-
-# 可选依赖：native_iocp 批量目录遍历（用于优化目录遍历性能）
-try:
-    from backend.infrastructure.native.native_iocp import fast_dir_walk, BATCH_AVAILABLE
-
-    NATIVE_IOCP_BATCH_AVAILABLE = BATCH_AVAILABLE
-except ImportError:
-    fast_dir_walk = None  # type: ignore
-    NATIVE_IOCP_BATCH_AVAILABLE = False
+        fast_dir_walk = None  # type: ignore
+        NATIVE_IOCP_BATCH_AVAILABLE = False
 
 # 可选依赖：native_collections
 try:
@@ -175,7 +188,7 @@ class StorageManager:
         self.config_manager = ConfigManager.get_instance()
         self.data_dir = self.config_manager.get_data_dir()
 
-        logger.info(f"✓ StorageManager 已初始化，数据目录: {self.data_dir}")
+        logger.info("✓ StorageManager 已初始化，数据目录: %s", self.data_dir)
 
     def get_data_path(self, symbol: str, interval: str) -> Path:
         """
@@ -194,7 +207,9 @@ class StorageManager:
 
         return interval_dir / f"{symbol}.parquet"
 
-    async def save_data_async(self, symbol: str, interval: str, df: pd.DataFrame) -> bool:
+    async def save_data_async(
+        self, symbol: str, interval: str, df: pd.DataFrame
+    ) -> bool:
         """
         异步保存数据（使用native_iocp）
 
@@ -206,7 +221,7 @@ class StorageManager:
         Returns:
             是否保存成功
         """
-        if not compat_aopen:
+        if not COMPAT_AOPEN:
             # 降级到同步版本
             return self.save_data(symbol, interval, df)
 
@@ -221,15 +236,18 @@ class StorageManager:
             data = buffer.getvalue()
 
             # 2. 异步写入文件（使用native_iocp）
-            async with await compat_aopen(file_path, "wb") as f:
+            async with await COMPAT_AOPEN(file_path, "wb") as f:
                 await f.write(data)
 
-            logger.debug(f"✓ 数据已保存（异步）: {symbol}/{interval}, {len(df)}行")
+            logger.debug("✓ 数据已保存（异步）: %s/%s, %d行", symbol, interval, len(df))
             return True
 
         except Exception as e:
             logger.error(
-                f"❌ [StorageManager] 数据保存失败（异步）: {symbol}/{interval}, 错误: {e}",
+                "❌ [StorageManager] 数据保存失败（异步）: %s/%s, 错误: %s",
+                symbol,
+                interval,
+                e,
                 exc_info=True,
                 extra={"log_type": "SYSTEM"},
             )
@@ -254,19 +272,19 @@ class StorageManager:
         Returns:
             DataFrame或None
         """
-        if not compat_aopen:
+        if not COMPAT_AOPEN:
             # 降级到同步版本
             return self.load_data(symbol, interval, start_date, end_date)
 
         file_path = self.get_data_path(symbol, interval)
 
         if not file_path.exists():
-            logger.debug(f"文件不存在: {symbol}/{interval}")
+            logger.debug("文件不存在: %s/%s", symbol, interval)
             return None
 
         try:
             # 1. 异步读取文件（使用native_iocp）
-            async with await compat_aopen(file_path, "rb") as f:
+            async with await COMPAT_AOPEN(file_path, "rb") as f:
                 data = await f.read()
 
             # 2. 解析Parquet（CPU操作，非阻塞）
@@ -276,12 +294,15 @@ class StorageManager:
             if start_date or end_date:
                 df = self._filter_by_date(df, start_date, end_date)
 
-            logger.debug(f"✓ 数据已加载（异步）: {symbol}/{interval}, {len(df)}行")
+            logger.debug("✓ 数据已加载（异步）: %s/%s, %d行", symbol, interval, len(df))
             return df
 
         except Exception as e:
             logger.error(
-                f"❌ [StorageManager] 数据加载失败（异步）: {symbol}/{interval}, 错误: {e}",
+                "❌ [StorageManager] 数据加载失败（异步）: %s/%s, 错误: %s",
+                symbol,
+                interval,
+                e,
                 exc_info=True,
                 extra={"log_type": "SYSTEM"},
             )
@@ -303,12 +324,15 @@ class StorageManager:
 
         try:
             df.to_parquet(file_path, engine="pyarrow", compression="snappy")
-            logger.debug(f"✓ 数据已保存（同步）: {symbol}/{interval}, {len(df)}行")
+            logger.debug("✓ 数据已保存（同步）: %s/%s, %d行", symbol, interval, len(df))
             return True
 
         except Exception as e:
             logger.error(
-                f"❌ [StorageManager] 数据保存失败（同步）: {symbol}/{interval}, 错误: {e}",
+                "❌ [StorageManager] 数据保存失败（同步）: %s/%s, 错误: %s",
+                symbol,
+                interval,
+                e,
                 exc_info=True,
                 extra={"log_type": "SYSTEM"},
             )
@@ -336,7 +360,7 @@ class StorageManager:
         file_path = self.get_data_path(symbol, interval)
 
         if not file_path.exists():
-            logger.debug(f"文件不存在: {symbol}/{interval}")
+            logger.debug("文件不存在: %s/%s", symbol, interval)
             return None
 
         try:
@@ -346,12 +370,15 @@ class StorageManager:
             if start_date or end_date:
                 df = self._filter_by_date(df, start_date, end_date)
 
-            logger.debug(f"✓ 数据已加载（同步）: {symbol}/{interval}, {len(df)}行")
+            logger.debug("✓ 数据已加载（同步）: %s/%s, %d行", symbol, interval, len(df))
             return df
 
         except Exception as e:
             logger.error(
-                f"❌ [StorageManager] 数据加载失败（同步）: {symbol}/{interval}, 错误: {e}",
+                "❌ [StorageManager] 数据加载失败（同步）: %s/%s, 错误: %s",
+                symbol,
+                interval,
+                e,
                 exc_info=True,
                 extra={"log_type": "SYSTEM"},
             )
@@ -379,14 +406,17 @@ class StorageManager:
             return df
 
         # 转换日期列
+        df = df.copy()
         df["date"] = pd.to_datetime(df["date"])
 
         # 应用过滤
         if start_date:
-            df = df[df["date"] >= pd.to_datetime(start_date)]
+            mask = df["date"] >= pd.to_datetime(start_date)
+            df = df[mask]  # type: ignore
 
         if end_date:
-            df = df[df["date"] <= pd.to_datetime(end_date)]
+            mask = df["date"] <= pd.to_datetime(end_date)
+            df = df[mask]  # type: ignore
 
         return df
 
@@ -406,13 +436,16 @@ class StorageManager:
         try:
             if file_path.exists():
                 file_path.unlink()
-                logger.debug(f"✓ 数据已删除: {symbol}/{interval}")
+                logger.debug("✓ 数据已删除: %s/%s", symbol, interval)
                 return True
             return False
 
         except Exception as e:
             logger.error(
-                f"❌ [StorageManager] 数据删除失败: {symbol}/{interval}, 错误: {e}",
+                "❌ [StorageManager] 数据删除失败: %s/%s, 错误: %s",
+                symbol,
+                interval,
+                e,
                 exc_info=True,
                 extra={"log_type": "SYSTEM"},
             )
@@ -502,11 +535,17 @@ class PreloadService:
             # 使用native_collections.HighPerfLRUCache作为底层存储
             # 缓存：{(symbol, interval): DataFrame}
             self._cache: Any = HighPerfLRUCache(max_cache_size)  # type: ignore
-            logger.info(f"✓ PreloadService 已初始化（使用HighPerfLRUCache），最大缓存: {max_cache_size}品种")
+            logger.info(
+                "✓ PreloadService 已初始化（使用HighPerfLRUCache），最大缓存: %d品种",
+                max_cache_size,
+            )
         else:
             # 回退到OrderedDict实现
             self._cache: Any = OrderedDict[Tuple[str, str], pd.DataFrame]()
-            logger.info(f"✓ PreloadService 已初始化（使用OrderedDict），最大缓存: {max_cache_size}品种")
+            logger.info(
+                "✓ PreloadService 已初始化（使用OrderedDict），最大缓存: %d品种",
+                max_cache_size,
+            )
 
         self._lock = Lock()
 
@@ -544,13 +583,16 @@ class PreloadService:
 
                 except Exception as e:
                     logger.error(
-                        f"❌ [PreloadService] 预加载失败: {symbol}/{interval}, 错误: {e}",
+                        "❌ [PreloadService] 预加载失败: %s/%s, 错误: %s",
+                        symbol,
+                        interval,
+                        e,
                         exc_info=True,
                         extra={"log_type": "SYSTEM"},
                     )
                     results["failed"] += 1
 
-        logger.info(f"✓ 预加载完成: 成功{results['success']}/{results['total']}")
+        logger.info("✓ 预加载完成: 成功%d/%d", results["success"], results["total"])
         return results
 
     def get_from_cache(self, symbol: str, interval: str) -> Optional[pd.DataFrame]:
@@ -742,19 +784,25 @@ class LRUCacheManager(Generic[K, V]):
         # 尝试使用native_collections，否则回退到OrderedDict
         self._use_native = NATIVE_COLLECTIONS_AVAILABLE and HighPerfLRUCache is not None
 
+        # 初始化缓存存储
+        self._cache: Any = None
+        self._metadata: Optional[Dict[K, CacheEntry[V]]] = None
+
         if self._use_native and HighPerfLRUCache is not None:
             # 使用native_collections.HighPerfLRUCache作为底层存储
             # 存储 key -> CacheEntry[V]
-            self._cache: Any = HighPerfLRUCache(capacity)
+            self._cache = HighPerfLRUCache(capacity)
             # 额外维护一个元数据字典，用于TTL检查和统计
             # 注意：这个字典只在Python层维护，不参与LRU淘汰
-            self._metadata: Dict[K, CacheEntry[V]] = {}
+            self._metadata = {}
             logger.debug("✅ [LRUCacheManager] 使用native_collections.HighPerfLRUCache")
         else:
             # 回退到OrderedDict实现
-            self._cache: OrderedDict[K, CacheEntry[V]] = OrderedDict()
-            self._metadata: Optional[Dict[K, CacheEntry[V]]] = None  # 不使用元数据字典
-            logger.debug("⚠️ [LRUCacheManager] native_collections不可用，回退到OrderedDict")
+            self._cache = OrderedDict()
+            self._metadata = None  # 不使用元数据字典
+            logger.debug(
+                "⚠️ [LRUCacheManager] native_collections不可用，回退到OrderedDict"
+            )
 
         self._lock = Lock()
 
@@ -858,7 +906,7 @@ class LRUCacheManager(Generic[K, V]):
         with self._lock:
             if self._use_native:
                 # 使用native_collections实现
-                current_size = self._cache.size()
+                current_size = len(self._metadata) if self._metadata is not None else 0
 
                 # 检查是否已存在
                 try:
@@ -869,7 +917,7 @@ class LRUCacheManager(Generic[K, V]):
                         existing_entry.value = value
                         existing_entry.timestamp = time.time()
                         # 重新设置以更新LRU顺序
-                        self._cache.set(key, existing_entry)
+                        self._cache[key] = existing_entry  # type: ignore
                         # 更新元数据
                         if self._metadata and key in self._metadata:
                             self._metadata[key] = existing_entry
@@ -902,7 +950,7 @@ class LRUCacheManager(Generic[K, V]):
 
                 # 添加新条目
                 entry = CacheEntry(value=value, timestamp=time.time())
-                self._cache.set(key, entry)
+                self._cache[key] = entry  # type: ignore
                 # 更新元数据
                 if self._metadata is not None:
                     self._metadata[key] = entry
@@ -1005,7 +1053,7 @@ class LRUCacheManager(Generic[K, V]):
                 # 使用native_collections实现
                 # HighPerfLRUCache没有clear方法，我们通过重新创建来实现
                 # 或者，我们可以清空_metadata，然后重新创建缓存
-                self._cache = HighPerfLRUCache(self.capacity)
+                self._cache = HighPerfLRUCache(self.capacity)  # type: ignore
                 if self._metadata is not None:
                     self._metadata.clear()
             else:
@@ -1062,7 +1110,9 @@ class LRUCacheManager(Generic[K, V]):
                 self.on_evict(key, entry.value)
             except Exception as e:
                 logger.warning(
-                    f"⚠️ [LRUCacheManager] 淘汰回调执行失败: {e}", extra={"log_type": "SYSTEM"}
+                    "⚠️ [LRUCacheManager] 淘汰回调执行失败: %s",
+                    e,
+                    extra={"log_type": "SYSTEM"},
                 )
 
 
@@ -1123,13 +1173,13 @@ class SharedMemoryManager:
 
     def __init__(self):
         """初始化共享内存管理器"""
-        self.manager: Optional[Manager] = None
+        self.manager: Optional[Any] = None
         self._shared_dict: Optional[Dict] = None
         self._is_started = False
 
         # 原生共享内存模式（优先使用）
         self._native_mode: bool = HAS_SHARED_MEMORY
-        self._shm: Optional[object] = None  # _shared_memory.SharedMemory
+        self._shm: Optional[object] = None  # _SHARED_MEMORY.SharedMemory
         self._shm_name: str = "terminal_v050_validation_ctx"
         self._shm_size: int = 0
 
@@ -1144,7 +1194,7 @@ class SharedMemoryManager:
             # 原生共享内存模式：延迟在 prepare_shared_data 期间创建具体段
             self._is_started = True
         else:
-            self.manager = Manager()
+            self.manager = Manager()  # type: ignore
             self._shared_dict = self.manager.dict()
             self._is_started = True
 
@@ -1200,7 +1250,9 @@ class SharedMemoryManager:
 
         if self._native_mode:
             # 序列化为紧凑结构（避免pickle，降低写入延迟）
-            payload = self._serialize_validation_ctx(ipo_dates, trading_days, latest_trading_day, base_date)
+            payload = self._serialize_validation_ctx(
+                ipo_dates, trading_days, latest_trading_day, base_date
+            )
 
             # 头部8字节存放长度（Q，unsigned long long）+ 有效负载
             total_size = 8 + len(payload)
@@ -1218,7 +1270,9 @@ class SharedMemoryManager:
             self._shared_dict["base_date"] = base_date
 
         logger.debug(
-            f"✓ 共享数据已准备: {len(ipo_dates)}个IPO日期, {len(trading_days)}个交易日"
+            "✓ 共享数据已准备: %d个IPO日期, %d个交易日",
+            len(ipo_dates),
+            len(trading_days),
         )
 
     def get_validation_context(self) -> ValidationContext:
@@ -1243,8 +1297,9 @@ class SharedMemoryManager:
             return ValidationContext(
                 ipo_dates=self._shared_dict.get("ipo_dates", {}),
                 trading_days=self._shared_dict.get("trading_days", set()),
-                latest_trading_day=self._shared_dict.get("latest_trading_day"),
-                base_date=self._shared_dict.get("base_date"),
+                latest_trading_day=self._shared_dict.get("latest_trading_day")
+                or date.today(),
+                base_date=self._shared_dict.get("base_date") or date.today(),
             )
 
     def get_shared_data_info(self) -> Dict[str, Any]:
@@ -1299,20 +1354,20 @@ class SharedMemoryManager:
             self._shm_size = 0
 
         # 尝试创建新的共享段
-        assert _shared_memory is not None
+        assert _SHARED_MEMORY is not None
         try:
-            self._shm = _shared_memory.SharedMemory(name=self._shm_name, create=True, size=size)  # type: ignore[attr-defined]
+            self._shm = _SHARED_MEMORY.SharedMemory(name=self._shm_name, create=True, size=size)  # type: ignore[attr-defined]
             self._shm_size = size
         except FileExistsError:
             # 同名已存在则连接并校验容量，不足则重新创建唯一名（加后缀）
             try:
-                self._shm = _shared_memory.SharedMemory(name=self._shm_name, create=False)  # type: ignore[attr-defined]
+                self._shm = _SHARED_MEMORY.SharedMemory(name=self._shm_name, create=False)  # type: ignore[attr-defined]
                 self._shm_size = int(getattr(self._shm, "size", size))  # type: ignore[attr-defined]
             except Exception:
                 # 后缀名重试
                 suffix = f"_{os.getpid()}"
                 alt_name = self._shm_name + suffix
-                self._shm = _shared_memory.SharedMemory(name=alt_name, create=True, size=size)  # type: ignore[attr-defined]
+                self._shm = _SHARED_MEMORY.SharedMemory(name=alt_name, create=True, size=size)  # type: ignore[attr-defined]
                 self._shm_name = alt_name
                 self._shm_size = size
 
@@ -1353,14 +1408,14 @@ class SharedMemoryManager:
         if not self._native_mode:
             return None
 
-        assert _shared_memory is not None
+        assert _SHARED_MEMORY is not None
         shm_obj = None
         try:
             # 优先使用当前记录的共享段名
             if self._shm is not None:
                 shm_obj = self._shm
             else:
-                shm_obj = _shared_memory.SharedMemory(name=self._shm_name, create=False)  # type: ignore[attr-defined]
+                shm_obj = _SHARED_MEMORY.SharedMemory(name=self._shm_name, create=False)  # type: ignore[attr-defined]
         except Exception:
             return None
 
@@ -1380,20 +1435,21 @@ class SharedMemoryManager:
             except Exception:
                 return None
 
-            ipo_dates = {k: self._from_iso(v) for k, v in data.get("ipo_dates", {}).items()}
+            ipo_dates = {
+                k: self._from_iso(v) for k, v in data.get("ipo_dates", {}).items()
+            }
             trading_days = {self._from_iso(s) for s in data.get("trading_days", [])}
             latest_trading_day = self._from_iso(data.get("latest_trading_day"))
             base_date = self._from_iso(data.get("base_date"))
 
             return ValidationContext(
                 ipo_dates=ipo_dates,
-                trading_days=trading_days, 
+                trading_days=trading_days,
                 latest_trading_day=latest_trading_day,
                 base_date=base_date,
             )
         except Exception:
             return None
-
 
 
 # ==============================================================================

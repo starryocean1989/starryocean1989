@@ -68,10 +68,10 @@ class ResourceLimitConfigWidget(QWidget):
         small_task_layout = QFormLayout()
 
         # CPU限制
-        self.small_cpu_slider = QSlider(Qt.Horizontal)
+        self.small_cpu_slider = QSlider(Qt.Horizontal)  # type: ignore[attr]
         self.small_cpu_slider.setRange(10, 100)
         self.small_cpu_slider.setValue(30)
-        self.small_cpu_slider.setTickPosition(QSlider.TicksBelow)
+        self.small_cpu_slider.setTickPosition(QSlider.TicksBelow)  # type: ignore[attr]
         self.small_cpu_slider.setTickInterval(10)
         self.small_cpu_value_label = QLabel("30%")
         self.small_cpu_slider.valueChanged.connect(
@@ -84,10 +84,10 @@ class ResourceLimitConfigWidget(QWidget):
         small_task_layout.addRow("CPU限制:", cpu_layout)
 
         # 内存限制
-        self.small_memory_slider = QSlider(Qt.Horizontal)
+        self.small_memory_slider = QSlider(Qt.Horizontal)  # type: ignore[attr]
         self.small_memory_slider.setRange(10, 100)
         self.small_memory_slider.setValue(50)
-        self.small_memory_slider.setTickPosition(QSlider.TicksBelow)
+        self.small_memory_slider.setTickPosition(QSlider.TicksBelow)  # type: ignore[attr]
         self.small_memory_slider.setTickInterval(10)
         self.small_memory_value_label = QLabel("50%")
         self.small_memory_slider.valueChanged.connect(
@@ -107,10 +107,10 @@ class ResourceLimitConfigWidget(QWidget):
         large_task_layout = QFormLayout()
 
         # CPU限制
-        self.large_cpu_slider = QSlider(Qt.Horizontal)
+        self.large_cpu_slider = QSlider(Qt.Horizontal)  # type: ignore[attr]
         self.large_cpu_slider.setRange(10, 100)
         self.large_cpu_slider.setValue(80)
-        self.large_cpu_slider.setTickPosition(QSlider.TicksBelow)
+        self.large_cpu_slider.setTickPosition(QSlider.TicksBelow)  # type: ignore[attr]
         self.large_cpu_slider.setTickInterval(10)
         self.large_cpu_value_label = QLabel("80%")
         self.large_cpu_slider.valueChanged.connect(
@@ -123,10 +123,10 @@ class ResourceLimitConfigWidget(QWidget):
         large_task_layout.addRow("CPU限制:", large_cpu_layout)
 
         # 内存限制
-        self.large_memory_slider = QSlider(Qt.Horizontal)
+        self.large_memory_slider = QSlider(Qt.Horizontal)  # type: ignore[attr]
         self.large_memory_slider.setRange(10, 100)
         self.large_memory_slider.setValue(70)
-        self.large_memory_slider.setTickPosition(QSlider.TicksBelow)
+        self.large_memory_slider.setTickPosition(QSlider.TicksBelow)  # type: ignore[attr]
         self.large_memory_slider.setTickInterval(10)
         self.large_memory_value_label = QLabel("70%")
         self.large_memory_slider.valueChanged.connect(
@@ -310,12 +310,12 @@ class ResourceLimitConfigWidget(QWidget):
     def _update_resource_usage(self):
         """更新当前资源使用情况"""
         try:
-            cpu_percent = psutil.cpu_percent(interval=0.1)
-            memory_percent = psutil.virtual_memory().percent
+            cpu_percent = psutil.cpu_percent(interval=0.1)  # type: ignore
+            memory_percent = psutil.virtual_memory().percent  # type: ignore
 
             # 设置颜色（根据使用率）
-            cpu_color = self._get_usage_color(cpu_percent)
-            memory_color = self._get_usage_color(memory_percent)
+            cpu_color = self._get_usage_color(cpu_percent)  # type: ignore
+            memory_color = self._get_usage_color(memory_percent)  # type: ignore
 
             self.current_cpu_label.setText(f"{cpu_percent:.1f}%")
             self.current_cpu_label.setStyleSheet(f"color: {cpu_color}; font-weight: bold;")

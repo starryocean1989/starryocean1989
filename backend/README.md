@@ -8,6 +8,10 @@ backend/
 ├── core/           # 核心基础模块
 ├── services/       # 业务服务模块
 └── infrastructure/ # 底层基础设施
+    ├── data_module_vnpy/  # VnPy数据模块
+    ├── native/           # Native性能扩展
+    ├── system_vnpy/      # 系统基础设施模块
+    └── [其他基础设施模块...]
 ```
 
 ---
@@ -42,6 +46,8 @@ set_main_engine(engine: MainEngine)
 set_event_engine(engine: EventEngine)
 set_china_stock_engine(engine: ChinaStockEngine)
 ```
+
+> ⚠️ **使用建议（v1.5+）**：上述 `set_*` 系列方法仅为遗留代码兼容入口。新代码应通过 `backend.startup.context.StartupContext` 暴露的 `service_registry` / `service_manager` 访问引擎实例，保持“单一事实来源”。
 
 ---
 
@@ -184,7 +190,8 @@ class LoggerMixin:
 - **日志管理**：日志记录、查询、统计、清理（使用 `LogManager` 和 `LogDatabase`）
 - **告警管理**：告警规则引擎、告警生命周期管理（使用 `AlertEngine` 和 `AlertDatabase`）
 - **性能监控**：系统性能指标收集、阈值检查（使用 `PerformanceMonitor`）
-- **健康检查**：系统健康状态检查、环境检查（使用 `HealthChecker`）
+- **健康检查**：系统健康状态检查、环境检查、进程心跳监控（使用 `HealthChecker`）
+- **进程监控**：三进程架构下的监控进程和数据进程健康检查（集成IPC管道心跳检测）
 - **异步任务管理**：后台任务调度和执行（使用 `AsyncTaskManager`）
 - **测试运行**：单元测试运行和结果管理（使用 `TestRunner`）
 
@@ -357,7 +364,7 @@ class StrategyCenterService(BaseService):
     def get_available_strategies(
         strategy_folder: str = None,
         engine_type: str = None
-    ) -> List[Dict[str, Any]]
+    ) -> Dict[str, Any]
     def identify_strategy_type(file_path: str) -> Dict[str, Any]
     def load_strategy_module_info(file_path: str) -> Dict[str, Any]
 
@@ -427,7 +434,7 @@ class TradingGatewayService(BaseService):
     def list_gateways() -> List[Dict[str, Any]]
 
     # 策略部署
-    def get_available_strategies(engine_type: str = None) -> List[Dict[str, Any]]
+    def get_available_strategies(engine_type: str = None) -> Dict[str, Any]
     def load_strategy_from_file(
         gateway_name: str,
         strategy_name: str,
@@ -484,7 +491,7 @@ class PortfolioService(BaseService):
         weights: Dict[str, float] = None
     ) -> Dict[str, Any]
     def delete_custom_portfolio(portfolio_name: str) -> Dict[str, Any]
-    def list_portfolios() -> List[Dict[str, Any]]
+    def list_portfolios() -> Dict[str, Any]
 
     # 实时盈亏
     def calculate_realtime_pnl(portfolio_name: str) -> Dict[str, Any]
@@ -593,7 +600,162 @@ psutil, PSUTIL_AVAILABLE
 
 ## 🔧 Infrastructure 底层基础设施
 
-`backend/infrastructure/` 目录包含底层基础设施模块，为上层服务提供数据获取、系统监控、异步通信等能力，包括 `data_module_vnpy`（数据模块）、`system_vnpy`（系统工具包）、`tdx_asyncio`（通达信异步客户端）、`native_iocp`（真异步文件I/O）、`native_ipc`（真异步跨进程通信）等。
+### infrastructure/system_vnpy/ - 系统基础设施模块
+
+提供系统级的基础设施服务，包括模块生命周期管理、延迟日志初始化、依赖管理和热重载功能。
+
+#### 1. `lazy_logger.py` - LazyLogger延迟初始化系统
+
+**功能定位：**
+- 解决模块导入时同步调用复杂logger初始化导致的阻塞问题
+- 实现带日志缓冲的延迟logger初始化，支持<1秒的模块导入时间
+- 提供异步日志缓冲和批量刷新机制
+
+**核心接口：**
+```python
+# LazyLogger管理
+get_lazy_logger(name: str) -> LazyLogger
+initialize_all_loggers() -> None
+flush_buffered_logs() -> None
+
+# LazyLogger类
+class LazyLogger:
+    def get_logger() -> logging.Logger
+    def buffer_log(level: int, message: str, **kwargs)
+    def async_flush() -> Awaitable[None]
+```
+
+#### 2. `module_lifecycle.py` - 模块生命周期管理器
+
+**功能定位：**
+- 解决Python同步import阻塞整个进程的问题
+- 实现异步生命周期管理：导入→注入→初始化→注册
+- 支持模块初始化失败不影响其他模块正常工作
+
+**核心接口：**
+```python
+# 生命周期管理器
+get_module_lifecycle_manager() -> ModuleLifecycleManager
+initialize_all_modules() -> Awaitable[bool]
+reload_module(module_name: str) -> Awaitable[bool]
+
+# 生命周期状态
+class ModuleLifecycleState(Enum):
+    UNLOADED = "unloaded"
+    IMPORTED = "imported"
+    INJECTED = "injected"
+    INITIALIZING = "initializing"
+    INITIALIZED = "initialized"
+    FAILED = "failed"
+```
+
+#### 3. `module_dependency.py` - 轻量级依赖管理系统
+
+**功能定位：**
+- 提供模块依赖解析、循环依赖检测、依赖注入等功能
+- 支持可选依赖、版本兼容性检查、动态依赖管理
+- 建立轻量级的服务注册和发现机制
+
+**核心接口：**
+```python
+# 依赖解析器
+get_dependency_resolver() -> DependencyResolver
+resolve_dependencies(modules: List[str]) -> DependencyResolutionResult
+check_circular_dependencies(modules: List[str]) -> List[List[str]]
+
+# 依赖规范
+class DependencySpec:
+    name: str
+    type: DependencyType
+    version_constraint: Optional[str]
+    optional: bool
+
+# 便捷函数
+required(module_name: str, version_spec: Optional[str] = None) -> DependencySpec
+optional(module_name: str, version_spec: Optional[str] = None) -> DependencySpec
+```
+
+#### 4. `native_module_optimizer.py` - Native模块导入优化器
+
+**功能定位：**
+- 优化18个native模块导入时间，实现<0.5秒导入
+- 移除logger阻塞，提供并行导入能力
+- 支持模块导入性能监控和优化建议
+
+**核心接口：**
+```python
+# Native模块优化器
+get_native_module_optimizer() -> NativeModuleOptimizer
+optimize_native_imports() -> Awaitable[bool]
+get_import_performance_stats() -> Dict[str, float]
+
+# 模块规范
+class NativeModuleSpec:
+    name: str
+    import_path: str
+    optimization_level: int
+    dependencies: List[str]
+```
+
+#### 5. `module_hot_reload.py` - 模块热重载管理器
+
+**功能定位：**
+- 支持运行时模块热重载，无需重启应用
+- 提供安全的模块替换、状态迁移、依赖更新等功能
+- 支持文件变化监控和自动重载触发
+
+**核心接口：**
+```python
+# 热重载管理器
+get_module_hot_reload_manager() -> ModuleHotReloadManager
+enable_hot_reload(module_name: str, watch_path: Optional[str] = None) -> None
+disable_hot_reload(module_name: str) -> None
+reload_module(module_name: str, trigger: ReloadTrigger) -> Awaitable[ReloadResult]
+
+# 重载事件
+class ReloadEvent:
+    module_name: str
+    trigger: ReloadTrigger
+    timestamp: datetime
+    reason: str
+```
+
+---
+
+### infrastructure/data_module_vnpy/ - VnPy数据模块
+
+提供VnPy框架的数据获取、行情处理、交易接口等能力。
+
+### infrastructure/native/ - Native性能扩展
+
+提供高性能的底层扩展，包括异步I/O、跨进程通信、数值计算等。
+
+### infrastructure/system_vnpy/ - 系统基础设施模块
+
+提供系统级的基础设施服务，包括模块生命周期管理、延迟日志初始化、依赖管理和热重载功能。
+
+**核心组件：**
+- `lazy_logger.py` - LazyLogger延迟初始化系统
+- `module_lifecycle.py` - 模块生命周期管理器
+- `module_dependency.py` - 轻量级依赖管理系统
+- `native_module_optimizer.py` - Native模块导入优化器
+- `module_hot_reload.py` - 模块热重载管理器
+- [其他现有系统组件...]
+
+---
+
+## ⚡ Startup 启动编排（v1.5+）
+
+- **阶段总控**：`StartupOrchestrator`（`backend/startup/orchestrator.py`）统一执行 `EnvSetupStage → LoggingInitStage → QtFrameworkStage → BackendInitStage → UIActivationStage`，并维护全局唯一的 `StartupContext`。
+- **启动计划**：`StartupPlan` + `ProcessSupervisor` 通过 `startup_plan.json` 描述三进程 DAG，基于 `asyncio.TaskGroup` 并发调度 `MonitorLauncherWorker`、`DataLauncherWorker`、`BackendInitializerWorker`、`CacheValidatorWorker`。
+- **进程生命周期**：`ProcessOrchestrator`（`backend/startup/processes/`）封装状态机（`ProcessState`）、依赖拓扑、重启策略和 Watchdog，供启动阶段与运行期统一管理监控/数据等子进程。
+- **原生执行器**：`NativeStartupRuntime`（`native_support.py`）整合原生线程池、`HighPerfEvent` 与 Qt 主线程桥接，支持将 Portfolio/System/Market 等重量级服务后台并行初始化，并提供 `service_tracker.snapshot()` 输出 ready/pending/failed 视图。
+- **上下文中心**：`StartupContext`（`context.py`）集中记录事件引擎、主引擎、服务注册表、日志队列、原生运行时、健康快照、UI 预加载任务等信息，是后续阶段和主进程的核心依赖容器。
+- **服务初始化**：`ServiceInitializer`（`initializers/service_initializer.py`）迁移至 `backend.startup`，增加类别调度与就绪追踪；`backend.core.base.initialize_services` 仍保留惰性桥接并发出 `DeprecationWarning`。
+- **UI 启动桥接**：`backend/startup/ui_startup/` 中的 `StartupCoordinator`、`BootOrchestrator` 与 `backend/startup/health/ui_integration.py` 提供的健康事件桥接，负责 Splash、启动日志、就绪事件与主窗口展示的联动，替换旧版 `ui/startup_coordinator.py`。
+- **健康监控**：`backend/startup/health/` 提供启动期健康检查、事件回放、UI 侧进度 API，并复用 `StartupContext.service_tracker` 展示原生执行器统计。
+
+> ✅ **推荐入口**：`python start_new.py`；旧版 `start_async_fixed.py` 仅保留用于特定诊断场景。
 
 ---
 
@@ -754,37 +916,51 @@ Core层（核心基础）
 
 ## 🚀 快速开始
 
-### 初始化服务
+### 初始化服务（推荐流程）
 
 ```python
-from backend.startup.initializers.service_initializer import initialize_services, shutdown_services
+from backend.startup.context import StartupContext
+from backend.startup.initializers.service_initializer import ServiceInitializer
 
-# 快速启动（仅核心服务）
-success = initialize_services(fast_startup=True)
+# 1. 创建启动上下文（集中管理所有依赖）
+context = StartupContext()
 
-# 完整启动（所有服务）
-success = initialize_services(fast_startup=False)
+# 2. 构建服务初始化器（传入上下文和服务管理器）
+initializer = ServiceInitializer(
+    service_manager=context.service_manager,
+    context=context,
+)
 
-# 关闭所有服务
-shutdown_services()
+# 3. 根据需求选择初始化模式
+initializer.initialize_all_services()      # 完整启动（推荐）
+# initializer.initialize_core_services()  # 快速启动，仅加载核心服务
+
+# 4. 记录上下文，后续流程通过 context 访问引擎/服务
+service_manager = context.service_manager
+service_registry = context.service_registry
+
+# 5. 关闭流程（可选：在程序退出时调用）
+initializer.shutdown_services()
 ```
 
 ### 使用服务
 
 ```python
-from backend.core.base import get_service_manager
+# 推荐：通过ServiceRegistry解析，遵循依赖注入模式
+data_center = service_registry.resolve_optional("data_center_service")
+trading_gateway = service_registry.resolve_optional("trading_gateway_service")
 
-# 获取服务管理器
-service_manager = get_service_manager()
-
-# 获取具体服务
-data_center = service_manager.get_service("data_center")
-trading_gateway = service_manager.get_service("trading_gateway")
+# 兼容：仍可通过ServiceManager获取（将逐步淘汰）
+fallback = service_manager.get_service("data_center_service", silent=True)
 
 # 调用服务方法
-result = data_center.refresh_symbol_list()
-if result["success"]:
-    symbols = result["data"]
+if data_center:
+    result = data_center.refresh_symbol_list()
+    if result["success"]:
+        symbols = result["data"]
+
+# ⚠️ 说明：`backend.core.base.get_*` 等全局方法仅用于兼容旧代码，
+# 新代码应通过 `StartupContext`/`ServiceRegistry` 获取依赖。
 ```
 
 ### 访问配置

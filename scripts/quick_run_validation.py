@@ -177,7 +177,7 @@ def demo_physical_disks_info() -> None:
     for k, v in info.items():
         nv = dict(v)
         dt = nv.get("disk_type")
-        if hasattr(dt, "value"):
+        if dt is not None and hasattr(dt, "value"):
             nv["disk_type"] = dt.value
         normalized[k] = nv
 

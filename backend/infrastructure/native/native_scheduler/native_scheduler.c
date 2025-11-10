@@ -375,7 +375,6 @@ NativeScheduler_submit(NativeSchedulerObject *self, PyObject *args, PyObject *kw
     }
 
     /* Log successful task submission to thread pool */
-    const char *category_str = PyUnicode_AsUTF8(category_name);
     char success_details[256];
     sprintf(success_details, "category='%s', callable=%s, future=%s",
             category_str ? category_str : "<unknown>", callable->ob_type->tp_name, future->ob_type->tp_name);

@@ -23,12 +23,12 @@ METHOD_ID_MAP = {
 }
 
 # ID到方法名的映射
-ID_METHOD_MAP = {v: k for k, v in METHOD_ID_MAP.items()}
+ID_METHOD_MAP = {v.value: k for k, v in METHOD_ID_MAP.items()}
 
 def get_method_id(method_name: str) -> int:
     """根据方法名获取方法ID"""
     return METHOD_ID_MAP.get(method_name, 0)
 
-def get_method_name(method_id: int) -> str:
+def get_method_name(method_id: int) -> str | None:
     """根据方法ID获取方法名"""
     return ID_METHOD_MAP.get(method_id)

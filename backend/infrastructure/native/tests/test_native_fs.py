@@ -27,7 +27,7 @@ def test_watch_directory_receives_events(tmp_path: Path) -> None:
         events.append(event)
         event_set.set()
 
-    watcher: DirectoryWatcher = watch_directory(
+    watcher = watch_directory(
         str(tmp_path),
         _callback,
         recursive=False,
