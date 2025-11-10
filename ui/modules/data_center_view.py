@@ -50,7 +50,7 @@
 import logging
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QDate, QThread, QTimer, Signal, Qt, QStringListModel
 from PySide6.QtWidgets import QCompleter
@@ -80,15 +80,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.framework import get_service_registry, get_event_engine
-from backend.services.database_adapter import get_db_manager
-from backend.services.data_center_service import DataCenterService
-from backend.services.data_center_proxy import DataCenterServiceProxy
-from ui.components.widgets import BaseWidget
-
 # vnpy事件相关
 from vnpy.event import Event
+
+from backend.framework import get_service_registry, get_event_engine
+from backend.services.database_adapter import get_db_manager
 from backend.services.vnpy_imports import EVENT_TICK
+from ui.components.widgets import BaseWidget
 
 # 事件类型常量（与backend保持一致）
 EVENT_CHINASTOCK_DOWNLOAD = "eChinaStockDownload"
@@ -107,7 +105,15 @@ SYMBOL_TYPES = ["全部", "股票", "基金", "可转债"]
 PAGE_SIZE_OPTIONS = ["20", "50", "100", "200"]
 
 SYMBOLS_TABLE_HEADERS = ["品种代码", "品种名称", "交易所", "类型", "状态"]
-LOCAL_DATA_TABLE_HEADERS = ["日期", "开盘价", "最高价", "最低价", "收盘价", "成交量", "成交额"]
+LOCAL_DATA_TABLE_HEADERS = [
+    "日期",
+    "开盘价",
+    "最高价",
+    "最低价",
+    "收盘价",
+    "成交量",
+    "成交额",
+]
 DOWNLOAD_PROGRESS_TABLE_HEADERS = ["品种", "周期", "进度", "状态"]
 SOURCES_TABLE_HEADERS = ["数据源", "类型", "状态", "连接数", "操作"]
 
@@ -136,6 +142,8 @@ class ReloadSymbolsThread(QThread):
         import logging
 
         self.logger = logging.getLogger("ui.data_center.worker")
+        self.start_time = None
+        self.duration = 0.0
 
     def run(self):
         """线程执行函数（在后台线程中运行）."""
@@ -161,12 +169,14 @@ class ReloadSymbolsThread(QThread):
                 except ImportError:
                     hub = None
                 try:
-                    context_manager = event_log_process("refresh_symbol_list") if hub else None
+                    context_manager = (
+                        event_log_process("refresh_symbol_list") if hub else None
+                    )
                 except Exception:
                     context_manager = None
 
                 if (
-                    context_manager
+                    context_manager is not None
                     and hasattr(context_manager, "__enter__")
                     and hasattr(context_manager, "__exit__")
                 ):
@@ -174,25 +184,42 @@ class ReloadSymbolsThread(QThread):
                         # 阶段节点日志（输出到Terminal）
                         stage_logger.info(
                             "📍 重新请求品种列表开始",
-                            extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                            extra={
+                                "log_type": "STAGE_NODE",
+                                "scenario": "refresh_symbol_list",
+                            },
                         )
 
                         # 详细日志（只写入事件日志文件）
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 品种重载工作线程开始",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "refresh_symbol_list",
+                            },
                         )
                         self.logger.debug(
-                            f"[SYMBOL-RELOAD] 服务实例类型: {type(self.data_center_service).__name__}",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            "[SYMBOL-RELOAD] 服务实例类型: %s",
+                            type(self.data_center_service).__name__,
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "refresh_symbol_list",
+                            },
                         )
                         self.logger.debug(
-                            f"[SYMBOL-RELOAD] 服务实例: {self.data_center_service}",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            "[SYMBOL-RELOAD] 服务实例: %s",
+                            self.data_center_service,
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "refresh_symbol_list",
+                            },
                         )
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 强制重新加载: force=True",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "refresh_symbol_list",
+                            },
                         )
                         self.progress_signal.emit("正在连接服务器...")
 
@@ -200,7 +227,10 @@ class ReloadSymbolsThread(QThread):
                         reload_start_time = time.time()
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 调用服务层reload_symbol_list方法...",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "refresh_symbol_list",
+                            },
                         )
                         result = self.data_center_service.reload_symbol_list(force=True)
                         reload_elapsed = time.time() - reload_start_time
@@ -213,30 +243,54 @@ class ReloadSymbolsThread(QThread):
                             warning = result.get("warning")
                             empty_categories = result.get("empty_categories", [])
                             self.logger.debug(
-                                f"[SYMBOL-RELOAD] 重载结果详情: symbol_count={symbol_count}, "
-                                f"message={message}, warning={'存在' if warning else '无'}, "
-                                f"empty_categories={empty_categories}",
-                                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
+                                "[SYMBOL-RELOAD] 重载结果详情: symbol_count=%s, message=%s, warning=%s, empty_categories=%s",
+                                symbol_count,
+                                message,
+                                "存在" if warning else "无",
+                                empty_categories,
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "symbol_list_reload",
+                                },
                             )
                             self.logger.info(
-                                f"[SYMBOL-RELOAD] ✅ 品种重载完成: 耗时={elapsed:.2f}s, 数量={symbol_count}, "
-                                f"服务层耗时={reload_elapsed:.2f}s",
-                                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
+                                "[SYMBOL-RELOAD] ✅ 品种重载完成: 耗时=%.2f秒, 数量=%s, 服务层耗时=%.2f秒",
+                                elapsed,
+                                symbol_count,
+                                reload_elapsed,
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "symbol_list_reload",
+                                },
                             )
                             if warning:
                                 self.logger.warning(
-                                    f"[SYMBOL-RELOAD] ⚠️ 品种重载警告: {warning}",
-                                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
+                                    "[SYMBOL-RELOAD] ⚠️ 品种重载警告: %s",
+                                    warning,
+                                    extra={
+                                        "log_type": "ALERT",
+                                        "scenario": "symbol_list_reload",
+                                    },
                                 )
                         else:
-                            msg = result.get("message", "重载失败") if result else "重载失败"
+                            msg = (
+                                result.get("message", "重载失败")
+                                if result
+                                else "重载失败"
+                            )
                             self.logger.warning(
                                 f"[SYMBOL-RELOAD] ⚠️ 品种重载失败: {msg}, 耗时={elapsed:.2f}s",
-                                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
+                                extra={
+                                    "log_type": "ALERT",
+                                    "scenario": "symbol_list_reload",
+                                },
                             )
                             self.logger.debug(
                                 f"[SYMBOL-RELOAD] 失败结果详情: {result}",
-                                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "symbol_list_reload",
+                                },
                             )
 
                         # 阶段节点日志（输出到Terminal）
@@ -244,13 +298,24 @@ class ReloadSymbolsThread(QThread):
                             symbol_count = result.get("symbol_count", 0)
                             stage_logger.info(
                                 f"✅ 重新请求品种列表完成: 耗时={elapsed:.2f}s, 数量={symbol_count}",
-                                extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
+                                extra={
+                                    "log_type": "STAGE_NODE",
+                                    "scenario": "symbol_list_reload",
+                                },
                             )
                         else:
-                            msg = result.get("message", "重载失败") if result else "重载失败"
+                            msg = (
+                                result.get("message", "重载失败")
+                                if result
+                                else "重载失败"
+                            )
                             stage_logger.warning(
-                                f"⚠️ 重新请求品种列表失败: {msg}",
-                                extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
+                                "⚠️ 重新请求品种列表失败: %s",
+                                msg,
+                                extra={
+                                    "log_type": "STAGE_NODE",
+                                    "scenario": "symbol_list_reload",
+                                },
                             )
 
                         self.finished_signal.emit(result)
@@ -307,7 +372,14 @@ class DownloadThread(QThread):
     error_signal = Signal(str)  # 错误信号，传递错误消息
     progress_signal = Signal(str)  # 进度信号，传递进度消息
 
-    def __init__(self, data_center_service: Any, start_date, parent=None, symbols=None, end_date=None):
+    def __init__(
+        self,
+        data_center_service: Any,
+        start_date,
+        parent=None,
+        symbols=None,
+        end_date=None,
+    ):
         """初始化工作线程.
 
         Args:
@@ -399,7 +471,8 @@ class DownloadThread(QThread):
                     try:
                         # 优先调用带进度的新方法；不存在则回退旧方法
                         has_progress_method = hasattr(
-                            self.data_center_service, "start_incremental_download_with_progress"
+                            self.data_center_service,
+                            "start_incremental_download_with_progress",
                         )
                         self.logger.debug(
                             f"[DATA-DOWNLOAD] 服务是否有start_incremental_download_with_progress方法: {has_progress_method}",
@@ -409,7 +482,10 @@ class DownloadThread(QThread):
                         if has_progress_method:
                             self.logger.debug(
                                 "[DATA-DOWNLOAD] 使用带进度的下载方法",
-                                extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "data_download",
+                                },
                             )
 
                             def _cb(percent, message):
@@ -418,32 +494,44 @@ class DownloadThread(QThread):
                                     self.progress_signal.emit(str(message))
                                     self.logger.debug(
                                         f"[DATA-DOWNLOAD] 进度: {percent}% - {message}",
-                                        extra={"log_type": "PROGRESS", "scenario": "data_download"},
+                                        extra={
+                                            "log_type": "PROGRESS",
+                                            "scenario": "data_download",
+                                        },
                                     )
                                 except Exception as e:
                                     self.logger.debug(
                                         f"[DATA-DOWNLOAD] 进度回调异常: {e}",
-                                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                                        extra={
+                                            "log_type": "SYSTEM",
+                                            "scenario": "data_download",
+                                        },
                                     )
 
                             # 调用下载方法（传递symbols参数）
                             self.logger.debug(
                                 f"[DATA-DOWNLOAD] 调用start_incremental_download_with_progress方法: "
                                 f"start_date={self.start_date}, symbols={'有' if self.symbols else '无'}",
-                                extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "data_download",
+                                },
                             )
-                            result = (
-                                self.data_center_service.start_incremental_download_with_progress(
-                                    self.start_date, _cb, symbols=self.symbols
-                                )
+                            result = self.data_center_service.start_incremental_download_with_progress(
+                                self.start_date, _cb, symbols=self.symbols
                             )
                         else:
                             self.logger.debug(
                                 "[DATA-DOWNLOAD] 使用旧版下载方法（无进度回调）",
-                                extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "data_download",
+                                },
                             )
-                            result = self.data_center_service.start_incremental_download(
-                                self.start_date
+                            result = (
+                                self.data_center_service.start_incremental_download(
+                                    self.start_date
+                                )
                             )
 
                     except Exception as download_error:
@@ -459,7 +547,10 @@ class DownloadThread(QThread):
                         )
                         stage_logger.error(
                             f"❌ 数据下载失败: {download_error}",
-                            extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                            extra={
+                                "log_type": "STAGE_NODE",
+                                "scenario": "data_download",
+                            },
                         )
                         self.error_signal.emit(f"下载失败: {str(download_error)}")
                         return
@@ -529,7 +620,8 @@ class DownloadThread(QThread):
 
                 try:
                     if hasattr(
-                        self.data_center_service, "start_incremental_download_with_progress"
+                        self.data_center_service,
+                        "start_incremental_download_with_progress",
                     ):
 
                         def _cb(percent, message):
@@ -537,7 +629,10 @@ class DownloadThread(QThread):
                                 self.progress_signal.emit(str(message))
                                 self.logger.debug(
                                     f"[DATA-DOWNLOAD] 进度: {percent}% - {message}",
-                                    extra={"log_type": "PROGRESS", "scenario": "data_download"},
+                                    extra={
+                                        "log_type": "PROGRESS",
+                                        "scenario": "data_download",
+                                    },
                                 )
                             except Exception:
                                 pass
@@ -626,13 +721,18 @@ class DataCenter(BaseWidget):
     )  # 数据指标更新：total, downloaded, missing, invalid_count, details
     invalid_symbols_update_signal = Signal(int)  # 失效品种更新：count
     validation_completed_signal = Signal(bool)  # 启动流程验证完成：success
-    quality_scan_phase_signal = Signal(int, dict, str)  # 质量扫描阶段：phase, metrics, status
-    append_details_signal = Signal(list)  # 🔧 新增：追加问题详情信号（避免QTimer.singleShot不可靠）
+    quality_scan_phase_signal = Signal(
+        int, dict, str
+    )  # 质量扫描阶段：phase, metrics, status
+    append_details_signal = Signal(
+        list
+    )  # 🔧 新增：追加问题详情信号（避免QTimer.singleShot不可靠）
 
     def __init__(self, parent=None):
         """初始化数据中心界面."""
         # 初始化logger
         import logging
+
         self.logger = logging.getLogger(self.__class__.__name__)
 
         # 初始化服务管理器
@@ -653,9 +753,11 @@ class DataCenter(BaseWidget):
         # 异步工作线程
         self.reload_thread: Optional[ReloadSymbolsThread] = None
         self.download_thread: Optional[DownloadThread] = None
+        self._retest_thread: Optional[QThread] = None
 
         # 🔧 进度轮询定时器（备用）
         self.progress_timer: Optional[QTimer] = None
+        self._monitor_update_timer: Optional[QTimer] = None
 
         # 🔧 vnpy事件引擎
         self.event_engine = None
@@ -681,19 +783,27 @@ class DataCenter(BaseWidget):
         # 本地数据选项卡控件
         self.missing_symbol_warning: Optional[QLabel] = None  # 🔧 品种缺失警告
         self.symbol_input: Optional[QLineEdit] = None
-        self.symbol_input_status_label: Optional[QLabel] = None  # 🆕 品种索引加载状态提示
+        self.symbol_input_status_label: Optional[QLabel] = (
+            None  # 🆕 品种索引加载状态提示
+        )
         self.interval_combo: Optional[QComboBox] = None  # 周期选择框
         self.start_date_input: Optional[QDateEdit] = None
         self.end_date_input: Optional[QDateEdit] = None
         self.data_table: Optional[QTableWidget] = None
-        self.current_queried_symbol: Optional[str] = None  # 🔧 当前查询的品种（用于修复）
+        self.current_queried_symbol: Optional[str] = (
+            None  # 🔧 当前查询的品种（用于修复）
+        )
 
         # 品种智能联想相关
-        self.symbol_cache: List[Dict[str, Any]] = []  # 品种缓存（用于品种列表搜索框的拼音匹配）
+        self.symbol_cache: List[Dict[str, Any]] = (
+            []
+        )  # 品种缓存（用于品种列表搜索框的拼音匹配）
         self.symbol_pinyin_dict: Dict[tuple, str] = (
             {}
         )  # 🚀 品种拼音字典索引：(code, name) -> pinyin（O(1)查找）
-        self.local_data_cache: List[Dict[str, Any]] = []  # 本地数据索引（用于本地数据搜索框联想）
+        self.local_data_cache: List[Dict[str, Any]] = (
+            []
+        )  # 本地数据索引（用于本地数据搜索框联想）
         self.symbol_completer: Optional[QCompleter] = None  # 本地数据搜索框自动补全器
         # 注意：品种列表搜索框不再使用QCompleter，搜索直接触发品种列表过滤
 
@@ -703,10 +813,13 @@ class DataCenter(BaseWidget):
         # 🆕 流程状态追踪变量
         self._lightweight_running = True  # 启动流程运行中（初始为True）
         self._heavy_scan_running = False  # 数据质量扫描运行中
+        self.is_quality_scanning = False  # 数据质量扫描状态
 
         # 🆕 问题数据计数（用于按钮启用逻辑）
         self._symbol_cache_count = 0  # 总品种数（启动流程步骤4）
-        self._symbol_cache_event_received = False  # 🔧 新增：事件是否已到达标志位（时序控制）
+        self._symbol_cache_event_received = (
+            False  # 🔧 新增：事件是否已到达标志位（时序控制）
+        )
         self._downloaded_count = 0  # 已下载品种数
         self._missing_count = 0  # 品种缺失数
         self._invalid_symbols_count = 0  # 失效品种数
@@ -763,6 +876,7 @@ class DataCenter(BaseWidget):
         self.start_download_btn: Optional[QPushButton] = None
         self.pause_download_btn: Optional[QPushButton] = None
         self.stop_download_btn: Optional[QPushButton] = None
+        self.refresh_servers_btn: Optional[QPushButton] = None  # 🔧 服务器刷新按钮
         self.server_status_label: Optional[QLabel] = None  # 🔧 服务器状态显示
 
         # 下载历史相关
@@ -791,7 +905,9 @@ class DataCenter(BaseWidget):
         # 因为super().__init__会调用setup_ui()，而setup_ui()会调用_load_symbols_data()
         # 如果此时服务还没初始化，会导致错误
         try:
-            self.data_center_service = self.service_manager.get_service("data_center_service")
+            self.data_center_service = self.service_manager.get_service(
+                "data_center_service"
+            )
         except Exception as e:
             import logging
 
@@ -836,9 +952,13 @@ class DataCenter(BaseWidget):
         )
 
         # 🔧 注册vnpy事件监听器
-        self.logger.info("[DataCenter.__init__] 📍 步骤5: 准备调用_register_event_handlers()")
+        self.logger.info(
+            "[DataCenter.__init__] 📍 步骤5: 准备调用_register_event_handlers()"
+        )
         self._register_event_handlers()
-        self.logger.info("[DataCenter.__init__] 📍 步骤6: _register_event_handlers()已返回")
+        self.logger.info(
+            "[DataCenter.__init__] 📍 步骤6: _register_event_handlers()已返回"
+        )
 
         # 🆕 关键修复：主动拉取启动流程数据（补偿机制）
         # 原因：后端可能在前端初始化完成前就推送了事件，导致事件丢失
@@ -1076,14 +1196,18 @@ class DataCenter(BaseWidget):
         self.start_date_input.setCalendarPopup(True)
         self.start_date_input.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
         self.start_date_input.setDate(QDate.currentDate().addMonths(-1))
-        self.start_date_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+        self.start_date_input.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.UpDownArrows
+        )
         query_layout.addRow("开始日期:", self.start_date_input)
 
         self.end_date_input = QDateEdit()
         self.end_date_input.setCalendarPopup(True)
         self.end_date_input.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
         self.end_date_input.setDate(QDate.currentDate())
-        self.end_date_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+        self.end_date_input.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.UpDownArrows
+        )
         query_layout.addRow("结束日期:", self.end_date_input)
 
         query_btn = QPushButton("查询")
@@ -1180,7 +1304,9 @@ class DataCenter(BaseWidget):
         buttons_layout = QHBoxLayout()
 
         self.repair_symbol_issues_btn = QPushButton("修复品种问题")
-        self.repair_symbol_issues_btn.setToolTip("下载缺失品种和过时品种的数据（最多100天）")
+        self.repair_symbol_issues_btn.setToolTip(
+            "下载缺失品种和过时品种的数据（最多100天）"
+        )
         self.repair_symbol_issues_btn.setEnabled(False)
         self.repair_symbol_issues_btn.clicked.connect(self._repair_symbol_issues)
         buttons_layout.addWidget(self.repair_symbol_issues_btn)
@@ -1192,7 +1318,9 @@ class DataCenter(BaseWidget):
 
         self.toggle_symbol_issues_detail_btn = QPushButton("显示详细信息")
         self.toggle_symbol_issues_detail_btn.setCheckable(True)
-        self.toggle_symbol_issues_detail_btn.toggled.connect(self._toggle_symbol_issues_detail)
+        self.toggle_symbol_issues_detail_btn.toggled.connect(
+            self._toggle_symbol_issues_detail
+        )
         buttons_layout.addWidget(self.toggle_symbol_issues_detail_btn)
 
         buttons_layout.addStretch()
@@ -1258,14 +1386,18 @@ class DataCenter(BaseWidget):
         buttons_layout.addWidget(self.scan_data_btn)
 
         self.repair_data_issues_btn = QPushButton("修复数据问题")
-        self.repair_data_issues_btn.setToolTip("下载修复错误、数据缺失、警告（最多100天）")
+        self.repair_data_issues_btn.setToolTip(
+            "下载修复错误、数据缺失、警告（最多100天）"
+        )
         self.repair_data_issues_btn.setEnabled(False)
         self.repair_data_issues_btn.clicked.connect(self._repair_data_issues)
         buttons_layout.addWidget(self.repair_data_issues_btn)
 
         self.toggle_data_issues_detail_btn = QPushButton("显示详细信息")
         self.toggle_data_issues_detail_btn.setCheckable(True)
-        self.toggle_data_issues_detail_btn.toggled.connect(self._toggle_data_issues_detail)
+        self.toggle_data_issues_detail_btn.toggled.connect(
+            self._toggle_data_issues_detail
+        )
         buttons_layout.addWidget(self.toggle_data_issues_detail_btn)
 
         buttons_layout.addStretch()
@@ -1369,7 +1501,9 @@ class DataCenter(BaseWidget):
             self.logger.info(f"已触发 {len(problem_symbols)} 个品种的修复下载")
 
         except Exception as e:
-            self.logger.error(f"修复品种问题失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                f"修复品种问题失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             self.show_error(f"修复品种问题失败: {e}")
 
     def _delete_invalid_symbols(self) -> None:
@@ -1385,7 +1519,9 @@ class DataCenter(BaseWidget):
                     self.symbol_issues_detail_table.viewport().update()
         except Exception as e:
             self.logger.error(
-                f"切换品种问题详情表格失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True
+                f"切换品种问题详情表格失败: {e}",
+                extra={"log_type": "SYSTEM"},
+                exc_info=True,
             )
 
     def _append_symbol_issues_details(self, new_details: list) -> None:
@@ -1400,7 +1536,9 @@ class DataCenter(BaseWidget):
 
             # 过滤：只添加品种问题相关的（missing、invalid、outdated）
             filtered_details = [
-                d for d in new_details if d.get("status") in ["missing", "invalid", "outdated"]
+                d
+                for d in new_details
+                if d.get("status") in ["missing", "invalid", "outdated"]
             ]
 
             if not filtered_details:
@@ -1419,7 +1557,9 @@ class DataCenter(BaseWidget):
 
                 # 品种代码
                 symbol = detail.get("symbol", "")
-                self.symbol_issues_detail_table.setItem(row, 0, QTableWidgetItem(symbol))
+                self.symbol_issues_detail_table.setItem(
+                    row, 0, QTableWidgetItem(symbol)
+                )
 
                 # 品种名称
                 name = detail.get("name", "")
@@ -1437,17 +1577,26 @@ class DataCenter(BaseWidget):
 
                 # 问题描述
                 issues = detail.get("issues", "")
-                self.symbol_issues_detail_table.setItem(row, 3, QTableWidgetItem(issues))
+                self.symbol_issues_detail_table.setItem(
+                    row, 3, QTableWidgetItem(issues)
+                )
 
             self.logger.debug(f"追加了 {len(filtered_details)} 条品种问题详情")
 
         except Exception as e:
             self.logger.error(
-                f"追加品种问题详情失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+                f"追加品种问题详情失败: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
 
     def _update_symbol_issues_ui(
-        self, total_symbols=None, downloaded=None, missing=None, invalid_count=None, outdated=None
+        self,
+        total_symbols=None,
+        downloaded=None,
+        missing=None,
+        invalid_count=None,
+        outdated=None,
     ):
         """更新品种问题UI显示"""
         try:
@@ -1513,7 +1662,11 @@ class DataCenter(BaseWidget):
 
             # 如果没有详情表格数据，从计数标签推断
             if not problem_symbols:
-                if self._error_count > 0 or self._data_missing_count > 0 or self._warning_count > 0:
+                if (
+                    self._error_count > 0
+                    or self._data_missing_count > 0
+                    or self._warning_count > 0
+                ):
                     self.show_warning("请先点击'显示详细信息'查看问题品种，然后再修复")
                     return
                 else:
@@ -1574,7 +1727,9 @@ class DataCenter(BaseWidget):
             self.logger.info(f"已触发 {len(problem_symbols)} 个品种的修复下载")
 
         except Exception as e:
-            self.logger.error(f"修复数据问题失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                f"修复数据问题失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             self.show_error(f"修复数据问题失败: {e}")
 
     def _toggle_data_issues_detail(self, checked: bool) -> None:
@@ -1586,7 +1741,9 @@ class DataCenter(BaseWidget):
                     self.data_issues_detail_table.viewport().update()
         except Exception as e:
             self.logger.error(
-                f"切换数据问题详情表格失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True
+                f"切换数据问题详情表格失败: {e}",
+                extra={"log_type": "SYSTEM"},
+                exc_info=True,
             )
 
     def _append_data_issues_details(self, new_details: list) -> None:
@@ -1602,7 +1759,9 @@ class DataCenter(BaseWidget):
 
             # 过滤：只添加数据问题相关的（error、data_missing、warning），排除missing和outdated
             filtered_details = [
-                d for d in new_details if d.get("status") in ["error", "data_missing", "warning"]
+                d
+                for d in new_details
+                if d.get("status") in ["error", "data_missing", "warning"]
             ]
 
             if not filtered_details:
@@ -1629,9 +1788,11 @@ class DataCenter(BaseWidget):
 
                 # 状态
                 status = detail.get("status", "")
-                status_text = {"error": "错误", "data_missing": "数据缺失", "warning": "警告"}.get(
-                    status, status or ""
-                )
+                status_text = {
+                    "error": "错误",
+                    "data_missing": "数据缺失",
+                    "warning": "警告",
+                }.get(status, status or "")
                 status_item = QTableWidgetItem(status_text)
                 self.data_issues_detail_table.setItem(row, 2, status_item)
 
@@ -1643,10 +1804,14 @@ class DataCenter(BaseWidget):
 
         except Exception as e:
             self.logger.error(
-                f"追加数据问题详情失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+                f"追加数据问题详情失败: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
 
-    def _update_data_issues_ui(self, error_count=None, data_missing_count=None, warning_count=None):
+    def _update_data_issues_ui(
+        self, error_count=None, data_missing_count=None, warning_count=None
+    ):
         """更新数据问题UI显示"""
         try:
             if error_count is not None and self.data_error_label:
@@ -1688,7 +1853,10 @@ class DataCenter(BaseWidget):
 
         except Exception as e:
             self.logger.error(
-                "UI更新数据问题UI失败: 错误=%s", str(e), extra={"log_type": "SYSTEM"}, exc_info=True
+                "UI更新数据问题UI失败: 错误=%s",
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True,
             )
 
     # ==================== 数据下载子界面 ====================
@@ -1715,7 +1883,9 @@ class DataCenter(BaseWidget):
         config_layout = QFormLayout(config_group)
 
         # 添加说明标签
-        info_label = QLabel("📊 增量下载：下载指定日期范围的历史数据（最多支持最近100天）")
+        info_label = QLabel(
+            "📊 增量下载：下载指定日期范围的历史数据（最多支持最近100天）"
+        )
         info_label.setStyleSheet("color: #666; padding: 5px;")
         config_layout.addRow(info_label)
 
@@ -1723,14 +1893,18 @@ class DataCenter(BaseWidget):
         self.download_start_date = QDateEdit()
         self.download_start_date.setCalendarPopup(True)
         self.download_start_date.setDisplayFormat("yyyy-MM-dd")
-        self.download_start_date.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+        self.download_start_date.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.UpDownArrows
+        )
 
         # 设置日期范围：最多最近100天
         min_date = QDate.currentDate().addDays(-100)
         max_date = QDate.currentDate()
         self.download_start_date.setMinimumDate(min_date)
         self.download_start_date.setMaximumDate(max_date)
-        self.download_start_date.setDate(QDate.currentDate().addDays(-30))  # 默认最近30天
+        self.download_start_date.setDate(
+            QDate.currentDate().addDays(-30)
+        )  # 默认最近30天
 
         # 连接日期变更信号，验证100天限制
         self.download_start_date.dateChanged.connect(self._validate_date_range)
@@ -1833,14 +2007,15 @@ class DataCenter(BaseWidget):
         """手动触发服务器池重新测速并刷新状态（使用QThread+Signal）。"""
         try:
             # 设置场景（通过extra参数传递scenario）
-            pass
 
             if not self.refresh_servers_btn or not self.server_status_label:
                 return
 
             # 获取服务实例（容错）
             if not self.data_center_service:
-                self.data_center_service = self.service_manager.get_service("data_center_service")
+                self.data_center_service = self.service_manager.get_service(
+                    "data_center_service"
+                )
                 if not self.data_center_service:
                     self.show_warning("数据中心服务不可用，无法刷新服务器池")
                     return
@@ -1887,12 +2062,14 @@ class DataCenter(BaseWidget):
                             hub = None
 
                         try:
-                            context_manager = event_log_process("manual_speedtest") if hub else None
+                            context_manager = (
+                                event_log_process("manual_speedtest") if hub else None
+                            )
                         except Exception:
                             context_manager = None
 
                         if (
-                            context_manager
+                            context_manager is not None
                             and hasattr(context_manager, "__enter__")
                             and hasattr(context_manager, "__exit__")
                         ):
@@ -1909,24 +2086,38 @@ class DataCenter(BaseWidget):
                                 # DEBUG日志（只写入事件日志文件，通过extra传递scenario）
                                 self.logger.debug(
                                     "[SPEEDTEST] 开始执行服务器池测速",
-                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "manual_speedtest",
+                                    },
                                 )
                                 self.logger.debug(
                                     f"[SPEEDTEST] 服务实例类型: {type(self.service).__name__ if self.service else 'None'}",
-                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "manual_speedtest",
+                                    },
                                 )
                                 self.logger.debug(
                                     f"[SPEEDTEST] 服务实例: {self.service}",
-                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "manual_speedtest",
+                                    },
                                 )
                                 self.logger.debug(
                                     f"[SPEEDTEST] 服务是否有retest_server_pool方法: {hasattr(self.service, 'retest_server_pool') if self.service else False}",
-                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "manual_speedtest",
+                                    },
                                 )
 
                                 result = None
                                 try:
-                                    if self.service and hasattr(self.service, "retest_server_pool"):
+                                    if self.service and hasattr(
+                                        self.service, "retest_server_pool"
+                                    ):
                                         self.logger.debug(
                                             "[SPEEDTEST] 调用服务层测速方法...",
                                             extra={
@@ -2003,7 +2194,10 @@ class DataCenter(BaseWidget):
                                                 },
                                             )
                                     else:
-                                        result = {"success": False, "message": "后端未实现刷新API"}
+                                        result = {
+                                            "success": False,
+                                            "message": "后端未实现刷新API",
+                                        }
                                         elapsed = time.time() - start_time
                                         self.logger.error(
                                             f"[SPEEDTEST] ❌ 后端未实现刷新API, 耗时={elapsed:.2f}s",
@@ -2016,7 +2210,9 @@ class DataCenter(BaseWidget):
                                             "是"
                                             if (
                                                 self.service
-                                                and hasattr(self.service, "retest_server_pool")
+                                                and hasattr(
+                                                    self.service, "retest_server_pool"
+                                                )
                                             )
                                             else "否"
                                         )
@@ -2041,7 +2237,10 @@ class DataCenter(BaseWidget):
                                     self.logger.error(
                                         f"[SPEEDTEST] ❌ 测速异常: {e}, 耗时={elapsed:.2f}s",
                                         exc_info=True,
-                                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                                        extra={
+                                            "log_type": "ALERT",
+                                            "scenario": "manual_speedtest",
+                                        },
                                     )
                                     self.logger.debug(
                                         f"[SPEEDTEST] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
@@ -2067,25 +2266,39 @@ class DataCenter(BaseWidget):
                         )
                         result = None
                         try:
-                            if self.service and hasattr(self.service, "retest_server_pool"):
+                            if self.service and hasattr(
+                                self.service, "retest_server_pool"
+                            ):
                                 self.logger.debug(
                                     "[SPEEDTEST] 降级模式：调用服务层测速方法",
-                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "manual_speedtest",
+                                    },
                                 )
                                 result = self.service.retest_server_pool()
                             else:
-                                result = {"success": False, "message": "后端未实现刷新API"}
+                                result = {
+                                    "success": False,
+                                    "message": "后端未实现刷新API",
+                                }
                         except Exception as e:  # pylint: disable=broad-except
                             result = {"success": False, "message": str(e)}
                             self.logger.error(
                                 f"[SPEEDTEST] ❌ 降级模式测速异常: {e}",
                                 exc_info=True,
-                                extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "ALERT",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
                         elapsed = time.time() - start_time
                         self.logger.info(
                             f"[SPEEDTEST] 手动测速完成（降级模式）: 耗时={elapsed:.2f}s",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "manual_speedtest",
+                            },
                         )
 
                     # 发射信号（线程安全，Qt会自动调度到主线程）
@@ -2105,7 +2318,10 @@ class DataCenter(BaseWidget):
 
         except Exception as e:  # pylint: disable=broad-except
             self.logger.error(
-                "刷新服务器池失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"}
+                "刷新服务器池失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "USER_FEEDBACK"},
             )
             self.show_error(f"刷新服务器池失败: {e}")
             # 恢复按钮状态
@@ -2125,7 +2341,9 @@ class DataCenter(BaseWidget):
                 available = stats.get("available", 0)
                 total = stats.get("total", 0)
                 if self.server_status_label:
-                    self.server_status_label.setText(f"✅ 可用服务器: {available}/{total}")
+                    self.server_status_label.setText(
+                        f"✅ 可用服务器: {available}/{total}"
+                    )
                     self.server_status_label.setStyleSheet(
                         "color: #00aa00; font-weight: bold; padding: 8px; "
                         "background-color: #f0fff0; border-radius: 4px;"
@@ -2225,13 +2443,17 @@ class DataCenter(BaseWidget):
 
         start_time = record.get("start_time")
         if isinstance(start_time, datetime):
-            info_layout.addRow("开始时间:", QLabel(start_time.strftime("%Y-%m-%d %H:%M:%S")))
+            info_layout.addRow(
+                "开始时间:", QLabel(start_time.strftime("%Y-%m-%d %H:%M:%S"))
+            )
         else:
             info_layout.addRow("开始时间:", QLabel(str(start_time)))
 
         end_time = record.get("end_time")
         if isinstance(end_time, datetime):
-            info_layout.addRow("结束时间:", QLabel(end_time.strftime("%Y-%m-%d %H:%M:%S")))
+            info_layout.addRow(
+                "结束时间:", QLabel(end_time.strftime("%Y-%m-%d %H:%M:%S"))
+            )
         else:
             info_layout.addRow("结束时间:", QLabel(str(end_time)))
 
@@ -2359,7 +2581,9 @@ class DataCenter(BaseWidget):
 
             if not self.data_center_service:
                 self.logger.error(
-                    ">>> 数据中心服务未初始化", exc_info=True, extra={"log_type": "SYSTEM"}
+                    ">>> 数据中心服务未初始化",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
                 self.show_error("数据中心服务未初始化")
                 return
@@ -2367,7 +2591,8 @@ class DataCenter(BaseWidget):
             # 检查是否已有线程在运行
             if self.reload_thread and self.reload_thread.isRunning():
                 self.logger.warning(
-                    ">>> 已有线程在运行，品种列表正在加载中", extra={"log_type": "SYSTEM"}
+                    ">>> 已有线程在运行，品种列表正在加载中",
+                    extra={"log_type": "SYSTEM"},
                 )
                 # 🚀 修复UI卡死：不弹出模态对话框，只记录日志
                 # self.show_warning("品种列表正在加载中，请稍候...")
@@ -2389,14 +2614,17 @@ class DataCenter(BaseWidget):
             )
             # 🚀 修复UI卡死：progress_signal改为连接到日志输出，而不是模态对话框
             self.reload_thread.progress_signal.connect(
-                lambda msg: self.logger.info("进度: %s", msg), Qt.ConnectionType.QueuedConnection
+                lambda msg: self.logger.info("进度: %s", msg),
+                Qt.ConnectionType.QueuedConnection,
             )
             self.logger.info(">>> 信号连接完成")
 
             # 启动线程
             self.logger.info(">>> 启动线程...")
             self.reload_thread.start()
-            self.logger.info(">>> 线程已启动，isRunning: %s", self.reload_thread.isRunning())
+            self.logger.info(
+                ">>> 线程已启动，isRunning: %s", self.reload_thread.isRunning()
+            )
 
             # 显示加载进度条
             if self.symbol_loading_progress:
@@ -2437,7 +2665,9 @@ class DataCenter(BaseWidget):
                 data = result.get("data", [])
                 self.logger.info(">>> 获取到数据: %d个", len(data))
                 self.all_symbols_data = data
-                self.logger.info(">>> all_symbols_data已更新: %d个", len(self.all_symbols_data))
+                self.logger.info(
+                    ">>> all_symbols_data已更新: %d个", len(self.all_symbols_data)
+                )
 
                 # 🚀 性能优化：重新加载品种时清空搜索条件，避免对5000+品种进行搜索匹配
                 if self.search_input:
@@ -2448,7 +2678,9 @@ class DataCenter(BaseWidget):
                 t1 = time.time()
                 self._load_symbol_cache_for_autocomplete()
                 t2 = time.time()
-                self.logger.info(">>> 品种联想缓存已启动（后台），耗时: %.3f秒", t2 - t1)
+                self.logger.info(
+                    ">>> 品种联想缓存已启动（后台），耗时: %.3f秒", t2 - t1
+                )
 
                 # 🚀 延迟执行_apply_filters，等待拼音字典构建完成（500ms足够）
                 # 避免在字典未构建时进行过滤，减少不必要的计算
@@ -2460,7 +2692,8 @@ class DataCenter(BaseWidget):
                 # 用户体验：不再弹出对话框打断用户操作，改为在日志中记录
                 if result.get("filtering_in_background"):
                     self.logger.info(
-                        "✅ 成功加载 %d 个品种（正在后台过滤未上市品种）", result["symbol_count"]
+                        "✅ 成功加载 %d 个品种（正在后台过滤未上市品种）",
+                        result["symbol_count"],
                     )
                 else:
                     self.logger.info("✅ 成功加载 %d 个品种", result["symbol_count"])
@@ -2479,7 +2712,9 @@ class DataCenter(BaseWidget):
                 # 如果有其他警告信息 - 记录到日志而不是弹窗
                 if result.get("warning"):
                     self.logger.warning(
-                        "品种加载警告: %s", result["warning"], extra={"log_type": "SYSTEM"}
+                        "品种加载警告: %s",
+                        result["warning"],
+                        extra={"log_type": "SYSTEM"},
                     )
                     # 不再弹窗，避免阻塞UI
                     # self.show_warning(result["warning"])
@@ -2494,7 +2729,10 @@ class DataCenter(BaseWidget):
 
         except Exception as e:
             self.logger.error(
-                ">>> 处理加载结果失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"}
+                ">>> 处理加载结果失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "USER_FEEDBACK"},
             )
             self.show_error(f"处理结果失败: {e}")
 
@@ -2558,7 +2796,9 @@ class DataCenter(BaseWidget):
 
             if not data or len(data) == 0:
                 self.logger.debug("品种缓存为空（可能正在初始化或需要重新加载）")
-                self.show_warning("⚠️ 无品种缓存，请先点击【重新加载品种】按钮获取品种列表")
+                self.show_warning(
+                    "⚠️ 无品种缓存，请先点击【重新加载品种】按钮获取品种列表"
+                )
                 self.all_symbols_data = []
                 self.filtered_symbols_data = []
                 self._update_symbols_table()
@@ -2613,7 +2853,9 @@ class DataCenter(BaseWidget):
             )
 
             # 🚀 修复UI卡死：不使用模态对话框，只记录日志
-            self.logger.warning("空品种类别警告: %s - %s", empty_categories, warning_msg)
+            self.logger.warning(
+                "空品种类别警告: %s - %s", empty_categories, warning_msg
+            )
 
         except Exception as e:
             self.logger.error("显示空品种类别警告失败: %s", e, exc_info=True)
@@ -2632,7 +2874,9 @@ class DataCenter(BaseWidget):
 
         self._apply_filters()
         end_time = time.time()
-        self.logger.info(">>> _apply_filters延迟执行完成，总耗时: %.3f秒", end_time - start_time)
+        self.logger.info(
+            ">>> _apply_filters延迟执行完成，总耗时: %.3f秒", end_time - start_time
+        )
 
     def _apply_filters(self):
         """应用筛选条件."""
@@ -2666,7 +2910,11 @@ class DataCenter(BaseWidget):
                         pinyin = self.symbol_pinyin_dict.get(key, "")
 
                         # 三种匹配方式：代码、名称、拼音首字母
-                        return search_text in code or search_text in name or search_text in pinyin
+                        return (
+                            search_text in code
+                            or search_text in name
+                            or search_text in pinyin
+                        )
                     except Exception:
                         # 如果出现异常，至少保证代码和名称匹配
                         code = self._extract_symbol_code(symbol_data).lower()
@@ -2715,7 +2963,9 @@ class DataCenter(BaseWidget):
         t_table_end = time.time()
 
         t_end = time.time()
-        self.logger.info(">>> [_apply_filters] 表格更新耗时: %.3f秒", t_table_end - t_table_start)
+        self.logger.info(
+            ">>> [_apply_filters] 表格更新耗时: %.3f秒", t_table_end - t_table_start
+        )
         self.logger.info(">>> [_apply_filters] 总耗时: %.3f秒", t_end - t_start)
 
     def _update_symbols_table(self):
@@ -2744,21 +2994,27 @@ class DataCenter(BaseWidget):
         end_idx = min(start_idx + self.page_size, total_items)
         page_data = self.filtered_symbols_data[start_idx:end_idx]
 
-        self.logger.info(">>> [_update_symbols_table] 开始更新表格，数据量: %d行", len(page_data))
+        self.logger.info(
+            ">>> [_update_symbols_table] 开始更新表格，数据量: %d行", len(page_data)
+        )
 
         # 🚀 性能优化：禁用排序和更新，避免每次插入都触发重绘
         t1 = time.time()
         self.symbols_table.setSortingEnabled(False)
         self.symbols_table.setUpdatesEnabled(False)
         t2 = time.time()
-        self.logger.info(">>> [_update_symbols_table] 禁用排序和更新，耗时: %.3f秒", t2 - t1)
+        self.logger.info(
+            ">>> [_update_symbols_table] 禁用排序和更新，耗时: %.3f秒", t2 - t1
+        )
 
         try:
             # 更新表格
             t3 = time.time()
             self.symbols_table.setRowCount(len(page_data))
             t4 = time.time()
-            self.logger.info(">>> [_update_symbols_table] setRowCount完成，耗时: %.3f秒", t4 - t3)
+            self.logger.info(
+                ">>> [_update_symbols_table] setRowCount完成，耗时: %.3f秒", t4 - t3
+            )
 
             t5 = time.time()
             for i, symbol in enumerate(page_data):
@@ -2821,12 +3077,16 @@ class DataCenter(BaseWidget):
                     # 确保所有字段都是字符串类型，避免类型错误
                     symbol_code_str = str(symbol_code) if symbol_code else ""
                     symbol_name_str = str(symbol_name) if symbol_name else ""
-                    symbol_exchange_str = str(symbol_exchange) if symbol_exchange else ""
+                    symbol_exchange_str = (
+                        str(symbol_exchange) if symbol_exchange else ""
+                    )
                     symbol_type_str = str(symbol_type) if symbol_type else ""
 
                     self.symbols_table.setItem(i, 0, QTableWidgetItem(symbol_code_str))
                     self.symbols_table.setItem(i, 1, QTableWidgetItem(symbol_name_str))
-                    self.symbols_table.setItem(i, 2, QTableWidgetItem(symbol_exchange_str))
+                    self.symbols_table.setItem(
+                        i, 2, QTableWidgetItem(symbol_exchange_str)
+                    )
                     self.symbols_table.setItem(i, 3, QTableWidgetItem(symbol_type_str))
                     self.symbols_table.setItem(i, 4, QTableWidgetItem("正常"))
                 except Exception as e:
@@ -2840,7 +3100,9 @@ class DataCenter(BaseWidget):
 
             t6 = time.time()
             self.logger.info(
-                ">>> [_update_symbols_table] 填充%d行数据，耗时: %.3f秒", len(page_data), t6 - t5
+                ">>> [_update_symbols_table] 填充%d行数据，耗时: %.3f秒",
+                len(page_data),
+                t6 - t5,
             )
 
         finally:
@@ -2857,7 +3119,9 @@ class DataCenter(BaseWidget):
         if self.symbols_count_label:
             self.symbols_count_label.setText(f"共 {total_items} 个品种")
         if self.page_label:
-            self.page_label.setText(f"第 {self.current_page} 页 / 共 {self.total_pages} 页")
+            self.page_label.setText(
+                f"第 {self.current_page} 页 / 共 {self.total_pages} 页"
+            )
         if self.prev_page_btn:
             self.prev_page_btn.setEnabled(self.current_page > 1)
         if self.next_page_btn:
@@ -2866,7 +3130,7 @@ class DataCenter(BaseWidget):
         t_end = time.time()
         self.logger.info(">>> [_update_symbols_table] 总耗时: %.3f秒", t_end - t_start)
 
-    def _on_search_text_changed(self, text: str):
+    def _on_search_text_changed(self, _text: str):
         """搜索文本改变，直接触发品种列表过滤（品种列表本身就是联想结果）"""
         # 搜索框直接触发品种列表过滤，不需要单独的QCompleter联想列表
         self._apply_filters()
@@ -3016,13 +3280,17 @@ class DataCenter(BaseWidget):
         # 检查缓存是否已加载
         if not self.local_data_cache:
             # print(...)  # 🔧 已移除：DEBUG调试输出
-            self.logger.debug("⚠️  local_data_cache为空，联想功能不可用（可能还未加载或本地无数据）")
+            self.logger.debug(
+                "⚠️  local_data_cache为空，联想功能不可用（可能还未加载或本地无数据）"
+            )
             return
 
         # print(...)  # 🔧 已移除：DEBUG调试输出
 
         try:
-            self.logger.debug(f"🔍 联想查询: '{text}', 缓存大小: {len(self.local_data_cache)}")
+            self.logger.debug(
+                f"🔍 联想查询: '{text}', 缓存大小: {len(self.local_data_cache)}"
+            )
             # 过滤匹配的品种（使用本地数据索引）
             matches = []
             text_lower = text.lower()
@@ -3033,7 +3301,11 @@ class DataCenter(BaseWidget):
                 pinyin = symbol.get("pinyin", "")
 
                 # 匹配规则：代码包含、名称包含、拼音首字母包含（统一使用小写匹配）
-                if text_lower in code.lower() or text_lower in name.lower() or text_lower in pinyin:
+                if (
+                    text_lower in code.lower()
+                    or text_lower in name.lower()
+                    or text_lower in pinyin
+                ):
                     # 只显示代码和名称（简洁美观）
                     display = f"{code} {name}" if name else code
                     matches.append(display)
@@ -3050,7 +3322,9 @@ class DataCenter(BaseWidget):
 
         except Exception as e:
             self.logger.error(
-                f"❌ 更新本地数据搜索联想失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+                f"❌ 更新本地数据搜索联想失败: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
 
     def _load_symbol_cache_for_autocomplete(self):
@@ -3107,7 +3381,11 @@ class DataCenter(BaseWidget):
                                 if code and final_name:
                                     pinyin = self._get_pinyin_initials(final_name)
                                     temp_cache.append(
-                                        {"code": code, "name": final_name, "pinyin": pinyin}
+                                        {
+                                            "code": code,
+                                            "name": final_name,
+                                            "pinyin": pinyin,
+                                        }
                                     )
 
                                     # 🚀 同时在后台构建拼音字典索引（避免在主线程中构建）
@@ -3122,10 +3400,14 @@ class DataCenter(BaseWidget):
                                     )
                             else:
                                 error_count += 1
-                                self.logger.debug(f"[后台] 跳过非字典品种数据: {symbol}")
+                                self.logger.debug(
+                                    f"[后台] 跳过非字典品种数据: {symbol}"
+                                )
                         except Exception as e:
                             error_count += 1
-                            self.logger.debug(f"[后台] 处理品种数据失败: {e}, data={symbol}")
+                            self.logger.debug(
+                                f"[后台] 处理品种数据失败: {e}, data={symbol}"
+                            )
 
                     # 处理一批后强制垃圾回收，避免内存累积
                     import gc
@@ -3144,7 +3426,9 @@ class DataCenter(BaseWidget):
                 self.logger.error(f"[后台] 加载品种缓存失败: {e}", exc_info=True)
 
         # 启动后台线程
-        thread = threading.Thread(target=load_in_background, daemon=True, name="LoadSymbolCache")
+        thread = threading.Thread(
+            target=load_in_background, daemon=True, name="LoadSymbolCache"
+        )
         thread.start()
         self.logger.info("品种缓存加载已启动（后台线程）")
 
@@ -3171,7 +3455,9 @@ class DataCenter(BaseWidget):
             )
 
         except Exception as e:
-            self.logger.error(f"更新品种缓存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                f"更新品种缓存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def _load_local_data_index_for_autocomplete(self):
         """加载本地数据索引用于本地数据搜索框联想
@@ -3195,7 +3481,9 @@ class DataCenter(BaseWidget):
                 self._update_local_data_cache([], 0, 0)
                 return
 
-            self.logger.info(f"🔄 [联想] 从数据库获取到 {len(local_symbol_codes)} 个品种代码")
+            self.logger.info(
+                f"🔄 [联想] 从数据库获取到 {len(local_symbol_codes)} 个品种代码"
+            )
 
             # 需要品种名称来提供更好的联想体验
             # 从品种缓存获取名称映射
@@ -3221,7 +3509,9 @@ class DataCenter(BaseWidget):
 
         except Exception as e:
             self.logger.error(
-                f"❌ [联想] 加载失败: {e}", exc_info=True, extra={"log_type": "USER_FEEDBACK"}
+                f"❌ [联想] 加载失败: {e}",
+                exc_info=True,
+                extra={"log_type": "USER_FEEDBACK"},
             )
             self._update_loading_status_error("加载失败")
 
@@ -3238,21 +3528,28 @@ class DataCenter(BaseWidget):
         if error_count > 0:
             self.logger.debug(f"[联想] 加载时跳过了{error_count}个无效数据")
 
-        self.logger.info(f"✅ [联想] 本地数据索引加载完成: {success_count} 个品种，联想功能已启用")
+        self.logger.info(
+            f"✅ [联想] 本地数据索引加载完成: {success_count} 个品种，联想功能已启用"
+        )
 
         # 🆕 更新状态提示标签
         if self.symbol_input_status_label:
             # 🔧 修复：显示状态标签
             self.symbol_input_status_label.setVisible(True)
             if success_count > 0:
-                self.symbol_input_status_label.setText(f"✅ 已加载 {success_count} 个品种")
+                self.symbol_input_status_label.setText(
+                    f"✅ 已加载 {success_count} 个品种"
+                )
                 self.symbol_input_status_label.setStyleSheet(
                     "color: #4CAF50; font-size: 11px; padding-left: 5px;"
                 )
                 # 3秒后隐藏提示
-                status_label = self.symbol_input_status_label  # 保存引用避免类型检查问题
+                status_label = (
+                    self.symbol_input_status_label
+                )  # 保存引用避免类型检查问题
                 QTimer.singleShot(
-                    3000, lambda: status_label.setVisible(False) if status_label else None
+                    3000,
+                    lambda: status_label.setVisible(False) if status_label else None,
                 )
             else:
                 # 🔧 修复：本地无数据时，不显示警告（因为这是正常情况）
@@ -3293,7 +3590,9 @@ class DataCenter(BaseWidget):
                     name = symbol_info.get("name", "")
                     if code:
                         pinyin = self._get_pinyin_initials(name) if name else ""
-                        temp_cache.append({"code": code, "name": name, "pinyin": pinyin})
+                        temp_cache.append(
+                            {"code": code, "name": name, "pinyin": pinyin}
+                        )
                 except Exception as e:
                     self.logger.debug(f"处理品种失败: {e}")
 
@@ -3304,7 +3603,9 @@ class DataCenter(BaseWidget):
 
         except Exception as e:
             self.logger.error(
-                f"处理本地数据索引事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+                f"处理本地数据索引事件失败: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
 
     def _update_local_data_index_ui(self, temp_cache):
@@ -3325,7 +3626,7 @@ class DataCenter(BaseWidget):
         # 调用原有的加载方法
         self._load_local_data_index_for_autocomplete()
 
-    def _on_file_watcher_started(self, event):
+    def _on_file_watcher_started(self, _event):
         """处理文件监控启动事件
 
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
@@ -3337,7 +3638,9 @@ class DataCenter(BaseWidget):
             QTimer.singleShot(0, self._handle_file_watcher_started_ui)
         except Exception as e:
             self.logger.error(
-                f"处理文件监控启动事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+                f"处理文件监控启动事件失败: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
 
     def _handle_file_watcher_started_ui(self):
@@ -3375,11 +3678,15 @@ class DataCenter(BaseWidget):
             )
 
             # 🔧 使用Qt Signal机制，确保UI更新在主线程执行
-            self.logger.debug(f"[事件处理] 准备发射 data_metrics_update_signal: missing={missing}")
+            self.logger.debug(
+                f"[事件处理] 准备发射 data_metrics_update_signal: missing={missing}"
+            )
             self.data_metrics_update_signal.emit(
                 total_symbols, downloaded, missing, invalid_count, details
             )
-            self.logger.info(f"[事件处理] ✅ 已发射data_metrics_update_signal: missing={missing}")
+            self.logger.info(
+                f"[事件处理] ✅ 已发射data_metrics_update_signal: missing={missing}"
+            )
 
         except Exception as e:
             self.logger.error(
@@ -3417,7 +3724,9 @@ class DataCenter(BaseWidget):
             # 🆕 如果有详细品种列表，添加到品种问题详情表格
             if details and len(details) > 0:
                 self._append_symbol_issues_details(details)
-                self.logger.info(f"📋 步骤7增量推送 {len(details)} 个问题品种到详情表格")
+                self.logger.info(
+                    f"📋 步骤7增量推送 {len(details)} 个问题品种到详情表格"
+                )
 
             # 🔧 兼容旧代码：同时更新旧UI（如果存在）
             if total_symbols > 0:
@@ -3437,7 +3746,9 @@ class DataCenter(BaseWidget):
 
         except Exception as e:
             self.logger.error(
-                f"处理数据指标更新事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+                f"处理数据指标更新事件失败: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
 
     def _on_invalid_symbols_updated(self, event):
@@ -3496,16 +3807,22 @@ class DataCenter(BaseWidget):
             )
 
         except Exception as e:
-            self.logger.error(f"[事件处理] ❌ 处理品种列表加载完成事件失败: {e}", exc_info=True)
+            self.logger.error(
+                f"[事件处理] ❌ 处理品种列表加载完成事件失败: {e}", exc_info=True
+            )
 
     def _update_symbol_cache_ui(self, symbol_count):
         """更新品种列表缓存UI（在主线程中执行）"""
-        self.logger.info(f"[UI更新] 🎯 _update_symbol_cache_ui被调用: symbol_count={symbol_count}")
+        self.logger.info(
+            f"[UI更新] 🎯 _update_symbol_cache_ui被调用: symbol_count={symbol_count}"
+        )
         try:
             # 更新状态变量
             self._symbol_cache_count = symbol_count
             self._symbol_cache_event_received = True  # 🔧 新增：标记事件已到达
-            self.logger.info(f"[UI更新] _symbol_cache_count已更新为: {self._symbol_cache_count}")
+            self.logger.info(
+                f"[UI更新] _symbol_cache_count已更新为: {self._symbol_cache_count}"
+            )
 
             # 🔧 新增：事件到达后，触发主动拉取补充其他数据（本地品种、失效品种）
             # 这些数据可能还没有通过事件推送，需要主动拉取补充
@@ -3514,7 +3831,9 @@ class DataCenter(BaseWidget):
             # 更新总品种标签
             if self.total_symbols_label:
                 self.total_symbols_label.setText(f"总品种: {symbol_count}")
-                self.total_symbols_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+                self.total_symbols_label.setStyleSheet(
+                    "color: #2196F3; font-weight: bold;"
+                )
                 self.logger.info("[UI更新] ✅ total_symbols_label已更新")
             else:
                 self.logger.warning("[UI更新] ⚠️ total_symbols_label为None！")
@@ -3546,7 +3865,9 @@ class DataCenter(BaseWidget):
 
     def _update_validation_completed_ui(self, success):
         """更新启动流程验证完成UI（在主线程中执行）"""
-        self.logger.info(f"🔧 [进入] _update_validation_completed_ui: success={success}")
+        self.logger.info(
+            f"🔧 [进入] _update_validation_completed_ui: success={success}"
+        )
         try:
             # 更新状态变量
             self._lightweight_running = False
@@ -3590,7 +3911,9 @@ class DataCenter(BaseWidget):
             # 更新UI统计
             if "missing_symbols" in overview:
                 if self.missing_symbols_label:
-                    self.missing_symbols_label.setText(f"品种缺失: {overview['missing_symbols']}")
+                    self.missing_symbols_label.setText(
+                        f"品种缺失: {overview['missing_symbols']}"
+                    )
             if "error_symbols" in overview:
                 if self.data_missing_symbols_label:
                     self.data_missing_symbols_label.setText(
@@ -3639,7 +3962,9 @@ class DataCenter(BaseWidget):
             # 🔧 如果有details，通过Signal转发到主线程处理（✅ 更可靠的方式）
             if details and details_count > 0:
                 # 🔥 强制输出到terminal
-                self.logger.debug(f"[CRITICAL-DEBUG-UI] 前端收到details: {details_count}个")
+                self.logger.debug(
+                    f"[CRITICAL-DEBUG-UI] 前端收到details: {details_count}个"
+                )
                 sys.stderr.flush()
 
                 self.logger.info(
@@ -3656,17 +3981,23 @@ class DataCenter(BaseWidget):
 
             # 🔧 使用Qt Signal传递控制信号和统计数据（不含details）
             self.quality_scan_phase_signal.emit(phase, metrics_for_signal, status)
-            self.logger.info(f"[事件处理] ✅ 已发射quality_scan_phase_signal (phase={phase})")
+            self.logger.info(
+                f"[事件处理] ✅ 已发射quality_scan_phase_signal (phase={phase})"
+            )
 
         except Exception as e:
-            self.logger.error(f"[事件处理] ❌ 处理质量扫描阶段事件失败: {e}", exc_info=True)
+            self.logger.error(
+                f"[事件处理] ❌ 处理质量扫描阶段事件失败: {e}", exc_info=True
+            )
 
     def _update_quality_scan_phase_ui(self, phase, metrics, status):
         """更新数据质量扫描阶段UI（在主线程中执行）"""
         try:
             # 🔍 诊断：检查metrics和details的完整性
             details_info = (
-                "无" if "details" not in metrics else f"{len(metrics.get('details', []))}个"
+                "无"
+                if "details" not in metrics
+                else f"{len(metrics.get('details', []))}个"
             )
             self.logger.info(
                 f"[UI更新] 🎯 _update_quality_scan_phase_ui被调用: "
@@ -3720,7 +4051,9 @@ class DataCenter(BaseWidget):
                         self.error_symbols_label.setStyleSheet("color: #4CAF50;")
 
                 if self.data_missing_symbols_label:
-                    self.data_missing_symbols_label.setText(f"数据缺失: {data_missing_count}")
+                    self.data_missing_symbols_label.setText(
+                        f"数据缺失: {data_missing_count}"
+                    )
                     if data_missing_count > 0:
                         self.data_missing_symbols_label.setStyleSheet("color: #FF9800;")
                     else:
@@ -3762,7 +4095,9 @@ class DataCenter(BaseWidget):
             # 检查服务
             if not self.data_center_service:
                 self.logger.error(
-                    "❌ 数据中心服务未初始化", exc_info=True, extra={"log_type": "SYSTEM"}
+                    "❌ 数据中心服务未初始化",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
                 self.show_error("数据中心服务未初始化")
                 return
@@ -3791,7 +4126,9 @@ class DataCenter(BaseWidget):
                 self.logger.info(f"  结束日期: {end_date_str}")
 
             # 获取周期
-            interval = self.interval_combo.currentText() if self.interval_combo else "1day"
+            interval = (
+                self.interval_combo.currentText() if self.interval_combo else "1day"
+            )
             self.logger.info(f"  周期: {interval}")
 
             # 记录用户操作
@@ -3809,14 +4146,19 @@ class DataCenter(BaseWidget):
                 self.show_error("数据展示组件未初始化")
                 return
 
-            self.logger.info(f"✅ data_table 已就绪，当前行数: {self.data_table.rowCount()}")
+            self.logger.info(
+                f"✅ data_table 已就绪，当前行数: {self.data_table.rowCount()}"
+            )
 
             # 不弹窗，只记录日志（查询很快，不需要弹窗提示）
             self.logger.info("正在查询本地数据...")
 
             # 调用后端查询
             result = self.data_center_service.query_local_data(
-                symbol=symbol, start_date=start_date_str, end_date=end_date_str, interval=interval
+                symbol=symbol,
+                start_date=start_date_str,
+                end_date=end_date_str,
+                interval=interval,
             )
 
             self.logger.info(f"  查询结果: success={result.get('success')}")
@@ -3829,19 +4171,35 @@ class DataCenter(BaseWidget):
                 self.data_table.setRowCount(len(data))
                 self.logger.info(f"  表格行数已设置为: {len(data)}")
                 for i, record in enumerate(data):
-                    self.data_table.setItem(i, 0, QTableWidgetItem(str(record.get("datetime", ""))))
-                    self.data_table.setItem(i, 1, QTableWidgetItem(str(record.get("open", ""))))
-                    self.data_table.setItem(i, 2, QTableWidgetItem(str(record.get("high", ""))))
-                    self.data_table.setItem(i, 3, QTableWidgetItem(str(record.get("low", ""))))
-                    self.data_table.setItem(i, 4, QTableWidgetItem(str(record.get("close", ""))))
-                    self.data_table.setItem(i, 5, QTableWidgetItem(str(record.get("volume", ""))))
-                    self.data_table.setItem(i, 6, QTableWidgetItem(str(record.get("turnover", 0))))
+                    self.data_table.setItem(
+                        i, 0, QTableWidgetItem(str(record.get("datetime", "")))
+                    )
+                    self.data_table.setItem(
+                        i, 1, QTableWidgetItem(str(record.get("open", "")))
+                    )
+                    self.data_table.setItem(
+                        i, 2, QTableWidgetItem(str(record.get("high", "")))
+                    )
+                    self.data_table.setItem(
+                        i, 3, QTableWidgetItem(str(record.get("low", "")))
+                    )
+                    self.data_table.setItem(
+                        i, 4, QTableWidgetItem(str(record.get("close", "")))
+                    )
+                    self.data_table.setItem(
+                        i, 5, QTableWidgetItem(str(record.get("volume", "")))
+                    )
+                    self.data_table.setItem(
+                        i, 6, QTableWidgetItem(str(record.get("turnover", 0)))
+                    )
 
                 # 显示查询成功提示
                 if len(data) == 0:
                     # 🆕 区分品种不存在 vs 未下载
                     try:
-                        symbol_exists = self.data_center_service.check_symbol_exists(symbol)
+                        symbol_exists = self.data_center_service.check_symbol_exists(
+                            symbol
+                        )
 
                         if not symbol_exists:
                             # 品种代码不存在
@@ -3849,7 +4207,9 @@ class DataCenter(BaseWidget):
                                 f"品种代码 {symbol} 不存在\n"
                                 f"请检查代码格式是否正确（如：600000、000001）"
                             )
-                            self.logger.warning(f"⚠️ 品种 {symbol} 不存在于交易所品种列表")
+                            self.logger.warning(
+                                f"⚠️ 品种 {symbol} 不存在于交易所品种列表"
+                            )
                         else:
                             # 品种存在但未下载
                             self.show_info(
@@ -3871,20 +4231,24 @@ class DataCenter(BaseWidget):
                         )
                         if quality_result.get("success"):
                             gap_days = quality_result.get("gap_days", -1)
-                            local_latest = quality_result.get("local_latest_date", "未知")
-                            latest_trading = quality_result.get("latest_trading_day", "未知")
+                            local_latest = quality_result.get(
+                                "local_latest_date", "未知"
+                            )
+                            latest_trading = quality_result.get(
+                                "latest_trading_day", "未知"
+                            )
 
                             if gap_days >= 0:
                                 if gap_days == 0:
-                                    freshness_msg = (
-                                        f"✅ 数据已是最新（最新交易日：{latest_trading}）"
-                                    )
+                                    freshness_msg = f"✅ 数据已是最新（最新交易日：{latest_trading}）"
                                 elif gap_days == 1:
                                     freshness_msg = f"⚠️ 数据滞后1个交易日（本地最新：{local_latest}，最新交易日：{latest_trading}）"
                                 else:
                                     freshness_msg = f"⚠️ 数据滞后{gap_days}个交易日（本地最新：{local_latest}，最新交易日：{latest_trading}）"
 
-                                msg = f"查询成功，共 {len(data)} 条记录\n{freshness_msg}"
+                                msg = (
+                                    f"查询成功，共 {len(data)} 条记录\n{freshness_msg}"
+                                )
                             else:
                                 msg = f"查询成功，共 {len(data)} 条记录"
                         else:
@@ -3920,7 +4284,9 @@ class DataCenter(BaseWidget):
             self.show_warning("增量下载最多支持最近100天数据，已自动调整为100天前")
             self.download_start_date.setDate(current_date.addDays(-100))
 
-    def _start_download_with_symbols(self, symbols: List[str], start_date, end_date) -> None:
+    def _start_download_with_symbols(
+        self, symbols: List[str], start_date, end_date
+    ) -> None:
         """开始下载指定品种列表（用于修复下载）
 
         Args:
@@ -3942,11 +4308,15 @@ class DataCenter(BaseWidget):
                 self.progress_text.appendPlainText(
                     f"\n[{timestamp}] ========== 开始修复下载 =========="
                 )
-                self.progress_text.appendPlainText(f"[{timestamp}] 品种数量: {len(symbols)}")
+                self.progress_text.appendPlainText(
+                    f"[{timestamp}] 品种数量: {len(symbols)}"
+                )
                 self.progress_text.appendPlainText(
                     f"[{timestamp}] 日期范围: {start_date} 至 {end_date}"
                 )
-                self.progress_text.appendPlainText(f"[{timestamp}] 模式: 智能修复（覆盖本地数据）")
+                self.progress_text.appendPlainText(
+                    f"[{timestamp}] 模式: 智能修复（覆盖本地数据）"
+                )
 
             # 创建下载线程
             self.download_thread = DownloadThread(
@@ -3994,7 +4364,9 @@ class DataCenter(BaseWidget):
 
             if not self.data_center_service:
                 self.logger.error(
-                    ">>> 数据中心服务未初始化", exc_info=True, extra={"log_type": "SYSTEM"}
+                    ">>> 数据中心服务未初始化",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
                 self.show_error("数据中心服务未初始化")
                 return
@@ -4049,7 +4421,9 @@ class DataCenter(BaseWidget):
 
             # 创建下载线程
             self.logger.info(">>> 创建 DownloadThread...")
-            self.download_thread = DownloadThread(self.data_center_service, start_date, self)
+            self.download_thread = DownloadThread(
+                self.data_center_service, start_date, self
+            )
             self.logger.info(">>> DownloadThread 创建成功: %s", self.download_thread)
 
             # 连接信号
@@ -4071,11 +4445,15 @@ class DataCenter(BaseWidget):
             # 启动线程
             self.logger.info(">>> 启动下载线程...")
             self.download_thread.start()
-            self.logger.info(">>> 线程已启动，isRunning: %s", self.download_thread.isRunning())
+            self.logger.info(
+                ">>> 线程已启动，isRunning: %s", self.download_thread.isRunning()
+            )
 
             # ✅ 设置初始进度文本（QPlainTextEdit用setPlainText）
             if self.progress_text:
-                self.progress_text.setPlainText(f"开始增量下载... (开始日期: {start_date})")
+                self.progress_text.setPlainText(
+                    f"开始增量下载... (开始日期: {start_date})"
+                )
 
             # 更新按钮状态
             if self.start_download_btn:
@@ -4106,7 +4484,9 @@ class DataCenter(BaseWidget):
             self.logger.info("=" * 60)
             self.logger.info(">>> _on_download_finished() 被调用")
             self.logger.info(
-                ">>> result: success=%s, message=%s", result.get("success"), result.get("message")
+                ">>> result: success=%s, message=%s",
+                result.get("success"),
+                result.get("message"),
             )
 
             # 🆕 下载完成后刷新本地数据索引，更新本地数据搜索框的联想列表
@@ -4116,7 +4496,9 @@ class DataCenter(BaseWidget):
             self.logger.info("=" * 60)
 
             if result.get("success"):
-                task_id = result.get("task_id") or getattr(self, "current_download_task_id", None)
+                task_id = result.get("task_id") or getattr(
+                    self, "current_download_task_id", None
+                )
                 message = result.get("message", "")
 
                 # 🔧 区分"任务已启动"和"任务已完成"
@@ -4125,7 +4507,9 @@ class DataCenter(BaseWidget):
                     # 禁用show_info，避免UI崩溃
                     # self.show_info(f"✅ {message}（任务ID: {task_id}）")
                     # self.show_info("📊 下载正在后台进行...")
-                    self.logger.info("下载任务已启动(异步): 任务ID=%s, 消息=%s", task_id, message)
+                    self.logger.info(
+                        "下载任务已启动(异步): 任务ID=%s, 消息=%s", task_id, message
+                    )
                     self.logger.info("下载正在后台进行，请查看终端进度")
 
                     # 🔧 启动进度轮询定时器
@@ -4153,7 +4537,10 @@ class DataCenter(BaseWidget):
 
         except Exception as e:
             self.logger.error(
-                "❌ 处理下载结果失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"}
+                "❌ 处理下载结果失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "USER_FEEDBACK"},
             )
             self._reset_download_state()
 
@@ -4277,7 +4664,9 @@ class DataCenter(BaseWidget):
                         self.logger.info(">>> 后端任务停止成功")
                         backend_stopped = True
                     else:
-                        self.logger.warning(">>> 后端任务停止失败: %s", result.get("message"))
+                        self.logger.warning(
+                            ">>> 后端任务停止失败: %s", result.get("message")
+                        )
                 except Exception as backend_error:
                     self.logger.error(">>> 后端停止任务异常: %s", backend_error)
 
@@ -4311,7 +4700,9 @@ class DataCenter(BaseWidget):
             # 检查事件是否已到达
             if self._symbol_cache_event_received:
                 # 事件已到达，只拉取补充数据（本地品种、失效品种）
-                self.logger.debug("🔄 [主动拉取] 事件已到达，只拉取补充数据（本地品种、失效品种）")
+                self.logger.debug(
+                    "🔄 [主动拉取] 事件已到达，只拉取补充数据（本地品种、失效品种）"
+                )
                 self._pull_supplement_data_only()
                 return
 
@@ -4400,16 +4791,17 @@ class DataCenter(BaseWidget):
                     )
                     if china_stock_engine:
                         # 🔧 修复：架构v3.0重构后，从core_engine导入
-                        pass
-
                         # 通过对比参考品种和本地品种计算缺失
                         pass
+                else:
+                    pass
             except Exception as e:
-                self.logger.debug(f"从数据库查询缺失品种数失败: {e}")
+                self.logger.debug("从数据库查询缺失品种数失败: %s", e)
 
             self.logger.info(
-                f"🔄 [主动拉取] 从数据库获取数据: "
-                f"本地品种={len(local_symbols)}, 失效品种={len(invalid_symbols)}"
+                "🔄 [主动拉取] 从数据库获取数据: 本地品种=%s, 失效品种=%s",
+                len(local_symbols),
+                len(invalid_symbols),
             )
 
             # 2. 🔧 关键修复：从缓存文件获取参考品种列表，并计算缺失品种
@@ -4417,22 +4809,30 @@ class DataCenter(BaseWidget):
             reference_symbols_set = set()
 
             # 🔧 诊断：检查前置条件
-            self.logger.info(f"🔧 [诊断] data_center_service={self.data_center_service}")
+            self.logger.info(
+                f"🔧 [诊断] data_center_service={self.data_center_service}"
+            )
 
             if self.data_center_service:
                 try:
                     china_stock_engine = getattr(
                         self.data_center_service, "china_stock_engine", None
                     )
-                    self.logger.info(f"🔧 [诊断] china_stock_engine={china_stock_engine}")
+                    self.logger.info(
+                        f"🔧 [诊断] china_stock_engine={china_stock_engine}"
+                    )
 
                     if china_stock_engine:
-                        cache_manager = getattr(china_stock_engine, "cache_manager", None)
+                        cache_manager = getattr(
+                            china_stock_engine, "cache_manager", None
+                        )
                         self.logger.info(f"🔧 [诊断] cache_manager={cache_manager}")
 
                         if cache_manager:
                             # 🔧 修复：使用正确的缓存文件名
-                            symbols_cache_file = cache_manager.root / "stock_list_classified.json"
+                            symbols_cache_file = (
+                                cache_manager.root / "stock_list_classified.json"
+                            )
 
                             self.logger.info(
                                 f"🔧 [主动拉取] 准备读取缓存文件: {symbols_cache_file}"
@@ -4441,7 +4841,9 @@ class DataCenter(BaseWidget):
                             if symbols_cache_file.exists():
                                 import json
 
-                                with open(symbols_cache_file, "r", encoding="utf-8") as f:
+                                with open(
+                                    symbols_cache_file, "r", encoding="utf-8"
+                                ) as f:
                                     symbols_data = json.load(f)
                                     # 🔧 修复：stock_list_classified.json的数据结构
                                     # 包含：sh_stocks, sz_stocks, bj_stocks, etf_funds, convertible_bonds等
@@ -4479,16 +4881,21 @@ class DataCenter(BaseWidget):
                             if self.data_center_service:
                                 try:
                                     engine = getattr(
-                                        self.data_center_service, "china_stock_engine", None
+                                        self.data_center_service,
+                                        "china_stock_engine",
+                                        None,
                                     )
                                     if engine and hasattr(engine, "cache_manager"):
                                         cache_manager = engine.cache_manager
                                         if cache_manager:
                                             # 重新获取缓存
-                                            symbols_cache_file = cache_manager.get_cache_file(
-                                                "symbols"
+                                            symbols_cache_file = (
+                                                cache_manager.get_cache_file("symbols")
                                             )
-                                            if symbols_cache_file and symbols_cache_file.exists():
+                                            if (
+                                                symbols_cache_file
+                                                and symbols_cache_file.exists()
+                                            ):
                                                 # 从缓存文件读取
                                                 cache_data, _, is_valid = (
                                                     cache_manager.load_with_validation(
@@ -4498,12 +4905,21 @@ class DataCenter(BaseWidget):
                                                 if is_valid and cache_data:
                                                     # 提取参考品种集合
                                                     reference_symbols_set = set()
-                                                    for category, symbols in cache_data.items():
+                                                    for (
+                                                        category,
+                                                        symbols,
+                                                    ) in cache_data.items():
                                                         for symbol in symbols:
-                                                            code = symbol.get("code", "")
+                                                            code = symbol.get(
+                                                                "code", ""
+                                                            )
                                                             if code:
-                                                                reference_symbols_set.add(code)
-                                                    reference_count = len(reference_symbols_set)
+                                                                reference_symbols_set.add(
+                                                                    code
+                                                                )
+                                                    reference_count = len(
+                                                        reference_symbols_set
+                                                    )
                                                     self.logger.info(
                                                         f"🔧 [主动拉取] 从缓存获取参考品种数: {reference_count}"
                                                     )
@@ -4525,7 +4941,8 @@ class DataCenter(BaseWidget):
                                         )
                                 except Exception as e:
                                     self.logger.error(
-                                        f"❌ [主动拉取] 获取cache_manager失败: {e}", exc_info=True
+                                        f"❌ [主动拉取] 获取cache_manager失败: {e}",
+                                        exc_info=True,
                                     )
                             else:
                                 self.logger.warning(
@@ -4536,7 +4953,9 @@ class DataCenter(BaseWidget):
                             "⚠️ [诊断] china_stock_engine为None，无法获取cache_manager"
                         )
                 except Exception as e:
-                    self.logger.error(f"❌ [主动拉取] 从缓存文件获取数据失败: {e}", exc_info=True)
+                    self.logger.error(
+                        f"❌ [主动拉取] 从缓存文件获取数据失败: {e}", exc_info=True
+                    )
             else:
                 self.logger.warning("⚠️ [诊断] data_center_service为None，无法读取缓存")
 
@@ -4554,7 +4973,9 @@ class DataCenter(BaseWidget):
 
                 # 🔧 关键修复：立即设置 _missing_count
                 self._missing_count = missing_count_calculated
-                self.logger.info(f"🔧 [主动拉取] 已设置 _missing_count={missing_count_calculated}")
+                self.logger.info(
+                    f"🔧 [主动拉取] 已设置 _missing_count={missing_count_calculated}"
+                )
 
             # 计算总品种数
             total_count = 0
@@ -4583,7 +5004,9 @@ class DataCenter(BaseWidget):
                 )
             else:
                 # 无法获取总品种数，只更新已下载和失效品种
-                self.logger.debug("🔄 [主动拉取] 无法获取总品种数，只更新已下载和失效品种")
+                self.logger.debug(
+                    "🔄 [主动拉取] 无法获取总品种数，只更新已下载和失效品种"
+                )
                 self._update_pulled_data_ui(
                     symbol_count=0,
                     local_count=len(local_symbols),
@@ -4606,7 +5029,11 @@ class DataCenter(BaseWidget):
         self._pull_supplement_data_only()
 
     def _update_pulled_data_ui(
-        self, symbol_count: int, local_count: int, invalid_count: int, skip_total: bool = False
+        self,
+        symbol_count: int,
+        local_count: int,
+        invalid_count: int,
+        skip_total: bool = False,
     ):
         """更新主动拉取的数据到UI
 
@@ -4659,7 +5086,9 @@ class DataCenter(BaseWidget):
             if not skip_total and symbol_count > 0:
                 if self.total_symbols_label:
                     self.total_symbols_label.setText(f"总品种: {symbol_count}")
-                    self.total_symbols_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+                    self.total_symbols_label.setStyleSheet(
+                        "color: #2196F3; font-weight: bold;"
+                    )
 
             # 更新品种缺失标签（使用当前的 _missing_count）
             if self.missing_symbols_label:
@@ -4673,7 +5102,9 @@ class DataCenter(BaseWidget):
             # 总是更新已下载和失效品种
             if self.downloaded_symbols_label:
                 self.downloaded_symbols_label.setText(f"已下载: {local_count}")
-                self.downloaded_symbols_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+                self.downloaded_symbols_label.setStyleSheet(
+                    "color: #2196F3; font-weight: bold;"
+                )
 
             if self.invalid_symbols_label:
                 self.invalid_symbols_label.setText(f"失效品种: {invalid_count}")
@@ -4713,25 +5144,39 @@ class DataCenter(BaseWidget):
             self.event_engine = get_event_engine()
 
             # 🔍 诊断日志
-            self.logger.info(f"[事件注册] 步骤1: 获取event_engine实例: {self.event_engine}")
+            self.logger.info(
+                f"[事件注册] 步骤1: 获取event_engine实例: {self.event_engine}"
+            )
 
             if self.event_engine:
                 self.logger.info("[事件注册] 步骤2: event_engine可用，开始注册事件...")
 
                 # 注册下载事件监听器
-                self.event_engine.register(EVENT_CHINASTOCK_DOWNLOAD, self._on_download_event)
+                self.event_engine.register(
+                    EVENT_CHINASTOCK_DOWNLOAD, self._on_download_event
+                )
                 # 注册数据质量事件监听器
-                self.event_engine.register(EVENT_DATA_QUALITY_UPDATE, self._on_data_quality_update)
-                self.event_engine.register(EVENT_DATA_SCAN_COMPLETE, self._on_data_scan_complete)
+                self.event_engine.register(
+                    EVENT_DATA_QUALITY_UPDATE, self._on_data_quality_update
+                )
+                self.event_engine.register(
+                    EVENT_DATA_SCAN_COMPLETE, self._on_data_scan_complete
+                )
                 # 🆕 注册本地数据索引就绪事件监听器
-                self.event_engine.register("eLocalDataIndexReady", self._on_local_data_index_ready)
+                self.event_engine.register(
+                    "eLocalDataIndexReady", self._on_local_data_index_ready
+                )
                 # 🆕 注册数据质量阶段性推送事件监听器
-                self.event_engine.register("eQualityScanPhase", self._on_quality_scan_phase)
+                self.event_engine.register(
+                    "eQualityScanPhase", self._on_quality_scan_phase
+                )
                 # 🔧 输出日志
                 self.logger.info("[事件注册] 步骤3: 已注册 eQualityScanPhase")
 
                 # 🔧 关键修复：在步骤4之前添加明确的日志分隔符
-                self.logger.info("[事件注册] ===== 开始注册步骤4: eDataMetricsUpdated =====")
+                self.logger.info(
+                    "[事件注册] ===== 开始注册步骤4: eDataMetricsUpdated ====="
+                )
 
                 # 🆕 注册新增事件监听器
                 # 🔧 关键修复：直接使用硬编码字符串，最简化注册流程
@@ -4745,7 +5190,9 @@ class DataCenter(BaseWidget):
                     f"[事件注册] 步骤4-准备注册: event_name={event_name}, handler={self._on_data_metrics_updated}"
                 )
                 try:
-                    self.event_engine.register(event_name, self._on_data_metrics_updated)
+                    self.event_engine.register(
+                        event_name, self._on_data_metrics_updated
+                    )
                     self.logger.info(
                         f"[事件注册] 步骤4: ✅ 已注册 {event_name} -> _on_data_metrics_updated"
                     )
@@ -4761,8 +5208,12 @@ class DataCenter(BaseWidget):
                 self.logger.debug("[事件注册] 步骤4-准备验证: 检查_handlers属性")
                 try:
                     if hasattr(self.event_engine, "_handlers"):
-                        handlers = self.event_engine._handlers.get(event_name, [])
-                        self.logger.debug(f"[事件注册] 步骤4-验证结果: 处理器数量={len(handlers)}")
+                        handlers = self.event_engine._handlers.get(
+                            event_name, []
+                        )  # pylint: disable=protected-access
+                        self.logger.debug(
+                            f"[事件注册] 步骤4-验证结果: 处理器数量={len(handlers)}"
+                        )
                         if len(handlers) == 0:
                             self.logger.error(
                                 f"[事件注册] ❌ 警告: {event_name} 注册后处理器数量为0！",
@@ -4790,17 +5241,25 @@ class DataCenter(BaseWidget):
                 self.logger.info(
                     f"[事件注册] 步骤5: 已注册 eInvalidSymbolsUpdated -> {self._on_invalid_symbols_updated}"
                 )
-                self.event_engine.register("eFileWatcherStarted", self._on_file_watcher_started)
-                self.event_engine.register("eDataScanFinished", self._on_data_scan_finished)
+                self.event_engine.register(
+                    "eFileWatcherStarted", self._on_file_watcher_started
+                )
+                self.event_engine.register(
+                    "eDataScanFinished", self._on_data_scan_finished
+                )
                 # 🆕 注册启动流程相关事件监听器
-                self.event_engine.register(EVENT_SYMBOL_CACHE_LOADED, self._on_symbol_cache_loaded)
+                self.event_engine.register(
+                    EVENT_SYMBOL_CACHE_LOADED, self._on_symbol_cache_loaded
+                )
                 self.logger.info(
                     f"[事件注册] 步骤6: 已注册 {EVENT_SYMBOL_CACHE_LOADED} -> {self._on_symbol_cache_loaded}"
                 )
                 self.event_engine.register(
                     EVENT_VALIDATION_COMPLETED, self._on_validation_completed
                 )
-                self.logger.info(f"[事件注册] 步骤7: 已注册 {EVENT_VALIDATION_COMPLETED}")
+                self.logger.info(
+                    f"[事件注册] 步骤7: 已注册 {EVENT_VALIDATION_COMPLETED}"
+                )
                 # 注册服务器池状态事件监听器
                 self.event_engine.register(
                     "EVENT_SERVER_POOL_STATUS", self._on_server_status_update
@@ -4816,7 +5275,9 @@ class DataCenter(BaseWidget):
                 # 解决启动时已完成测速但前端还未创建的问题
                 self._fetch_initial_server_status()
             else:
-                self.logger.warning("[事件注册] ⚠️ event_engine为None，事件推送功能不可用")
+                self.logger.warning(
+                    "[事件注册] ⚠️ event_engine为None，事件推送功能不可用"
+                )
                 self.logger.info("[事件注册] 将使用备用的轮询机制")
 
         except Exception as e:
@@ -4829,15 +5290,21 @@ class DataCenter(BaseWidget):
         """注销vnpy事件监听器"""
         try:
             if self.event_engine:
-                self.event_engine.unregister(EVENT_CHINASTOCK_DOWNLOAD, self._on_download_event)
+                self.event_engine.unregister(
+                    EVENT_CHINASTOCK_DOWNLOAD, self._on_download_event
+                )
                 self.event_engine.unregister(
                     EVENT_DATA_QUALITY_UPDATE, self._on_data_quality_update
                 )
-                self.event_engine.unregister(EVENT_DATA_SCAN_COMPLETE, self._on_data_scan_complete)
+                self.event_engine.unregister(
+                    EVENT_DATA_SCAN_COMPLETE, self._on_data_scan_complete
+                )
                 self.event_engine.unregister(
                     "eLocalDataIndexReady", self._on_local_data_index_ready
                 )
-                self.event_engine.unregister("eQualityScanPhase", self._on_quality_scan_phase)
+                self.event_engine.unregister(
+                    "eQualityScanPhase", self._on_quality_scan_phase
+                )
                 self.event_engine.unregister(
                     "EVENT_SERVER_POOL_STATUS", self._on_server_status_update
                 )
@@ -4868,7 +5335,9 @@ class DataCenter(BaseWidget):
             # 优化原因：避免跨线程调用QLabel.setText()和setStyleSheet()
             from functools import partial
 
-            QTimer.singleShot(0, partial(self._update_server_status_ui, available, total, status))
+            QTimer.singleShot(
+                0, partial(self._update_server_status_ui, available, total, status)
+            )
 
         except Exception as e:
             self.logger.error("处理服务器状态事件失败: %s", e, exc_info=True)
@@ -4903,7 +5372,8 @@ class DataCenter(BaseWidget):
         try:
             if not self.data_center_service:
                 self.logger.warning(
-                    "数据中心服务未初始化，跳过初始服务器状态查询", extra={"log_type": "SYSTEM"}
+                    "数据中心服务未初始化，跳过初始服务器状态查询",
+                    extra={"log_type": "SYSTEM"},
                 )
                 return
 
@@ -4975,7 +5445,9 @@ class DataCenter(BaseWidget):
                 # 优化原因：避免在vnpy后台线程中直接调用self.download_progress.setValue()等UI操作
                 QTimer.singleShot(
                     0,
-                    lambda: self._update_progress_ui(progress_pct, completed, total, current_item),
+                    lambda: self._update_progress_ui(
+                        progress_pct, completed, total, current_item
+                    ),
                 )
 
             elif status == "success":
@@ -5027,7 +5499,9 @@ class DataCenter(BaseWidget):
 
             # 2. 更新状态标签
             if self.progress_label:
-                self.progress_label.setText(f"📥 下载中: {completed}/{total} ({progress_pct:.1f}%)")
+                self.progress_label.setText(
+                    f"📥 下载中: {completed}/{total} ({progress_pct:.1f}%)"
+                )
 
             # 3. 文本日志（降低频率，仅关键节点）
             should_log = (
@@ -5128,7 +5602,9 @@ class DataCenter(BaseWidget):
             if self._progress_update_timer is None:
                 self._progress_update_timer = QTimer(self)
                 self._progress_update_timer.setSingleShot(True)
-                self._progress_update_timer.timeout.connect(self._flush_progress_text_buffer)
+                self._progress_update_timer.timeout.connect(
+                    self._flush_progress_text_buffer
+                )
                 self._progress_update_timer.start(1000)  # 从200ms改为1秒
             elif not self._progress_update_timer.isActive():
                 self._progress_update_timer.start(1000)  # 从200ms改为1秒
@@ -5294,7 +5770,8 @@ class DataCenter(BaseWidget):
             # 清理任务ID
             if hasattr(self, "current_download_task_id"):
                 self.logger.info(
-                    ">>> 清理任务ID: %s", getattr(self, "current_download_task_id", None)
+                    ">>> 清理任务ID: %s",
+                    getattr(self, "current_download_task_id", None),
                 )
                 self.current_download_task_id = None
 
@@ -5334,7 +5811,9 @@ class DataCenter(BaseWidget):
                 return
 
             # 从数据库获取历史记录
-            db_records = self.db_manager.get_download_history(limit=self.max_history_records)
+            db_records = self.db_manager.get_download_history(
+                limit=self.max_history_records
+            )
 
             if not db_records:
                 self.logger.info("数据库中没有下载历史记录")
@@ -5393,7 +5872,9 @@ class DataCenter(BaseWidget):
             # 从result和当前状态构建历史记录
             record = {
                 "task_id": result.get("task_id", "N/A"),
-                "start_time": getattr(self.download_thread, "start_time", datetime.now()),
+                "start_time": getattr(
+                    self.download_thread, "start_time", datetime.now()
+                ),
                 "end_time": datetime.now(),
                 "duration": getattr(self.download_thread, "duration", 0),
                 "status": "success" if result.get("success") else "failed",
@@ -5404,7 +5885,9 @@ class DataCenter(BaseWidget):
                 "skipped_count": result.get("skipped_count", 0),
                 "start_date": result.get("start_date", ""),
                 "message": result.get("message", ""),
-                "log_text": self.progress_text.toPlainText() if self.progress_text else "",
+                "log_text": (
+                    self.progress_text.toPlainText() if self.progress_text else ""
+                ),
             }
 
             # 🆕 保存到数据库
@@ -5451,7 +5934,10 @@ class DataCenter(BaseWidget):
                 return
 
             # 如果是首次添加，清除空提示
-            if self.history_tab_widget.count() == 1 and not self.history_tab_widget.isTabEnabled(0):
+            if (
+                self.history_tab_widget.count() == 1
+                and not self.history_tab_widget.isTabEnabled(0)
+            ):
                 self.history_tab_widget.clear()
 
             # 添加最新的历史记录选项卡
@@ -5469,7 +5955,9 @@ class DataCenter(BaseWidget):
                     tab_title = f"{status_emoji} {start_time}"
 
                 self.history_tab_widget.addTab(detail_widget, tab_title)
-                self.history_tab_widget.setCurrentIndex(self.history_tab_widget.count() - 1)
+                self.history_tab_widget.setCurrentIndex(
+                    self.history_tab_widget.count() - 1
+                )
 
                 self.logger.info("已添加历史选项卡: %s", tab_title)
 
@@ -5505,12 +5993,16 @@ class DataCenter(BaseWidget):
                         empty_layout = QVBoxLayout(empty_widget)
                         empty_label = QLabel("暂无下载历史")
                         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                        empty_label.setStyleSheet("color: #666; font-size: 13px; padding: 50px;")
+                        empty_label.setStyleSheet(
+                            "color: #666; font-size: 13px; padding: 50px;"
+                        )
                         empty_layout.addWidget(empty_label)
                         self.history_tab_widget.addTab(empty_widget, "空")
                         self.history_tab_widget.setTabEnabled(0, False)
 
-                self.logger.info(f"已删除下载历史记录，索引: {index}, 数据库ID: {record.get('id')}")
+                self.logger.info(
+                    f"已删除下载历史记录，索引: {index}, 数据库ID: {record.get('id')}"
+                )
 
         except Exception as e:
             self.logger.error(f"删除历史记录失败: {e}", exc_info=True)
@@ -5537,7 +6029,11 @@ class DataCenter(BaseWidget):
                             "name": "TDX数据源（请求/推送双模式）",
                             "type": "本地",
                         },
-                        {"id": "virtual_gateway", "name": "虚拟数据源（回测模拟）", "type": "本地"},
+                        {
+                            "id": "virtual_gateway",
+                            "name": "虚拟数据源（回测模拟）",
+                            "type": "本地",
+                        },
                     ]
 
                     self.sources_table.setRowCount(len(source_list))
@@ -5545,8 +6041,12 @@ class DataCenter(BaseWidget):
                         source_id = source["id"]
                         status_info = sources_data.get(source_id, {})
 
-                        self.sources_table.setItem(i, 0, QTableWidgetItem(source["name"]))
-                        self.sources_table.setItem(i, 1, QTableWidgetItem(source["type"]))
+                        self.sources_table.setItem(
+                            i, 0, QTableWidgetItem(source["name"])
+                        )
+                        self.sources_table.setItem(
+                            i, 1, QTableWidgetItem(source["type"])
+                        )
 
                         # 状态
                         connected = status_info.get("connected", False)
@@ -5563,7 +6063,9 @@ class DataCenter(BaseWidget):
                         # 操作按钮容器
                         button_widget = QWidget()
                         button_layout = QHBoxLayout(button_widget)
-                        button_layout.setContentsMargins(5, 5, 5, 5)  # 增加边距，让按钮更舒适
+                        button_layout.setContentsMargins(
+                            5, 5, 5, 5
+                        )  # 增加边距，让按钮更舒适
                         button_layout.setSpacing(8)  # 增加按钮间距
 
                         # 对于polling_gateway和virtual_gateway，添加配置按钮
@@ -5572,7 +6074,9 @@ class DataCenter(BaseWidget):
                             config_btn.setMinimumHeight(32)  # 设置按钮最小高度
                             config_btn.setMinimumWidth(60)  # 设置按钮最小宽度
                             config_btn.clicked.connect(
-                                lambda _checked, sid=source_id: self._configure_gateway(sid)
+                                lambda _checked, sid=source_id: self._configure_gateway(
+                                    sid
+                                )
                             )
                             button_layout.addWidget(config_btn)
 
@@ -5582,7 +6086,9 @@ class DataCenter(BaseWidget):
                                 stop_btn.setMinimumHeight(32)  # 设置按钮最小高度
                                 stop_btn.setMinimumWidth(60)  # 设置按钮最小宽度
                                 stop_btn.clicked.connect(
-                                    lambda _checked, sid=source_id: self._stop_gateway(sid)
+                                    lambda _checked, sid=source_id: self._stop_gateway(
+                                        sid
+                                    )
                                 )
                                 button_layout.addWidget(stop_btn)
                             else:
@@ -5590,12 +6096,16 @@ class DataCenter(BaseWidget):
                                 start_btn.setMinimumHeight(32)  # 设置按钮最小高度
                                 start_btn.setMinimumWidth(60)  # 设置按钮最小宽度
                                 start_btn.clicked.connect(
-                                    lambda _checked, sid=source_id: self._start_gateway(sid)
+                                    lambda _checked, sid=source_id: self._start_gateway(
+                                        sid
+                                    )
                                 )
                                 button_layout.addWidget(start_btn)
                         else:
                             # 其他数据源保持原有的连接/断开按钮
-                            connect_btn = QPushButton("连接" if not connected else "断开")
+                            connect_btn = QPushButton(
+                                "连接" if not connected else "断开"
+                            )
                             connect_btn.setMinimumHeight(32)  # 设置按钮最小高度
                             connect_btn.setMinimumWidth(60)  # 设置按钮最小宽度
                             connect_btn.clicked.connect(
@@ -5680,7 +6190,8 @@ class DataCenter(BaseWidget):
 
                 # 按钮
                 button_box = QDialogButtonBox(
-                    QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                    QDialogButtonBox.StandardButton.Ok
+                    | QDialogButtonBox.StandardButton.Cancel
                 )
                 button_box.accepted.connect(dialog.accept)
                 button_box.rejected.connect(dialog.reject)
@@ -5732,7 +6243,8 @@ class DataCenter(BaseWidget):
 
                 # 按钮
                 button_box = QDialogButtonBox(
-                    QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                    QDialogButtonBox.StandardButton.Ok
+                    | QDialogButtonBox.StandardButton.Cancel
                 )
                 button_box.accepted.connect(dialog.accept)
                 button_box.rejected.connect(dialog.reject)
@@ -5741,7 +6253,9 @@ class DataCenter(BaseWidget):
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     # 保存配置到实例变量
                     self.virtual_gateway_config = {
-                        "start_datetime": datetime_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
+                        "start_datetime": datetime_edit.dateTime().toString(
+                            "yyyy-MM-dd HH:mm:ss"
+                        ),
                         "speed": speed_spin.value(),
                         # 不再包含 symbols 字段 - 由自动注册机制处理
                     }
@@ -5773,7 +6287,9 @@ class DataCenter(BaseWidget):
                 result = self.data_center_service.start_polling_gateway(config)
 
                 if result["success"]:
-                    self.show_info("TDX数据源已启动（通道已激活）\n" "订阅品种将由其他模块自动注册")
+                    self.show_info(
+                        "TDX数据源已启动（通道已激活）\n订阅品种将由其他模块自动注册"
+                    )
                     self._load_data_sources()
                 else:
                     self.show_error(f"启动失败: {result.get('message', '未知错误')}")
@@ -5790,7 +6306,8 @@ class DataCenter(BaseWidget):
 
                 if result["success"]:
                     self.show_info(
-                        "虚拟数据源已启动（通道已激活）\n" "订阅品种将由其他模块自动注册"
+                        "虚拟数据源已启动（通道已激活）\n"
+                        "订阅品种将由其他模块自动注册"
                     )
                     self._load_data_sources()
                 else:
@@ -5945,9 +6462,7 @@ class DataCenter(BaseWidget):
                 return
 
             # 构建HTML显示文本
-            html = (
-                "<pre style='font-family: Consolas, monospace; font-size: 12px; line-height: 1.5;'>"
-            )
+            html = "<pre style='font-family: Consolas, monospace; font-size: 12px; line-height: 1.5;'>"
 
             for tick_info in self.tick_buffer:
                 html += (
@@ -6053,7 +6568,9 @@ class DataCenter(BaseWidget):
                     )
                     self.logger.info("【后台】质量概览加载完成")
                 else:
-                    self.logger.warning("【后台】质量概览加载失败: %s", result.get("message"))
+                    self.logger.warning(
+                        "【后台】质量概览加载失败: %s", result.get("message")
+                    )
                     # 🆕 加载失败时重置状态
                     QTimer.singleShot(0, lambda: self._set_quality_scan_status(False))
 
@@ -6092,12 +6609,16 @@ class DataCenter(BaseWidget):
                 return
 
             # 只有两个流程都不在运行时才启用
-            should_enable = not self._lightweight_running and not self._heavy_scan_running
+            should_enable = (
+                not self._lightweight_running and not self._heavy_scan_running
+            )
 
             self.scan_data_btn.setEnabled(should_enable)
 
             if should_enable:
-                self.scan_data_btn.setStyleSheet("background-color: #2196F3; color: white;")
+                self.scan_data_btn.setStyleSheet(
+                    "background-color: #2196F3; color: white;"
+                )
                 self.logger.debug("🔵 数据扫描按钮已启用")
             else:
                 self.scan_data_btn.setStyleSheet("")
@@ -6211,32 +6732,50 @@ class DataCenter(BaseWidget):
                             # 阶段节点日志（输出到Terminal）
                             stage_logger.info(
                                 "📍 手动数据扫描开始",
-                                extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "STAGE_NODE",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
 
                             # 详细日志（只写入事件日志文件）
                             self.logger.debug(
                                 "[DATA-SCAN] 开始执行数据扫描...",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
                             self.logger.debug(
                                 f"[DATA-SCAN] 服务实例类型: {type(self.data_center_service).__name__ if self.data_center_service else 'None'}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
                             self.logger.debug(
                                 f"[DATA-SCAN] 服务实例: {self.data_center_service}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
                             self.logger.info(
                                 "[DATA-SCAN] 手动数据扫描任务开始",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
 
                             if not self.data_center_service:
                                 self.logger.error(
                                     "[DATA-SCAN] ❌ 数据中心服务未初始化",
                                     exc_info=True,
-                                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
+                                    extra={
+                                        "log_type": "ALERT",
+                                        "scenario": "manual_data_scan",
+                                    },
                                 )
                                 stage_logger.error(
                                     "❌ 数据中心服务未初始化",
@@ -6249,7 +6788,10 @@ class DataCenter(BaseWidget):
 
                             self.logger.debug(
                                 "[DATA-SCAN] 调用服务层scan_errors_missing_only方法...",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
                             scan_start_time = time.time()
                             result = self.data_center_service.scan_errors_missing_only()
@@ -6257,7 +6799,10 @@ class DataCenter(BaseWidget):
                             elapsed = time.time() - start_time
                             self.logger.debug(
                                 f"[DATA-SCAN] 服务层scan_errors_missing_only方法调用完成: 耗时={scan_elapsed:.2f}s",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
 
                             # 使用QTimer转发结果到主线程更新UI
@@ -6268,12 +6813,18 @@ class DataCenter(BaseWidget):
 
                                 self.logger.debug(
                                     f"[DATA-SCAN] 扫描结果详情: missing={missing}, error={error}, warning={warning}",
-                                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "manual_data_scan",
+                                    },
                                 )
                                 self.logger.info(
                                     f"[DATA-SCAN] ✅ 数据扫描完成: 缺失={missing}, 错误={error}, 警告={warning}, "
                                     f"服务层耗时={scan_elapsed:.2f}s, 总耗时={elapsed:.2f}s",
-                                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "manual_data_scan",
+                                    },
                                 )
 
                                 # 阶段节点日志（输出到Terminal）
@@ -6298,11 +6849,17 @@ class DataCenter(BaseWidget):
                                 elapsed = time.time() - start_time
                                 self.logger.warning(
                                     f"[DATA-SCAN] ⚠️ 数据扫描失败: {msg}, 耗时={elapsed:.2f}s",
-                                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
+                                    extra={
+                                        "log_type": "ALERT",
+                                        "scenario": "manual_data_scan",
+                                    },
                                 )
                                 self.logger.debug(
                                     f"[DATA-SCAN] 失败结果详情: {result}",
-                                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "manual_data_scan",
+                                    },
                                 )
 
                                 # 阶段节点日志（输出到Terminal）
@@ -6326,14 +6883,20 @@ class DataCenter(BaseWidget):
                         )
                         self.logger.info(
                             "[DATA-SCAN] 降级模式：开始执行数据扫描...",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "manual_data_scan",
+                            },
                         )
 
                         if not self.data_center_service:
                             self.logger.error(
                                 "[DATA-SCAN] ❌ 数据中心服务未初始化（降级模式）",
                                 exc_info=True,
-                                extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "ALERT",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
                             return
 
@@ -6349,7 +6912,10 @@ class DataCenter(BaseWidget):
                             self.logger.info(
                                 f"[DATA-SCAN] ✅ 数据扫描完成（降级模式）: 缺失={missing}, 错误={error}, "
                                 f"警告={warning}, 服务层耗时={scan_elapsed:.2f}s, 总耗时={elapsed:.2f}s",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
                             QTimer.singleShot(
                                 0,
@@ -6363,7 +6929,10 @@ class DataCenter(BaseWidget):
                             msg = result.get("message", "未知错误")
                             self.logger.warning(
                                 f"[DATA-SCAN] ⚠️ 数据扫描失败（降级模式）: {msg}, 耗时={elapsed:.2f}s",
-                                extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
+                                extra={
+                                    "log_type": "ALERT",
+                                    "scenario": "manual_data_scan",
+                                },
                             )
                             QTimer.singleShot(
                                 0,
@@ -6381,11 +6950,13 @@ class DataCenter(BaseWidget):
                         f"[DATA-SCAN] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    QTimer.singleShot(0, lambda e=e: self.show_error(f"扫描失败: {str(e)}"))
+                    QTimer.singleShot(
+                        0, lambda e=e: self.show_error(f"扫描失败: {str(e)}")
+                    )
 
                 finally:
                     # 恢复扫描按钮状态
-                    QTimer.singleShot(0, lambda: self._restore_scan_button())
+                    QTimer.singleShot(0, self._restore_scan_button)
 
             # 启动后台线程
             scan_thread = Thread(target=run_scan, daemon=True, name="DataScanThread")
@@ -6407,7 +6978,9 @@ class DataCenter(BaseWidget):
             if self.scan_data_btn:
                 self.scan_data_btn.setEnabled(True)
                 self.scan_data_btn.setText("🔍 数据扫描")
-                self.scan_data_btn.setStyleSheet("background-color: #2196F3; color: white;")
+                self.scan_data_btn.setStyleSheet(
+                    "background-color: #2196F3; color: white;"
+                )
         except Exception as e:
             self.logger.error(f"恢复扫描按钮状态失败: {e}")
 
@@ -6507,7 +7080,9 @@ class DataCenter(BaseWidget):
 
             # 🔧 更新新的UI组件（数据问题）
             self._update_data_issues_ui(
-                error_count=errors, data_missing_count=data_missing, warning_count=warnings
+                error_count=errors,
+                data_missing_count=data_missing,
+                warning_count=warnings,
             )
 
             # 🔧 兼容旧代码：同时更新旧UI（如果存在）
@@ -6520,19 +7095,25 @@ class DataCenter(BaseWidget):
             if self.missing_symbols_label:
                 self.missing_symbols_label.setText(f"品种缺失: {missing}")
                 if missing > 0:
-                    self.missing_symbols_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+                    self.missing_symbols_label.setStyleSheet(
+                        "color: #FF9800; font-weight: bold;"
+                    )
                 else:
                     self.missing_symbols_label.setStyleSheet("color: #4CAF50;")
             if self.invalid_symbols_label:
                 self.invalid_symbols_label.setText(f"失效品种: {invalid_count}")
                 if invalid_count > 0:
-                    self.invalid_symbols_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+                    self.invalid_symbols_label.setStyleSheet(
+                        "color: #FF9800; font-weight: bold;"
+                    )
                 else:
                     self.invalid_symbols_label.setStyleSheet("color: #4CAF50;")
             if self.outdated_symbols_label:
                 self.outdated_symbols_label.setText(f"过时: {outdated}")
                 if outdated > 0:
-                    self.outdated_symbols_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+                    self.outdated_symbols_label.setStyleSheet(
+                        "color: #FF9800; font-weight: bold;"
+                    )
                 else:
                     self.outdated_symbols_label.setStyleSheet("color: #4CAF50;")
             if self.data_missing_symbols_label:
@@ -6544,13 +7125,17 @@ class DataCenter(BaseWidget):
             if self.error_symbols_label:
                 self.error_symbols_label.setText(f"错误: {errors}")
                 if errors > 0:
-                    self.error_symbols_label.setStyleSheet("color: #F44336; font-weight: bold;")
+                    self.error_symbols_label.setStyleSheet(
+                        "color: #F44336; font-weight: bold;"
+                    )
                 else:
                     self.error_symbols_label.setStyleSheet("color: #4CAF50;")
             if self.warning_symbols_label:
                 self.warning_symbols_label.setText(f"警告: {warnings}")
                 if warnings > 0:
-                    self.warning_symbols_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+                    self.warning_symbols_label.setStyleSheet(
+                        "color: #FF9800; font-weight: bold;"
+                    )
                 else:
                     self.warning_symbols_label.setStyleSheet("color: #4CAF50;")
 
@@ -6607,12 +7192,17 @@ class DataCenter(BaseWidget):
         try:
             # print(...)  # 🔧 已移除：DEBUG调试输出
             self.logger.debug(
-                "details类型=%s, 大小=%s", type(details), len(details) if details else "None"
+                "details类型=%s, 大小=%s",
+                type(details),
+                len(details) if details else "None",
             )
             if details and len(details) > 0:
                 self.logger.debug(
                     "前3个问题品种: %s",
-                    [d.get("symbol", "?") + "(" + d.get("status", "?") + ")" for d in details[:3]],
+                    [
+                        d.get("symbol", "?") + "(" + d.get("status", "?") + ")"
+                        for d in details[:3]
+                    ],
                 )
 
             if not self.quality_detail_table:
@@ -6679,7 +7269,9 @@ class DataCenter(BaseWidget):
                 issues_text = detail.get("issues", "无问题")
 
                 # 截取前50个字符显示
-                brief_desc = issues_text[:50] + "..." if len(issues_text) > 50 else issues_text
+                brief_desc = (
+                    issues_text[:50] + "..." if len(issues_text) > 50 else issues_text
+                )
 
                 desc_item = QTableWidgetItem(brief_desc)
 
@@ -6763,7 +7355,11 @@ class DataCenter(BaseWidget):
 
                     # 第4列：问题描述
                     issues_text = detail.get("issues", "无问题")
-                    brief_desc = issues_text[:50] + "..." if len(issues_text) > 50 else issues_text
+                    brief_desc = (
+                        issues_text[:50] + "..."
+                        if len(issues_text) > 50
+                        else issues_text
+                    )
                     desc_item = QTableWidgetItem(brief_desc)
                     desc_item.setToolTip(issues_text)
 
@@ -6814,7 +7410,10 @@ class DataCenter(BaseWidget):
             traceback.print_exc(file=sys.stderr)
             sys.stderr.flush()
             self.logger.error(
-                "❌ 增量追加质量详情失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"}
+                "❌ 增量追加质量详情失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "USER_FEEDBACK"},
             )
 
     def _trigger_repair_download(self) -> None:
@@ -6827,7 +7426,10 @@ class DataCenter(BaseWidget):
             self.logger.info("用户触发数据修复下载")
 
             # 1. 检查是否有质量概览数据
-            if not self.data_center_service or not self.data_center_service.china_stock_engine:
+            if (
+                not self.data_center_service
+                or not self.data_center_service.china_stock_engine
+            ):
                 self.show_warning("数据引擎未就绪，请稍后再试")
                 return
 
@@ -6880,7 +7482,9 @@ class DataCenter(BaseWidget):
                         try:
                             from datetime import datetime
 
-                            last_date = datetime.strptime(last_date_str, "%Y-%m-%d").date()
+                            last_date = datetime.strptime(
+                                last_date_str, "%Y-%m-%d"
+                            ).date()
                             if last_date < limit_date:
                                 has_old_data = True
                                 break
@@ -6972,7 +7576,9 @@ class DataCenter(BaseWidget):
                 # 单个品种更新（旧格式兼容）
                 symbol = data.get("symbol")
                 score = data.get("score", 0)
-                self.logger.debug("收到单品种质量更新: symbol=%s, score=%s", symbol, score)
+                self.logger.debug(
+                    "收到单品种质量更新: symbol=%s, score=%s", symbol, score
+                )
                 # 增量更新：重新加载整体概览
                 self._load_quality_overview_async()
 
@@ -6995,7 +7601,7 @@ class DataCenter(BaseWidget):
             self.logger.info("收到扫描完成事件: 总品种=%s", total)
 
             # 转发到主线程执行UI更新
-            QTimer.singleShot(0, lambda: self._handle_scan_complete_ui())
+            QTimer.singleShot(0, self._handle_scan_complete_ui)
 
         except Exception as e:
             self.logger.error("处理扫描完成事件失败: %s", e)

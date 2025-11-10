@@ -51,7 +51,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from backend.services.strategy_center_service import StrategyCenterService
-    from backend.services.ai_assistant_service import AIAssistantService
 
 from ui.components.widgets import BaseWidget
 
@@ -1682,7 +1681,6 @@ class TerminalWidget(QWidget):
         self.output_text.setAcceptRichText(True)
 
         # 设置文档的默认样式，使用HTML格式增加行间距
-        document = self.output_text.document()
         default_style = """
         <style>
             body {

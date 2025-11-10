@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional, cast
 import logging
 
 from backend.framework import ServiceBase
-import logging
 from backend.infrastructure.data_module_vnpy.arrow_utils import (
     ARROW_AVAILABLE as ARROW_IPC_AVAILABLE,
 )

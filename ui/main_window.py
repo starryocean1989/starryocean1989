@@ -20,7 +20,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 import logging
-from typing import Any, Callable, Dict, Optional, cast
+from typing import Any, Callable, Dict, Optional
 
 try:
     import psutil
@@ -231,22 +231,30 @@ class ShortcutManager(QObject, LoggerMixin):
                 key_sequence = self.DEFAULT_SHORTCUTS.get(action_id, "")
 
             if not key_sequence:
-                self.logger.warning("⚠️ 操作 %s 没有快捷键", action_id, extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ 操作 %s 没有快捷键", action_id, extra={"log_type": "SYSTEM"}
+                )
                 return False
 
             # 检查冲突
             if self._check_conflict(action_id, key_sequence):
-                self.logger.warning("⚠️ 快捷键冲突: %s", key_sequence, extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ 快捷键冲突: %s", key_sequence, extra={"log_type": "SYSTEM"}
+                )
                 return False
 
             # 创建QShortcut
             if self.parent_widget:
                 shortcut = QShortcut(QKeySequence(key_sequence), self.parent_widget)
-                shortcut.activated.connect(lambda: self._on_shortcut_activated(action_id, callback))
+                shortcut.activated.connect(
+                    lambda: self._on_shortcut_activated(action_id, callback)
+                )
             else:
                 shortcut = None
                 self.logger.warning(
-                    "⚠️ 未设置父组件，无法创建快捷键: %s", action_id, extra={"log_type": "SYSTEM"}
+                    "⚠️ 未设置父组件，无法创建快捷键: %s",
+                    action_id,
+                    extra={"log_type": "SYSTEM"},
                 )
 
             # 保存到映射
@@ -346,7 +354,10 @@ class ShortcutManager(QObject, LoggerMixin):
         Returns:
             Dict: {action_id: key_sequence}
         """
-        return {action_id: info["key_sequence"] for action_id, info in self.shortcuts.items()}
+        return {
+            action_id: info["key_sequence"]
+            for action_id, info in self.shortcuts.items()
+        }
 
     def reset_to_defaults(self):
         """重置为默认快捷键."""
@@ -423,7 +434,10 @@ class ShortcutManager(QObject, LoggerMixin):
         """保存配置."""
         try:
             # 收集当前配置
-            config = {action_id: info["key_sequence"] for action_id, info in self.shortcuts.items()}
+            config = {
+                action_id: info["key_sequence"]
+                for action_id, info in self.shortcuts.items()
+            }
 
             # 保存到文件
             if _save_json_config(self.config_file, config):
@@ -541,18 +555,26 @@ class MainWindow(QMainWindow):
             self.logger.debug("主题管理器初始化成功")
         except Exception as e:
             self.logger.error(
-                "❌ 初始化主题管理器失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                "❌ 初始化主题管理器失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
             self.theme_manager = None
             # 向用户显示友好错误
-            QMessageBox.warning(self, "初始化警告", "主题管理器初始化失败，将使用默认主题")
+            QMessageBox.warning(
+                self, "初始化警告", "主题管理器初始化失败，将使用默认主题"
+            )
 
         try:
             self.config_manager = ConfigManager()
             self.logger.debug("配置管理器初始化成功")
         except Exception as e:
             self.logger.error(
-                "❌ 初始化配置管理器失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                "❌ 初始化配置管理器失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
             # 先设置为 None，后面会处理
             self.config_manager = None
@@ -569,16 +591,47 @@ class MainWindow(QMainWindow):
         # 按需加载器：记录需要延迟创建的界面
         self.lazy_loaders: Dict[str, Any] = {}
         # 🔧 调整顺序：系统管理提到第一位
-        self.interface_order = ["system", "data", "market", "strategy", "trading", "portfolio"]
+        self.interface_order = [
+            "system",
+            "data",
+            "market",
+            "strategy",
+            "trading",
+            "portfolio",
+        ]
 
         # 界面元数据
         self.interface_metadata = {
-            "system": {"icon": "🛠️", "name": "系统管理", "description": "系统监控与运维管理"},
-            "data": {"icon": "🗃️", "name": "数据中心", "description": "数据管理解决方案"},
-            "market": {"icon": "📈", "name": "行情看板", "description": "专业行情分析工具"},
-            "strategy": {"icon": "🧠", "name": "策略中心", "description": "策略开发和回测环境"},
-            "trading": {"icon": "🔗", "name": "交易网关", "description": "多网关交易执行"},
-            "portfolio": {"icon": "📊", "name": "组合投资", "description": "投资组合管理和监控"},
+            "system": {
+                "icon": "🛠️",
+                "name": "系统管理",
+                "description": "系统监控与运维管理",
+            },
+            "data": {
+                "icon": "🗃️",
+                "name": "数据中心",
+                "description": "数据管理解决方案",
+            },
+            "market": {
+                "icon": "📈",
+                "name": "行情看板",
+                "description": "专业行情分析工具",
+            },
+            "strategy": {
+                "icon": "🧠",
+                "name": "策略中心",
+                "description": "策略开发和回测环境",
+            },
+            "trading": {
+                "icon": "🔗",
+                "name": "交易网关",
+                "description": "多网关交易执行",
+            },
+            "portfolio": {
+                "icon": "📊",
+                "name": "组合投资",
+                "description": "投资组合管理和监控",
+            },
         }
 
         # 动态导入映射：按需加载时根据ID导入对应类（扁平化后的新路径）
@@ -596,7 +649,7 @@ class MainWindow(QMainWindow):
         self.responsive_helper: Optional[ResponsiveHelper] = None
 
         # 快捷键管理器
-        self.shortcut_manager: Optional['ShortcutManager'] = None
+        self.shortcut_manager: Optional["ShortcutManager"] = None
 
         # ✅ 严格串行化：就绪标志
         self._interfaces_created = False
@@ -705,7 +758,9 @@ class MainWindow(QMainWindow):
                 logger.warning("配置加载完成，但API Key未设置")
 
         except Exception as e:
-            logger.error("❌ 配置初始化失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "❌ 配置初始化失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def initialize_function_interfaces_after_backend(self):
         """在后端就绪后初始化功能界面（异步模式）."""
@@ -717,7 +772,10 @@ class MainWindow(QMainWindow):
             stage_logger.info("✅ MainWindow创建完成", extra={"log_type": "STAGE_NODE"})
 
             # 升级状态栏（如果尚未升级）
-            if not hasattr(self, "enhanced_statusbar") or self.enhanced_statusbar is None:
+            if (
+                not hasattr(self, "enhanced_statusbar")
+                or self.enhanced_statusbar is None
+            ):
                 try:
                     from backend.framework import get_event_engine
                     from ui.components.enhanced_statusbar import EnhancedStatusBar
@@ -729,7 +787,10 @@ class MainWindow(QMainWindow):
                             self.status_bar.removeWidget(self.status_label)
                         if hasattr(self, "alert_ticker") and self.alert_ticker:
                             self.status_bar.removeWidget(self.alert_ticker)
-                        if hasattr(self, "system_info_label") and self.system_info_label:
+                        if (
+                            hasattr(self, "system_info_label")
+                            and self.system_info_label
+                        ):
                             self.status_bar.removeWidget(self.system_info_label)
 
                         # 创建增强状态栏
@@ -745,7 +806,9 @@ class MainWindow(QMainWindow):
                             "✅ 增强状态栏初始化完成", extra={"log_type": "STAGE_NODE"}
                         )
                 except Exception as e:
-                    self.logger.warning("状态栏升级失败: %s", e, extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "状态栏升级失败: %s", e, extra={"log_type": "SYSTEM"}
+                    )
 
             self.logger.info("=" * 70)
             self.logger.info("🎨 开始创建UI功能界面（主线程）")
@@ -756,7 +819,8 @@ class MainWindow(QMainWindow):
             self.logger.info("当前线程ID: %s", threading.current_thread().ident)
             self.logger.info("当前线程名: %s", threading.current_thread().name)
             self.logger.info(
-                "是否为主线程: %s", threading.current_thread() == threading.main_thread()
+                "是否为主线程: %s",
+                threading.current_thread() == threading.main_thread(),
             )
 
             # 🆕 连接后台初始化进度信号
@@ -766,7 +830,10 @@ class MainWindow(QMainWindow):
                 self.logger.info("✅ 后台进度信号连接完成")
             except Exception as e:
                 self.logger.error(
-                    "❌ 后台进度信号连接失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    "❌ 后台进度信号连接失败: %s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
 
             # 创建功能界面
@@ -776,12 +843,17 @@ class MainWindow(QMainWindow):
                 self.logger.info("✅ 功能界面创建完成")
             except Exception as e:
                 self.logger.error(
-                    "❌ 功能界面创建失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    "❌ 功能界面创建失败: %s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
                 # 不抛出异常，让应用继续运行（即使部分功能不可用）
 
             # 🎯 输出六大功能模块注册信息
-            stage_logger.info("✅ 六大功能模块注册完成", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                "✅ 六大功能模块注册完成", extra={"log_type": "STAGE_NODE"}
+            )
             module_names = {
                 "data": "DataCenterView",
                 "market": "MarketBoardView",
@@ -792,16 +864,21 @@ class MainWindow(QMainWindow):
             }
             for interface_id in self.interface_order:
                 module_name = module_names.get(interface_id, interface_id)
-                stage_logger.info(f"  ├─ {module_name} ✅", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info(
+                    f"  ├─ {module_name} ✅", extra={"log_type": "STAGE_NODE"}
+                )
 
             # 快捷键系统注册
             try:
-                shortcut_manager = getattr(self, 'shortcut_manager', None)
+                shortcut_manager = getattr(self, "shortcut_manager", None)
                 if shortcut_manager is not None:
-                    shortcut_count = len(getattr(shortcut_manager, 'shortcuts', {}))
-                    stage_logger.info("✅ 快捷键系统注册完成", extra={"log_type": "STAGE_NODE"})
+                    shortcut_count = len(getattr(shortcut_manager, "shortcuts", {}))
                     stage_logger.info(
-                        f"  - 全局快捷键: {shortcut_count}个", extra={"log_type": "STAGE_NODE"}
+                        "✅ 快捷键系统注册完成", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        f"  - 全局快捷键: {shortcut_count}个",
+                        extra={"log_type": "STAGE_NODE"},
                     )
             except Exception:
                 pass
@@ -813,7 +890,10 @@ class MainWindow(QMainWindow):
                 self.logger.info("✅ 信号槽连接完成")
             except Exception as e:
                 self.logger.error(
-                    "❌ 信号槽连接失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    "❌ 信号槽连接失败: %s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
                 # 信号连接失败不致命，继续执行
 
@@ -824,7 +904,10 @@ class MainWindow(QMainWindow):
                 self.logger.info("✅ 更新定时器启动完成")
             except Exception as e:
                 self.logger.error(
-                    "❌ 更新定时器启动失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    "❌ 更新定时器启动失败: %s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
                 # 定时器失败不致命，继续执行
 
@@ -835,7 +918,10 @@ class MainWindow(QMainWindow):
                 self.logger.info("✅ 按需加载完成")
             except Exception as e:
                 self.logger.error(
-                    "❌ 按需加载失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    "❌ 按需加载失败: %s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
 
             # 步骤5: 设置默认选中界面
@@ -846,7 +932,10 @@ class MainWindow(QMainWindow):
                     self.logger.info("✅ 默认界面设置完成")
             except Exception as e:
                 self.logger.error(
-                    "❌ 设置默认界面失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    "❌ 设置默认界面失败: %s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
 
             self.logger.info("=" * 70)
@@ -863,9 +952,13 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             self.logger.error("=" * 70)
-            self.logger.error("💥 UI功能界面初始化发生严重异常", extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "💥 UI功能界面初始化发生严重异常", extra={"log_type": "SYSTEM"}
+            )
             self.logger.error("=" * 70)
-            self.logger.error("异常信息: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "异常信息: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             # 不再重新抛出异常，避免应用崩溃
 
             # 显示错误信息给用户
@@ -883,7 +976,9 @@ class MainWindow(QMainWindow):
     def _initialize_backend_services(self):
         """初始化后端服务."""
         try:
-            from backend.startup.initializers.service_initializer import initialize_services
+            from backend.startup.initializers.service_initializer import (
+                initialize_services,
+            )
 
             logger.info("开始初始化后端服务")
             init_result = initialize_services()
@@ -966,7 +1061,9 @@ class MainWindow(QMainWindow):
         Args:
             reason: 离线原因
         """
-        self.logger.warning(f"⚠️ 系统已进入离线降级模式: {reason}", extra={"log_type": "ALERT"})
+        self.logger.warning(
+            f"⚠️ 系统已进入离线降级模式: {reason}", extra={"log_type": "ALERT"}
+        )
 
         # 显示离线模式通知
         from PySide6.QtWidgets import QMessageBox
@@ -999,7 +1096,9 @@ class MainWindow(QMainWindow):
             # TODO: 禁用组合投资创建
             self.logger.info("离线模式: 在线功能已禁用")
         except Exception as e:
-            self.logger.error(f"禁用在线功能失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                f"禁用在线功能失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def _on_validation_finished(self, result: dict):
         """处理验证完成事件。
@@ -1023,14 +1122,20 @@ class MainWindow(QMainWindow):
 
             # 🎯 关键修复: 在8步验证完成后，初始化分支C业务服务
             # 这确保了输出顺序: 阶段3标题 → 分支A(监控) → 分支B(8步) → 分支C(业务服务) → 阶段4(UI主窗口)
-            self.logger.info("[VALIDATION-FINISHED] 8步验证完成，现在初始化分支C业务服务...")
+            self.logger.info(
+                "[VALIDATION-FINISHED] 8步验证完成，现在初始化分支C业务服务..."
+            )
             try:
                 # 获取stage_logger用于输出
                 stage_logger = logging.getLogger("startup.stage")
 
                 # 调用业务服务初始化方法（这将输出分支C的内容）
-                from backend.services.trading_gateway_service import TradingGatewayService
-                from backend.services.strategy_center_service import StrategyCenterService
+                from backend.services.trading_gateway_service import (
+                    TradingGatewayService,
+                )
+                from backend.services.strategy_center_service import (
+                    StrategyCenterService,
+                )
                 from backend.services.ai_assistant_service import AIAssistantService
                 from backend.services.portfolio_service import PortfolioService
                 from backend.services.market_board_service import MarketBoardService
@@ -1041,12 +1146,16 @@ class MainWindow(QMainWindow):
 
                 # 🎯 显示分支C标题
                 stage_logger.info("", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("┌" + "─" * 66 + "┐", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info(
+                    "┌" + "─" * 66 + "┐", extra={"log_type": "STAGE_NODE"}
+                )
                 stage_logger.info(
                     "│ 分支C: 业务服务初始化                                            │",
                     extra={"log_type": "STAGE_NODE"},
                 )
-                stage_logger.info("└" + "─" * 66 + "┘", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info(
+                    "└" + "─" * 66 + "┘", extra={"log_type": "STAGE_NODE"}
+                )
                 stage_logger.info("", extra={"log_type": "STAGE_NODE"})
 
                 # 阶段3.4: 交易服务
@@ -1074,7 +1183,9 @@ class MainWindow(QMainWindow):
                             stage_logger.info(
                                 "✅ 风控引擎准备完成", extra={"log_type": "STAGE_NODE"}
                             )
-                            stage_logger.info("✅ 交易服务就绪", extra={"log_type": "STAGE_NODE"})
+                            stage_logger.info(
+                                "✅ 交易服务就绪", extra={"log_type": "STAGE_NODE"}
+                            )
                         else:
                             stage_logger.warning(
                                 "⚠️ TradingGatewayService初始化失败",
@@ -1085,13 +1196,19 @@ class MainWindow(QMainWindow):
                             "✅ TradingGatewayService初始化完成（已在前置阶段就绪）",
                             extra={"log_type": "STAGE_NODE"},
                         )
-                        stage_logger.info("✅ 交易服务就绪", extra={"log_type": "STAGE_NODE"})
+                        stage_logger.info(
+                            "✅ 交易服务就绪", extra={"log_type": "STAGE_NODE"}
+                        )
                 except Exception as e:
                     self.logger.error(
-                        "❌ 交易服务初始化异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                        "❌ 交易服务初始化异常: %s",
+                        e,
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
                     )
                     stage_logger.warning(
-                        f"⚠️ 交易服务初始化失败 - {str(e)}", extra={"log_type": "STAGE_NODE"}
+                        f"⚠️ 交易服务初始化失败 - {str(e)}",
+                        extra={"log_type": "STAGE_NODE"},
                     )
 
                 # 阶段3.5: 策略服务
@@ -1119,34 +1236,59 @@ class MainWindow(QMainWindow):
                     if not service_manager.has_service("ai_assistant_service"):
                         ai_service = AIAssistantService()
                         if ai_service.initialize():
-                            service_manager.register_service("ai_assistant_service", ai_service)
+                            service_manager.register_service(
+                                "ai_assistant_service", ai_service
+                            )
                             stage_logger.info(
-                                "✅ AIAssistantService初始化完成", extra={"log_type": "STAGE_NODE"}
+                                "✅ AIAssistantService初始化完成",
+                                extra={"log_type": "STAGE_NODE"},
                             )
                             stage_logger.info(
                                 "  - AI模型: DeepSeek", extra={"log_type": "STAGE_NODE"}
                             )
-                            stage_logger.info("  - API状态: 可用", extra={"log_type": "STAGE_NODE"})
+                            stage_logger.info(
+                                "  - API状态: 可用", extra={"log_type": "STAGE_NODE"}
+                            )
                     else:
                         stage_logger.info(
                             "✅ AIAssistantService初始化完成（已在前置阶段就绪）",
                             extra={"log_type": "STAGE_NODE"},
                         )
 
-                    stage_logger.info("✅ 策略模板加载完成", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - CTA策略: 1个模板", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 算法交易: 1个模板", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 组合策略: 1个模板", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 期权策略: 1个模板", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 价差策略: 1个模板", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 脚本交易: 1个模板", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("✅ 策略服务就绪", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info(
+                        "✅ 策略模板加载完成", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - CTA策略: 1个模板", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 算法交易: 1个模板", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 组合策略: 1个模板", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 期权策略: 1个模板", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 价差策略: 1个模板", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 脚本交易: 1个模板", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "✅ 策略服务就绪", extra={"log_type": "STAGE_NODE"}
+                    )
                 except Exception as e:
                     self.logger.error(
-                        "❌ 策略服务初始化异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                        "❌ 策略服务初始化异常: %s",
+                        e,
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
                     )
                     stage_logger.warning(
-                        f"⚠️ 策略服务初始化失败 - {str(e)}", extra={"log_type": "STAGE_NODE"}
+                        f"⚠️ 策略服务初始化失败 - {str(e)}",
+                        extra={"log_type": "STAGE_NODE"},
                     )
 
                 # 阶段3.6: 辅助服务
@@ -1158,9 +1300,12 @@ class MainWindow(QMainWindow):
                     if not service_manager.has_service("portfolio_service"):
                         portfolio_service = PortfolioService()
                         if portfolio_service.initialize():
-                            service_manager.register_service("portfolio_service", portfolio_service)
+                            service_manager.register_service(
+                                "portfolio_service", portfolio_service
+                            )
                             stage_logger.info(
-                                "✅ PortfolioService初始化完成", extra={"log_type": "STAGE_NODE"}
+                                "✅ PortfolioService初始化完成",
+                                extra={"log_type": "STAGE_NODE"},
                             )
                     else:
                         stage_logger.info(
@@ -1171,9 +1316,12 @@ class MainWindow(QMainWindow):
                     if not service_manager.has_service("market_board_service"):
                         market_service = MarketBoardService()
                         if market_service.initialize():
-                            service_manager.register_service("market_board_service", market_service)
+                            service_manager.register_service(
+                                "market_board_service", market_service
+                            )
                             stage_logger.info(
-                                "✅ MarketBoardService初始化完成", extra={"log_type": "STAGE_NODE"}
+                                "✅ MarketBoardService初始化完成",
+                                extra={"log_type": "STAGE_NODE"},
                             )
                     else:
                         stage_logger.info(
@@ -1199,44 +1347,76 @@ class MainWindow(QMainWindow):
                             )
 
                     # 连接监控进程native_ipc管道
-                    system_service = service_manager.get_service("system_manager_service")
+                    system_service = service_manager.get_service(
+                        "system_manager_service"
+                    )
                     if system_service:
                         stage_logger.info(
-                            "  └─ 连接监控进程native_ipc管道 ✅", extra={"log_type": "STAGE_NODE"}
+                            "  └─ 连接监控进程native_ipc管道 ✅",
+                            extra={"log_type": "STAGE_NODE"},
                         )
 
-                    stage_logger.info("✅ 服务健康检查通过", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 数据中心服务: 运行中", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 交易网关服务: 运行中", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 策略中心服务: 运行中", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - AI助手服务: 运行中", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 组合投资服务: 运行中", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 行情看板服务: 运行中", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("  - 系统管理服务: 运行中", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info("✅ 辅助服务就绪", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info(
+                        "✅ 服务健康检查通过", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 数据中心服务: 运行中", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 交易网关服务: 运行中", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 策略中心服务: 运行中", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - AI助手服务: 运行中", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 组合投资服务: 运行中", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 行情看板服务: 运行中", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "  - 系统管理服务: 运行中", extra={"log_type": "STAGE_NODE"}
+                    )
+                    stage_logger.info(
+                        "✅ 辅助服务就绪", extra={"log_type": "STAGE_NODE"}
+                    )
                 except Exception as e:
                     self.logger.error(
-                        "❌ 辅助服务初始化异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                        "❌ 辅助服务初始化异常: %s",
+                        e,
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
                     )
                     stage_logger.warning(
-                        f"⚠️ 辅助服务初始化失败 - {str(e)}", extra={"log_type": "STAGE_NODE"}
+                        f"⚠️ 辅助服务初始化失败 - {str(e)}",
+                        extra={"log_type": "STAGE_NODE"},
                     )
 
                 self.logger.info("[VALIDATION-FINISHED] ✅ 分支C业务服务初始化完成")
 
             except Exception as e:
                 self.logger.error(
-                    "❌ 分支C业务服务初始化失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    "❌ 分支C业务服务初始化失败: %s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
                 )
 
             # 结束事件日志流程
             try:
-                from backend.infrastructure.system_vnpy.logging_system import end_event_process
+                from backend.infrastructure.system_vnpy.logging_system import (
+                    end_event_process,
+                )
 
                 end_event_process()
                 self.logger.info("✅ 事件日志流程已结束")
             except Exception as e:
-                self.logger.warning(f"事件日志流程结束失败: {e}", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    f"事件日志流程结束失败: {e}", extra={"log_type": "SYSTEM"}
+                )
 
             # 更新状态栏
             if hasattr(self, "status_bar") and self.status_bar:
@@ -1248,7 +1428,10 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             self.logger.error(
-                "❌ 处理验证完成事件失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                "❌ 处理验证完成事件失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
 
     def setup_ui(self):
@@ -1292,7 +1475,9 @@ class MainWindow(QMainWindow):
 
         # 右侧：内容显示区
         self.content_stack = QStackedWidget()
-        self.content_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.content_stack.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.content_stack.setStyleSheet(
             """
             QStackedWidget {
@@ -1473,7 +1658,10 @@ class MainWindow(QMainWindow):
             self.logger.debug("快捷键管理器初始化成功")
         except Exception as e:
             self.logger.error(
-                "❌ 初始化快捷键管理器失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                "❌ 初始化快捷键管理器失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
             self.shortcut_manager = None
 
@@ -1524,7 +1712,11 @@ class MainWindow(QMainWindow):
                 idx,
                 len(interfaces),
                 interface_id,
-                (interface_class.__name__ if interface_class else "Lazy(SystemManager)"),
+                (
+                    interface_class.__name__
+                    if interface_class
+                    else "Lazy(SystemManager)"
+                ),
             )
             self.logger.info("-" * 70)
             self.logger.info(
@@ -1608,7 +1800,9 @@ class MainWindow(QMainWindow):
                 self.lazy_loaders[interface_id] = partial(
                     self._instantiate_and_replace, interface_id, None
                 )
-                self.logger.info("  ⚠️ %s 使用占位并登记延迟加载器（偏函数）", interface_name)
+                self.logger.info(
+                    "  ⚠️ %s 使用占位并登记延迟加载器（偏函数）", interface_name
+                )
             except Exception as inst_error:
                 # 捕获实例化过程中的任何异常（包括访问违例）
                 self.logger.error(
@@ -1703,7 +1897,8 @@ class MainWindow(QMainWindow):
         """
         if self._is_loading_interface:
             self.logger.warning(
-                "UI已有界面正在加载，跳过重复触发: 当前加载中=是", extra={"log_type": "SYSTEM"}
+                "UI已有界面正在加载，跳过重复触发: 当前加载中=是",
+                extra={"log_type": "SYSTEM"},
             )
             return
 
@@ -1826,7 +2021,9 @@ class MainWindow(QMainWindow):
             class_name: str | None = None
 
             if klass is None:
-                module_path, class_name = self.interface_imports.get(interface_id, (None, None))
+                module_path, class_name = self.interface_imports.get(
+                    interface_id, (None, None)
+                )
                 if not module_path or not class_name:
                     raise RuntimeError(f"未找到界面映射: {interface_id}")
 
@@ -1890,7 +2087,9 @@ class MainWindow(QMainWindow):
                 extra={"log_type": "STAGE_NODE"},
                 exc_info=True,
             )
-            self.logger.error("实例化并替换 '%s' 失败: %s", interface_id, e, exc_info=True)
+            self.logger.error(
+                "实例化并替换 '%s' 失败: %s", interface_id, e, exc_info=True
+            )
             error_placeholder = self._create_error_placeholder(interface_id, str(e))
             if self.content_stack:
                 self.content_stack.addWidget(error_placeholder)
@@ -2041,7 +2240,9 @@ class MainWindow(QMainWindow):
                     # 发送界面切换信号
                     self.interface_changed.emit(interface_id)
 
-                    self.logger.info("界面已切换: %s (%s)", interface_name, interface_id)
+                    self.logger.info(
+                        "界面已切换: %s (%s)", interface_name, interface_id
+                    )
 
     def on_interface_error(self, message: str):
         """界面错误回调."""
@@ -2153,7 +2354,9 @@ class MainWindow(QMainWindow):
         if self.status_label:
             self.status_label.setText(f"后台验证: {message} ({progress}%)")
 
-    def _on_validation_step_completed(self, step_num: int, step_name: str, step_result: dict):
+    def _on_validation_step_completed(
+        self, step_num: int, step_name: str, step_result: dict
+    ):
         """验证步骤完成回调.
 
         Args:
@@ -2223,7 +2426,9 @@ class MainWindow(QMainWindow):
             try:
                 # 🔧 新增：清理所有子进程（包括监控进程）
                 try:
-                    from backend.startup.workers.monitor_launcher import cleanup_all_processes
+                    from backend.startup.workers.monitor_launcher import (
+                        cleanup_all_processes,
+                    )
 
                     cleanup_all_processes()
                     self.logger.info("子进程清理完成")
@@ -2231,7 +2436,9 @@ class MainWindow(QMainWindow):
                     self.logger.warning(f"清理子进程时出现警告: {e}")
 
                 # TODO: shutdown_services 需要迁移到framework
-                from backend.startup.initializers.service_initializer import shutdown_services
+                from backend.startup.initializers.service_initializer import (
+                    shutdown_services,
+                )
 
                 shutdown_services()
             except Exception as e:
@@ -2366,7 +2573,9 @@ async def main():
         def on_startup_completed():
             """启动完成回调."""
             logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            logging.getLogger(__name__).info("📡 收到启动完成信号", extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).info(
+                "📡 收到启动完成信号", extra={"log_type": "STAGE_NODE"}
+            )
             logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
 
             # 初始化功能界面
@@ -2394,14 +2603,22 @@ async def main():
             )
 
             logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            logging.getLogger(__name__).info("🎉 应用启动完成！", extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).info(
+                "🎉 应用启动完成！", extra={"log_type": "STAGE_NODE"}
+            )
             logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
 
         def on_startup_failed(error: str):
             """启动失败回调."""
-            logging.getLogger(__name__).error("=" * 70, extra={"log_type": "STAGE_NODE"})
-            logging.getLogger(__name__).error("💥 启动失败", extra={"log_type": "STAGE_NODE"})
-            logging.getLogger(__name__).error("=" * 70, extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).error(
+                "=" * 70, extra={"log_type": "STAGE_NODE"}
+            )
+            logging.getLogger(__name__).error(
+                "💥 启动失败", extra={"log_type": "STAGE_NODE"}
+            )
+            logging.getLogger(__name__).error(
+                "=" * 70, extra={"log_type": "STAGE_NODE"}
+            )
             logging.getLogger(__name__).error(
                 "错误信息: %s", error, extra={"log_type": "STAGE_NODE"}
             )
@@ -2410,7 +2627,9 @@ async def main():
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.critical(
-                None, "启动失败", f"应用启动失败:\n\n{error}\n\n请查看日志文件了解详情。"
+                None,
+                "启动失败",
+                f"应用启动失败:\n\n{error}\n\n请查看日志文件了解详情。",
             )
             sys.exit(1)
 
@@ -2778,4 +2997,5 @@ class ResponsiveHelper:
 
 if __name__ == "__main__":
     import asyncio
+
     asyncio.run(main())  # 使用异步模式，支持framework启动编排

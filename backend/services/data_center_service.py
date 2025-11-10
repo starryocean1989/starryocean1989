@@ -11,16 +11,14 @@
 """
 
 from typing import Any, Dict, List, Optional, Set, cast
-from datetime import datetime, timedelta
+from datetime import datetime
 from contextlib import suppress
 from pathlib import Path
 import logging
 import time
 
 from backend.framework import ServiceBase
-import logging
 from backend.infrastructure.system_vnpy.logging_system import (
-    get_logging_hub,
     stage_node,
     alert,
     event_log_process,
@@ -29,9 +27,6 @@ from backend.infrastructure.system_vnpy.logging_system import (
     bind_logger_defaults,
 )
 from backend.infrastructure.native.native_serialization import build_dataframe_payload
-from backend.infrastructure.data_module_vnpy.data_process_client import (
-    get_data_process_client,
-)
 
 # 导入高性能LRU缓存
 from backend.infrastructure.native.native_collections import HighPerfLRUCache
@@ -483,7 +478,7 @@ class DataCenterService(ServiceBase):
             }
         """
         try:
-            from datetime import datetime, timedelta
+            from datetime import timedelta
 
             # 计算日期范围
             end_date = datetime.now().strftime("%Y-%m-%d")
@@ -521,7 +516,7 @@ class DataCenterService(ServiceBase):
 
             # 只返回最近lookback_days的数据
             returns = returns[-lookback_days:].tolist()
-            dates = dates[-(lookback_days + 1) :]  # 收益率比价格少1个
+            dates = dates[-(lookback_days + 1):]  # 收益率比价格少1个
 
             return {
                 "success": True,
@@ -1092,7 +1087,7 @@ class DataCenterService(ServiceBase):
             # 重新加载内存缓存
             self._check_symbol_cache_readonly()
 
-        except Exception as e:
+        except Exception:
             self.logger.error(
                 "处理品种列表加载事件失败",
                 exc_info=True,
@@ -1116,7 +1111,7 @@ class DataCenterService(ServiceBase):
             # 重新加载内存缓存（不进行IPO过滤）
             self._check_symbol_cache_readonly()
 
-        except Exception as e:
+        except Exception:
             self.logger.error(
                 "处理IPO更新事件失败",
                 exc_info=True,
@@ -1141,7 +1136,7 @@ class DataCenterService(ServiceBase):
                     "⚠️ [事件] validation_worker流程失败: %s", error, extra={"log_type": "SYSTEM"}
                 )
 
-        except Exception as e:
+        except Exception:
             self.logger.error(
                 "处理validation完成事件失败",
                 exc_info=True,
@@ -2388,7 +2383,6 @@ class DataCenterService(ServiceBase):
 
                 # 批量下载场景上下文 - 日志埋点v4.0 (已移除scenario)
                 # 直接执行,不使用scenario上下文
-                ctx_scenario = None
 
                 self.logger.debug(
                     f"[DOWNLOAD-SERVICE] 开始轮询下载进度: task_id={task_id}",
@@ -2717,7 +2711,6 @@ class DataCenterService(ServiceBase):
             Dict: 下载任务信息
         """
         import time
-        from contextlib import suppress
 
         start_time = time.time()
 
@@ -3087,7 +3080,7 @@ class DataCenterService(ServiceBase):
 
             self.logger.info("下载历史已记录: %s", task.get("task_id"))
 
-        except Exception as e:
+        except Exception:
             self.logger.error(
                 "添加下载历史失败",
                 exc_info=True,
@@ -3135,7 +3128,7 @@ class DataCenterService(ServiceBase):
                         "is_downloading": False,
                         "progress": 0,
                     }
-            except Exception as e:
+            except Exception:
                 self.logger.error(
                     "获取实时进度失败",
                     exc_info=True,
@@ -3508,8 +3501,6 @@ class DataCenterService(ServiceBase):
                     ValidationResult,
                 )
 
-                validator = StatelessValidator()
-
                 if symbol:
                     # 单品种校验 - 使用StatelessValidator的validate方法
                     from backend.infrastructure.data_module_vnpy.data_storage import StorageManager
@@ -3665,7 +3656,6 @@ class DataCenterService(ServiceBase):
                     # 所有品种校验（返回简化的汇总）
                     # 🔧 修复：StatelessValidator 没有 validate_all_data 方法
                     # 使用数据感知器获取质量概览
-                    from backend.infrastructure.data_module_vnpy.data_quality import DataSensor
 
                     data_sensor = (
                         self.china_stock_engine.data_sensor
@@ -3760,7 +3750,6 @@ class DataCenterService(ServiceBase):
 
             # 从数据感知器获取质量概览
             from backend.infrastructure.data_module_vnpy.data_quality import DataSensor
-            from backend.infrastructure.data_module_vnpy import ChinaStockEngine
 
             # 获取DataSensor实例
             # 从context获取china_stock_engine
@@ -3769,11 +3758,12 @@ class DataCenterService(ServiceBase):
                 from backend.startup.runtime.locator import get_runtime_locator
                 locator = get_runtime_locator()
                 engine = locator.get_china_stock_engine()
-            if engine and hasattr(engine, "data_sensor") and engine.data_sensor:
-                data_sensor = engine.data_sensor
-            else:
-                # 创建新的DataSensor实例
-                data_sensor = DataSensor()
+            # 注意：data_sensor相关代码暂时被注释，因为当前实现直接返回空概览
+            # if engine and hasattr(engine, "data_sensor") and engine.data_sensor:
+            #     data_sensor = engine.data_sensor
+            # else:
+            #     # 创建新的DataSensor实例
+            #     data_sensor = DataSensor()
 
             # scan_quality返回字典，需要转换为概览格式
             # 临时返回空概览，后续可以根据实际需求实现
@@ -5314,7 +5304,7 @@ class DataCenterService(ServiceBase):
         """
         try:
             from pathlib import Path
-            from datetime import datetime, timedelta
+            from datetime import timedelta
 
             # 录制数据路径
             recording_path = Path(".vntrader/data_recorder")
@@ -6181,7 +6171,6 @@ class DataCenterService(ServiceBase):
             Dict: 扫描结果
         """
         import time
-        import logging
         from contextlib import suppress
 
         start_time = time.time()

@@ -11,8 +11,7 @@ AI助手服务.
 
 import logging
 import asyncio
-from typing import Any, Dict, List, Optional, Callable, Union
-from pathlib import Path
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from backend.framework import ServiceBase, get_settings
@@ -68,7 +67,6 @@ class AIAssistantService(ServiceBase):
 
         # 策略文件目录（用于安全检查）
         from pathlib import Path
-
         self.strategy_dir = Path("strategies/user_strategies").resolve()
 
         self.logger.info("AI助手服务已创建（支持文件操作工具）")
@@ -186,7 +184,6 @@ class AIAssistantService(ServiceBase):
 
             # 阶段节点日志（输出到Terminal，仅对关键操作记录）
             # 注意：chat方法可能被频繁调用，只记录首次或重要调用
-            message_preview = user_message[:50] + "..." if len(user_message) > 50 else user_message
 
             # 构建完整的用户消息（包含上下文）
             full_message = user_message
@@ -553,7 +550,7 @@ class AIAssistantService(ServiceBase):
             for match in matches:
                 # 提取代码块之前的文本
                 if match.start() > last_end:
-                    text = ai_message[last_end : match.start()].strip()
+                    text = ai_message[last_end: match.start()].strip()
                     if text:
                         text_parts.append(text)
 
@@ -594,7 +591,7 @@ class AIAssistantService(ServiceBase):
         # 如果超出限制，删除最旧的对话
         if len(user_assistant_messages) > self.max_history * 2:
             # 保留最近的max_history对对话
-            user_assistant_messages = user_assistant_messages[-(self.max_history * 2) :]
+            user_assistant_messages = user_assistant_messages[-(self.max_history * 2):]
 
         # 重建历史
         self.conversation_history = system_messages + user_assistant_messages
@@ -1001,7 +998,6 @@ class AIAssistantService(ServiceBase):
         """
         try:
             from pathlib import Path
-
             # 解析目标路径
             if Path(file_path).is_absolute():
                 target = Path(file_path).resolve()
@@ -1063,7 +1059,6 @@ class AIAssistantService(ServiceBase):
         """
         try:
             from pathlib import Path
-
             if not file_path:
                 return "错误：未提供文件路径"
 
@@ -1140,7 +1135,6 @@ class AIAssistantService(ServiceBase):
         """
         try:
             from pathlib import Path
-
             if not file_path:
                 return "错误：未提供文件路径"
 
@@ -1215,7 +1209,6 @@ class AIAssistantService(ServiceBase):
         """
         try:
             from pathlib import Path
-
             if not file_path:
                 return "错误：未提供文件路径"
 

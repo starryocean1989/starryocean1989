@@ -35,11 +35,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Callable, Union, TYPE_CHECKING, cast, Protocol
 
 from backend.framework import ServiceBase
-import logging
 from backend.framework import UnifiedMarketData
 from backend.core.models import get_data_model_manager
 from backend.core.config import init_settings
 from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor
+
+
 class SystemMonitorProtocol(Protocol):
     def get_resource_usage(self) -> Any:
         ...
@@ -55,6 +56,8 @@ class SystemMonitorProtocol(Protocol):
 
     def get_system_info(self) -> Any:
         ...
+
+
 from backend.infrastructure.system_vnpy import NetworkTester, PortScanner
 from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.infrastructure.system_vnpy.native_log_pipeline import (
@@ -64,11 +67,9 @@ from backend.infrastructure.system_vnpy.native_log_pipeline import (
     install_pipeline,
 )
 from backend.services.database_adapter import get_db_manager
-from backend.core.models import get_data_model_manager
 
 if TYPE_CHECKING:
-    from backend.infrastructure.system_vnpy.native_log_pipeline import PipelineHandle as _PipelineHandle
-from backend.framework import get_settings
+    pass
 
 # 专用logger
 logger = bind_logger_defaults(
@@ -563,6 +564,8 @@ class LogRecordHandler(logging.Handler):
 # =============================================================================
 # 日志管理器
 # =============================================================================
+
+
 class LogManager:
     """日志系统管理器（使用统一database）.
 
@@ -1326,6 +1329,8 @@ class Alert:
 # =============================================================================
 # 告警引擎
 # =============================================================================
+
+
 class AlertEngine:
     """告警引擎."""
 
@@ -2116,6 +2121,8 @@ __all__ = [
 # =============================================================================
 # Part 3: 性能监控（从performance_monitor.py合并）
 # =============================================================================
+
+
 class PerformanceMonitor:
     """性能监控器."""
 

@@ -19,7 +19,6 @@ from backend.framework import ServiceBase
 
 if TYPE_CHECKING:
     from backend.services.strategy_center_service import StrategyCenterService
-import logging
 from backend.services.database_adapter import get_db_manager
 
 # 直接使用native序列化优化
@@ -218,7 +217,9 @@ class TradingGatewayService(ServiceBase):
 
             # 检查main_engine是否可用
             if self.main_engine is None:
-                self.logger.warning("MainEngine不可用，部分功能受限", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "MainEngine不可用，部分功能受限", extra={"log_type": "SYSTEM"}
+                )
                 self.log_operation_success("交易网关服务初始化", status="limited")
                 return True  # 仍然允许服务启动
 
@@ -361,12 +362,16 @@ class TradingGatewayService(ServiceBase):
                 self.gateway_classes[GatewayType.CTP.value] = CtpGateway
                 self.logger.info("✅ CTP网关类可用")
             except ImportError:
-                self.logger.info("ℹ️ CTP网关类不可用（未安装vnpy_ctp）", extra={"log_type": "SYSTEM"})
+                self.logger.info(
+                    "ℹ️ CTP网关类不可用（未安装vnpy_ctp）", extra={"log_type": "SYSTEM"}
+                )
 
             # PaperAccount（使用内部适配器）
             try:
                 # 使用文件末尾定义的PaperAccountGatewayAdapter
-                self.gateway_classes[GatewayType.PAPER_ACCOUNT.value] = PaperAccountGatewayAdapter
+                self.gateway_classes[GatewayType.PAPER_ACCOUNT.value] = (
+                    PaperAccountGatewayAdapter
+                )
                 self.logger.info("✅ PaperAccount网关类可用（内部适配器）")
             except Exception as e:
                 self.logger.warning(
@@ -380,7 +385,10 @@ class TradingGatewayService(ServiceBase):
                 self.gateway_classes[GatewayType.CTP_MINI.value] = MiniGateway
                 self.logger.info("✅ CTP Mini网关类可用")
             except ImportError:
-                self.logger.info("ℹ️ CTP Mini网关类不可用（未安装vnpy_mini）", extra={"log_type": "SYSTEM"})
+                self.logger.info(
+                    "ℹ️ CTP Mini网关类不可用（未安装vnpy_mini）",
+                    extra={"log_type": "SYSTEM"},
+                )
 
             # Sopt
             try:
@@ -389,7 +397,10 @@ class TradingGatewayService(ServiceBase):
                 self.gateway_classes[GatewayType.SOPT.value] = SoptGateway
                 self.logger.info("✅ Sopt网关类可用")
             except ImportError:
-                self.logger.info("ℹ️ Sopt网关类不可用（未安装vnpy_sopt）", extra={"log_type": "SYSTEM"})
+                self.logger.info(
+                    "ℹ️ Sopt网关类不可用（未安装vnpy_sopt）",
+                    extra={"log_type": "SYSTEM"},
+                )
 
             # TTS
             try:
@@ -398,7 +409,9 @@ class TradingGatewayService(ServiceBase):
                 self.gateway_classes[GatewayType.TTS.value] = TtsGateway
                 self.logger.info("✅ TTS网关类可用")
             except ImportError:
-                self.logger.info("ℹ️ TTS网关类不可用（未安装vnpy_tts）", extra={"log_type": "SYSTEM"})
+                self.logger.info(
+                    "ℹ️ TTS网关类不可用（未安装vnpy_tts）", extra={"log_type": "SYSTEM"}
+                )
 
             # IB (Interactive Brokers)
             try:
@@ -413,10 +426,14 @@ class TradingGatewayService(ServiceBase):
             # TradeX Gateway（国内股票交易，使用内部适配器）
             try:
                 # 使用文件末尾定义的TradeXGatewayAdapter
-                self.gateway_classes[GatewayType.TRADEX_GATEWAY.value] = TradeXGatewayAdapter
+                self.gateway_classes[GatewayType.TRADEX_GATEWAY.value] = (
+                    TradeXGatewayAdapter
+                )
                 self.logger.info("✅ TradeX网关类可用（内部适配器）")
             except Exception as e:
-                self.logger.warning("⚠️ TradeX网关类不可用：%s", e, extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ TradeX网关类不可用：%s", e, extra={"log_type": "SYSTEM"}
+                )
 
         except Exception as e:
             self.logger.error(
@@ -445,14 +462,21 @@ class TradingGatewayService(ServiceBase):
                     # 设置默认风控参数
                     self._set_default_risk_parameters()
                 else:
-                    self.logger.warning("⚠️ 风险管理引擎获取失败", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "⚠️ 风险管理引擎获取失败", extra={"log_type": "SYSTEM"}
+                    )
 
             except ImportError:
-                self.logger.warning("⚠️ vnpy_riskmanager未安装", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ vnpy_riskmanager未安装", extra={"log_type": "SYSTEM"}
+                )
 
         except Exception as e:
             self.logger.error(
-                "风险管理引擎初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                "风险管理引擎初始化失败：%s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
 
     def _set_default_risk_parameters(self):
@@ -504,7 +528,9 @@ class TradingGatewayService(ServiceBase):
 
                 try:
                     config_data = (
-                        json.loads(config_str) if isinstance(config_str, str) else config_str
+                        json.loads(config_str)
+                        if isinstance(config_str, str)
+                        else config_str
                     )
                 except Exception:
                     config_data = {}
@@ -548,7 +574,9 @@ class TradingGatewayService(ServiceBase):
                     (name, info["type"], config_json, status),
                 )
 
-            self.logger.info("网关配置已保存，共 %d 个网关", len(self.gateway_instances))
+            self.logger.info(
+                "网关配置已保存，共 %d 个网关", len(self.gateway_instances)
+            )
 
         except Exception as e:
             self.logger.error(
@@ -638,7 +666,9 @@ class TradingGatewayService(ServiceBase):
             # 初始化该网关的策略池
             self.strategy_instances[gateway_name] = {}
 
-            self.logger.info("网关 '%s' (类型：%s) 创建成功", gateway_name, gateway_type)
+            self.logger.info(
+                "网关 '%s' (类型：%s) 创建成功", gateway_name, gateway_type
+            )
 
             # 保存网关配置到文件
             self._save_gateway_configs()
@@ -657,7 +687,9 @@ class TradingGatewayService(ServiceBase):
                 "message": f"创建失败: {str(e)}",
             }
 
-    def connect_gateway(self, gateway_name: str, password: Optional[str] = None) -> Dict[str, Any]:
+    def connect_gateway(
+        self, gateway_name: str, password: Optional[str] = None
+    ) -> Dict[str, Any]:
         """连接网关.
 
         Args:
@@ -869,7 +901,9 @@ class TradingGatewayService(ServiceBase):
 
     # ==================== 策略实例管理 ====================
 
-    def get_available_strategies(self, engine_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_available_strategies(
+        self, engine_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """获取可用的策略列表（从策略中心）.
 
         Args:
@@ -884,6 +918,7 @@ class TradingGatewayService(ServiceBase):
             service_manager = self._context.service_manager if self._context else None
             if not service_manager:
                 from backend.framework import get_service_registry
+
                 service_manager = get_service_registry()
             assert service_manager is not None
             strategy_service = service_manager.get("strategy_center_service")
@@ -899,7 +934,9 @@ class TradingGatewayService(ServiceBase):
                 return result.get("strategies", [])
             else:
                 self.logger.error(
-                    "获取策略列表失败：%s", result.get("message"), extra={"log_type": "SYSTEM"}
+                    "获取策略列表失败：%s",
+                    result.get("message"),
+                    extra={"log_type": "SYSTEM"},
                 )
                 return []
 
@@ -921,6 +958,7 @@ class TradingGatewayService(ServiceBase):
             service_manager = self._context.service_manager if self._context else None
             if not service_manager:
                 from backend.framework import get_service_registry
+
                 service_manager = get_service_registry()
             assert service_manager is not None
             strategy_service = service_manager.get("strategy_center_service")
@@ -968,7 +1006,10 @@ class TradingGatewayService(ServiceBase):
             )
 
             self._log_operation(
-                "从文件加载策略", gateway=gateway_name, strategy=strategy_name, file=file_path
+                "从文件加载策略",
+                gateway=gateway_name,
+                strategy=strategy_name,
+                file=file_path,
             )
 
             # 从策略中心加载策略模块信息
@@ -976,6 +1017,7 @@ class TradingGatewayService(ServiceBase):
             service_manager = self._context.service_manager if self._context else None
             if not service_manager:
                 from backend.framework import get_service_registry
+
                 service_manager = get_service_registry()
             assert service_manager is not None
             strategy_service = service_manager.get("strategy_center_service")
@@ -1084,7 +1126,10 @@ class TradingGatewayService(ServiceBase):
             )
 
             self._log_operation(
-                "部署策略", gateway=gateway_name, strategy=strategy_name, class_name=strategy_class
+                "部署策略",
+                gateway=gateway_name,
+                strategy=strategy_name,
+                class_name=strategy_class,
             )
 
             if gateway_name not in self.gateway_instances:
@@ -1107,7 +1152,11 @@ class TradingGatewayService(ServiceBase):
             engine_type_param = strategy_params.get("engine_type", "ctastrategy")
             # 将小写格式转换为vnpy的引擎名称格式
             engine_name = self.ENGINE_NAME_MAP.get(
-                engine_type_param.lower() if isinstance(engine_type_param, str) else "ctastrategy",
+                (
+                    engine_type_param.lower()
+                    if isinstance(engine_type_param, str)
+                    else "ctastrategy"
+                ),
                 "CtaStrategy",
             )
 
@@ -1314,12 +1363,18 @@ class TradingGatewayService(ServiceBase):
                         logging_ctx.set_stage("trading")
                         self.logger.info(
                             "📍 切换到交易阶段，启动策略实盘交易",
-                            extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "strategy_execution",
+                            },
                         )
                     else:
                         self.logger.debug(
                             "logging_context未初始化，跳过阶段标记",
-                            extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "strategy_execution",
+                            },
                         )
                 except ImportError:
                     self.logger.debug(
@@ -1399,7 +1454,9 @@ class TradingGatewayService(ServiceBase):
             strategy_info["status"] = "running"
 
             # ✨ 发送策略状态变化事件（支持跨模块集成）
-            self._emit_strategy_status_event(gateway_name, strategy_name, "running", engine_name)
+            self._emit_strategy_status_event(
+                gateway_name, strategy_name, "running", engine_name
+            )
 
             return {
                 "success": True,
@@ -1488,7 +1545,9 @@ class TradingGatewayService(ServiceBase):
             strategy_info["status"] = "stopped"
 
             # ✨ 发送策略状态变化事件（支持跨模块集成）
-            self._emit_strategy_status_event(gateway_name, strategy_name, "stopped", engine_name)
+            self._emit_strategy_status_event(
+                gateway_name, strategy_name, "stopped", engine_name
+            )
 
             return {
                 "success": True,
@@ -1689,7 +1748,11 @@ class TradingGatewayService(ServiceBase):
                     }
 
                 # 移除vt_symbol和vt_symbols，放入setting中的其他参数
-                setting = {k: v for k, v in setting.items() if k not in ["vt_symbol", "vt_symbols"]}
+                setting = {
+                    k: v
+                    for k, v in setting.items()
+                    if k not in ["vt_symbol", "vt_symbols"]
+                }
 
                 strategy_engine.add_strategy(
                     class_name=strategy_class,
@@ -1698,7 +1761,9 @@ class TradingGatewayService(ServiceBase):
                     setting=setting,
                 )
 
-                self.logger.info("✅ CTA策略 '%s' 已部署，合约：%s", strategy_name, vt_symbol)
+                self.logger.info(
+                    "✅ CTA策略 '%s' 已部署，合约：%s", strategy_name, vt_symbol
+                )
                 return {
                     "success": True,
                     "info": {"vt_symbol": vt_symbol, "type": "cta"},
@@ -1720,7 +1785,11 @@ class TradingGatewayService(ServiceBase):
                     }
 
                 # 移除vt_symbols，放入setting中的其他参数
-                setting = {k: v for k, v in setting.items() if k not in ["vt_symbol", "vt_symbols"]}
+                setting = {
+                    k: v
+                    for k, v in setting.items()
+                    if k not in ["vt_symbol", "vt_symbols"]
+                }
 
                 strategy_engine.add_strategy(
                     class_name=strategy_class,
@@ -1729,7 +1798,9 @@ class TradingGatewayService(ServiceBase):
                     setting=setting,
                 )
 
-                self.logger.info("✅ 组合策略 '%s' 已部署，合约：%s", strategy_name, vt_symbols)
+                self.logger.info(
+                    "✅ 组合策略 '%s' 已部署，合约：%s", strategy_name, vt_symbols
+                )
                 return {
                     "success": True,
                     "info": {"vt_symbols": vt_symbols, "type": "portfolio"},
@@ -1816,7 +1887,11 @@ class TradingGatewayService(ServiceBase):
                         "message": f"未知的引擎类型: {engine_name}",
                     }
 
-                setting = {k: v for k, v in setting.items() if k not in ["vt_symbol", "vt_symbols"]}
+                setting = {
+                    k: v
+                    for k, v in setting.items()
+                    if k not in ["vt_symbol", "vt_symbols"]
+                }
 
                 strategy_engine.add_strategy(
                     class_name=strategy_class,
@@ -1856,7 +1931,9 @@ class TradingGatewayService(ServiceBase):
             # 兼容vt_symbols列表（取第一个）
             vt_symbols = strategy_params.get("vt_symbols", [])
             if vt_symbols:
-                vt_symbol = vt_symbols[0] if isinstance(vt_symbols, list) else str(vt_symbols)
+                vt_symbol = (
+                    vt_symbols[0] if isinstance(vt_symbols, list) else str(vt_symbols)
+                )
 
         return vt_symbol
 
@@ -1912,7 +1989,8 @@ class TradingGatewayService(ServiceBase):
                 if missing_contracts:
                     issues.append(f"找不到合约: {', '.join(missing_contracts)}")
                     self.logger.warning(
-                        "⚠️ 找不到合约数据：%s (网关可能未连接或未订阅该合约)", missing_contracts
+                        "⚠️ 找不到合约数据：%s (网关可能未连接或未订阅该合约)",
+                        missing_contracts,
                     )
 
         # 如果有问题，返回友好提示
@@ -1951,12 +2029,16 @@ class TradingGatewayService(ServiceBase):
 
         # 检查main_engine
         if not self.main_engine:
-            self.logger.error("MainEngine不可用，无法加载策略应用", extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "MainEngine不可用，无法加载策略应用", extra={"log_type": "SYSTEM"}
+            )
             return False
 
         # 获取应用类信息
         if engine_name not in self.APP_CLASS_MAP:
-            self.logger.error("未知的策略引擎：%s", engine_name, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "未知的策略引擎：%s", engine_name, extra={"log_type": "SYSTEM"}
+            )
             return False
 
         module_name, class_name = self.APP_CLASS_MAP[engine_name]
@@ -1990,12 +2072,18 @@ class TradingGatewayService(ServiceBase):
 
         except ImportError as e:
             self.logger.error(
-                "❌ 策略包 %s 导入失败：%s", module_name, e, extra={"log_type": "SYSTEM"}
+                "❌ 策略包 %s 导入失败：%s",
+                module_name,
+                e,
+                extra={"log_type": "SYSTEM"},
             )
             return False
         except AttributeError as e:
             self.logger.error(
-                "❌ 策略应用类 %s 不存在：%s", class_name, e, extra={"log_type": "SYSTEM"}
+                "❌ 策略应用类 %s 不存在：%s",
+                class_name,
+                e,
+                extra={"log_type": "SYSTEM"},
             )
             return False
         except Exception as e:
@@ -2321,6 +2409,7 @@ class TradingGatewayService(ServiceBase):
             event_engine = self._context.event_engine if self._context else None
             if not event_engine:
                 from backend.startup.runtime.locator import get_runtime_locator
+
                 locator = get_runtime_locator()
                 event_engine = locator.get_event_engine()
             if not event_engine:
@@ -2333,7 +2422,9 @@ class TradingGatewayService(ServiceBase):
                 "status": status,
                 "engine_name": engine_name,
                 "engine_type": (
-                    engine_name.lower() if isinstance(engine_name, str) else "ctastrategy"
+                    engine_name.lower()
+                    if isinstance(engine_name, str)
+                    else "ctastrategy"
                 ),
                 "timestamp": datetime.now().isoformat(),
                 "active_count": self._count_active_strategies(gateway_name),
@@ -2350,7 +2441,9 @@ class TradingGatewayService(ServiceBase):
         except Exception as e:
             self.logger.warning("发送策略状态事件失败：%s", e)
 
-    def _emit_gateway_status_event(self, gateway_name: str, status: str, gateway_type: str):
+    def _emit_gateway_status_event(
+        self, gateway_name: str, status: str, gateway_type: str
+    ):
         """发送网关状态变化事件.
 
         Args:
@@ -2368,6 +2461,7 @@ class TradingGatewayService(ServiceBase):
             event_engine = self._context.event_engine if self._context else None
             if not event_engine:
                 from backend.startup.runtime.locator import get_runtime_locator
+
                 locator = get_runtime_locator()
                 event_engine = locator.get_event_engine()
             if not event_engine:
@@ -2386,7 +2480,9 @@ class TradingGatewayService(ServiceBase):
             event = Event(EVENT_GATEWAY_STATUS_CHANGED, event_data)
             event_engine.put(event)
 
-            self.logger.debug("📢 已发送网关状态变化事件: %s -> %s", gateway_name, status)
+            self.logger.debug(
+                "📢 已发送网关状态变化事件: %s -> %s", gateway_name, status
+            )
 
         except Exception as e:
             self.logger.warning("发送网关状态事件失败：%s", e)
@@ -2417,14 +2513,18 @@ class TradingGatewayService(ServiceBase):
         single_strategy_gateways = []
 
         for gateway_name, strategies in self.strategy_instances.items():
-            active_strategies = [s for s in strategies.values() if s.get("status") == "running"]
+            active_strategies = [
+                s for s in strategies.values() if s.get("status") == "running"
+            ]
 
             # 只有激活1个策略时才返回
             if len(active_strategies) == 1:
                 strategy = active_strategies[0]
                 engine_name = strategy.get("engine_name", "CtaStrategy")
                 strategy_type = (
-                    engine_name.lower() if isinstance(engine_name, str) else "ctastrategy"
+                    engine_name.lower()
+                    if isinstance(engine_name, str)
+                    else "ctastrategy"
                 )
 
                 single_strategy_gateways.append(
@@ -2434,7 +2534,9 @@ class TradingGatewayService(ServiceBase):
                         "strategy_class": strategy.get("class", ""),
                         "engine_name": engine_name,
                         "strategy_type": strategy_type,
-                        "monitor_template": self.get_monitor_template_for_strategy(strategy_type),
+                        "monitor_template": self.get_monitor_template_for_strategy(
+                            strategy_type
+                        ),
                     }
                 )
 
@@ -2442,7 +2544,9 @@ class TradingGatewayService(ServiceBase):
 
     # ==================== 策略类型识别与监控适配 ====================
 
-    def get_active_strategy_for_monitoring(self, gateway_name: str) -> Optional[Dict[str, Any]]:
+    def get_active_strategy_for_monitoring(
+        self, gateway_name: str
+    ) -> Optional[Dict[str, Any]]:
         """获取网关的监控策略（仅当激活1个策略时返回）.
 
         Args:
@@ -2456,7 +2560,9 @@ class TradingGatewayService(ServiceBase):
                 return None
 
             strategies = self.strategy_instances[gateway_name]
-            active_strategies = [s for s in strategies.values() if s.get("status") == "running"]
+            active_strategies = [
+                s for s in strategies.values() if s.get("status") == "running"
+            ]
 
             # 只有激活1个策略时才返回监控信息
             if len(active_strategies) == 1:
@@ -2464,7 +2570,9 @@ class TradingGatewayService(ServiceBase):
                 strategy_name = strategy.get("name", "")
                 engine_name = strategy.get("engine_name", "CtaStrategy")
                 strategy_type = (
-                    engine_name.lower() if isinstance(engine_name, str) else "ctastrategy"
+                    engine_name.lower()
+                    if isinstance(engine_name, str)
+                    else "ctastrategy"
                 )
 
                 monitor_template = self.get_monitor_template_for_strategy(
@@ -2522,11 +2630,17 @@ class TradingGatewayService(ServiceBase):
                 return StrategyEngineType.OPTION_MASTER.value
 
             # spreadtrading: 价差交易
-            if any(keyword in class_name_lower for keyword in ["spread", "arbitrage", "pair"]):
+            if any(
+                keyword in class_name_lower
+                for keyword in ["spread", "arbitrage", "pair"]
+            ):
                 return StrategyEngineType.SPREAD_TRADING.value
 
             # portfoliostrategy: 组合策略
-            if any(keyword in class_name_lower for keyword in ["portfolio", "multi", "basket"]):
+            if any(
+                keyword in class_name_lower
+                for keyword in ["portfolio", "multi", "basket"]
+            ):
                 return StrategyEngineType.PORTFOLIO_STRATEGY.value
 
             # scripttrader: 脚本交易
@@ -2553,7 +2667,9 @@ class TradingGatewayService(ServiceBase):
             return StrategyEngineType.CTA_STRATEGY.value
 
     def get_monitor_template_for_strategy(
-        self, strategy_type: Optional[str] = None, strategy_class_name: Optional[str] = None
+        self,
+        strategy_type: Optional[str] = None,
+        strategy_class_name: Optional[str] = None,
     ) -> str:
         """获取策略对应的监控UI模板.
 
@@ -2583,13 +2699,17 @@ class TradingGatewayService(ServiceBase):
                 StrategyEngineType.SPREAD_TRADING.value: "spread_monitor",
             }
 
-            return monitor_templates.get(strategy_type, "default_monitor")  # 默认返回通用监控模板
+            return monitor_templates.get(
+                strategy_type, "default_monitor"
+            )  # 默认返回通用监控模板
 
         except Exception as e:
             self.logger.error("获取监控模板失败：%s", e)
             return "default_monitor"
 
-    def get_strategy_monitoring_data(self, gateway_name: str, strategy_name: str) -> Dict[str, Any]:
+    def get_strategy_monitoring_data(
+        self, gateway_name: str, strategy_name: str
+    ) -> Dict[str, Any]:
         """获取策略监控数据.
 
         根据策略类型返回不同的监控数据结构。
@@ -2613,7 +2733,9 @@ class TradingGatewayService(ServiceBase):
 
             # 识别策略类型
             strategy_class = strategy_info.get("class_name", "")
-            strategy_type = self.identify_strategy_type(strategy_class, gateway_name, strategy_name)
+            strategy_type = self.identify_strategy_type(
+                strategy_class, gateway_name, strategy_name
+            )
 
             # 获取监控模板
             monitor_template = self.get_monitor_template_for_strategy(strategy_type)
@@ -2801,7 +2923,9 @@ class PaperAccountGatewayAdapter:
             self.paper_engine.init_engine()
             self.paper_engine.set_capital(self.initial_capital)
             self.paper_engine.set_parameters(
-                commission_rate=self.commission_rate, slippage=self.slippage, size=self.size
+                commission_rate=self.commission_rate,
+                slippage=self.slippage,
+                size=self.size,
             )
 
             self.connected = True
@@ -2837,7 +2961,11 @@ class PaperAccountGatewayAdapter:
             logger_order.info(
                 "订单提交: 品种=%s, 方向=%s, 价格=%.2f, 数量=%d, 订单号=%s",
                 req.symbol,
-                req.direction.value if hasattr(req.direction, "value") else req.direction,
+                (
+                    req.direction.value
+                    if hasattr(req.direction, "value")
+                    else req.direction
+                ),
                 req.price,
                 req.volume,
                 order_id,
@@ -2856,7 +2984,8 @@ class PaperAccountGatewayAdapter:
             self.paper_engine.cancel_order(req)
             # 订单撤销日志 - 日志埋点v4.0
             logger_order.info(
-                "订单撤销请求: 订单号=%s", req.orderid if hasattr(req, "orderid") else "unknown"
+                "订单撤销请求: 订单号=%s",
+                req.orderid if hasattr(req, "orderid") else "unknown",
             )
         except Exception as e:
             self.logger.error("撤销订单失败: %s", e, exc_info=True)
@@ -2880,7 +3009,12 @@ class TradeXGatewayAdapter:
 
         # TradeX API
         dll_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "infrastructure", "Trademy-src", "TradeX.dll"
+            os.path.dirname(__file__),
+            "..",
+            "..",
+            "infrastructure",
+            "Trademy-src",
+            "TradeX.dll",
         )
         dll_path = os.path.abspath(dll_path)
 
@@ -2932,7 +3066,12 @@ class TradeXGatewayAdapter:
         self.dll.Logon.restype = ctypes.c_int
 
         # QueryData
-        self.dll.QueryData.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p]
+        self.dll.QueryData.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
         self.dll.QueryData.restype = None
 
         # SendOrder
@@ -2998,7 +3137,9 @@ class TradeXGatewayAdapter:
 
             if client_id <= 0:
                 error_msg = err_info.value.decode("gbk", errors="ignore")
-                logger_alert.error("TradeX登录失败: %s", error_msg, extra={"log_type": "ALERT"})
+                logger_alert.error(
+                    "TradeX登录失败: %s", error_msg, extra={"log_type": "ALERT"}
+                )
                 return False
 
             self.client_id = client_id
@@ -3043,4 +3184,3 @@ class TradeXGatewayAdapter:
             return result_str, error_msg
         except Exception as e:
             return "", str(e)
-

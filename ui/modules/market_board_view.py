@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from backend.framework import get_service_registry, get_main_engine, get_event_engine
+from backend.framework import get_service_registry
 import logging
 
 from ui.components.widgets import BaseWidget
@@ -132,7 +132,6 @@ class MarketDashboard(BaseWidget):
 # ==================== 以下为内部组件（从 shared_widgets 合并） ====================
 # 合并说明：ChartWizardEnhanced 只被 market_board_view 引用，故合并到此处
 
-import logging
 from typing import Any, Dict, List
 
 from PySide6.QtCore import Qt, Signal, QTimer
@@ -357,7 +356,6 @@ class ChartWizardEnhanced(BaseWidget):
         if self.event_engine:
             try:
                 # 🔧 修复：注册 UnifiedDataManager 就绪事件监听器
-                from vnpy.event import Event
 
                 # 事件名称：与后端发布的事件名称一致
                 from backend.infrastructure.data_module_vnpy.core_engine import ChinaStockEngine

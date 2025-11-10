@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.framework import get_service_registry, get_event_engine
+from backend.framework import get_service_registry
 import logging
 
 from ui.components.widgets import BaseWidget
@@ -90,20 +90,22 @@ class TradingGateway(BaseWidget):
         """获取交易网关服务."""
         try:
             # 从服务管理器获取交易网关服务
-            self.trading_service = self.service_manager.get_service("trading_gateway_service")
+            self.trading_service = self.service_manager.get_service(
+                "trading_gateway_service"
+            )
             if self.trading_service is not None:
                 self.logger.info("交易网关服务获取成功")
             else:
                 self.logger.warning(
                     "UI交易网关服务未注册: 模块=trading_gateway_service",
-                    extra={"log_type": "SYSTEM"}
+                    extra={"log_type": "SYSTEM"},
                 )
         except Exception as e:
             self.logger.error(
                 "UI获取交易网关服务失败: 错误=%s",
                 str(e),
                 extra={"log_type": "SYSTEM"},
-                exc_info=True
+                exc_info=True,
             )
             self.show_error(f"服务获取失败: {e}")
             self.trading_service = None
@@ -148,12 +150,16 @@ class TradingGateway(BaseWidget):
         gateways_layout = QVBoxLayout(gateways_group)
 
         self.gateways_table = QTableWidget(0, 4)
-        self.gateways_table.setHorizontalHeaderLabels(["网关名称", "类型", "状态", "操作"])
+        self.gateways_table.setHorizontalHeaderLabels(
+            ["网关名称", "类型", "状态", "操作"]
+        )
         header = self.gateways_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
         # 设置选择模式：整行选择，单选
-        self.gateways_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.gateways_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
         self.gateways_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
 
         # 监听网关选择事件，切换对应的策略池
@@ -204,7 +210,9 @@ class TradingGateway(BaseWidget):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
         # 设置选择模式：整行选择（提升用户体验）
-        self.strategy_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.strategy_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
         self.strategy_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
 
         strategy_layout.addWidget(self.strategy_table)
@@ -369,7 +377,9 @@ class TradingGateway(BaseWidget):
 
         # VnPy核心监控组件
         monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
-        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(
+            PositionMonitor(event_engine, gateway_name, self), "📊 持仓"
+        )
         monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
         monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
 
@@ -412,7 +422,9 @@ class TradingGateway(BaseWidget):
 
         # VnPy核心监控组件
         monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
-        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(
+            PositionMonitor(event_engine, gateway_name, self), "📊 持仓"
+        )
         monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
         monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
 
@@ -460,13 +472,17 @@ class TradingGateway(BaseWidget):
 
         # VnPy核心监控组件
         monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
-        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(
+            PositionMonitor(event_engine, gateway_name, self), "📊 持仓"
+        )
         monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
         monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
 
         # 期权专用监控
         if self.trading_service:
-            option_widget = OptionMonitorWidget(gateway_name, self.trading_service, self)
+            option_widget = OptionMonitorWidget(
+                gateway_name, self.trading_service, self
+            )
             monitor_tabs.addTab(option_widget, "📈 期权监控")
 
         # 尝试添加vnpy_optionmaster原生组件
@@ -508,13 +524,17 @@ class TradingGateway(BaseWidget):
 
         # VnPy核心监控组件
         monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
-        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(
+            PositionMonitor(event_engine, gateway_name, self), "📊 持仓"
+        )
         monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
         monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
 
         # 组合策略专用监控
         if self.trading_service:
-            portfolio_widget = PortfolioMonitorWidget(gateway_name, self.trading_service, self)
+            portfolio_widget = PortfolioMonitorWidget(
+                gateway_name, self.trading_service, self
+            )
             monitor_tabs.addTab(portfolio_widget, "📊 组合监控")
 
         # 尝试添加vnpy_portfoliostrategy原生组件
@@ -557,7 +577,9 @@ class TradingGateway(BaseWidget):
 
         # VnPy核心监控组件
         monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
-        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(
+            PositionMonitor(event_engine, gateway_name, self), "📊 持仓"
+        )
         monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
         monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
 
@@ -600,7 +622,9 @@ class TradingGateway(BaseWidget):
 
         # VnPy核心监控组件
         monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
-        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(
+            PositionMonitor(event_engine, gateway_name, self), "📊 持仓"
+        )
         monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
         monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
 
@@ -842,7 +866,9 @@ class TradingGateway(BaseWidget):
                 return
 
             try:
-                result = self.trading_service.create_gateway(gateway_name, gateway_type, config)
+                result = self.trading_service.create_gateway(
+                    gateway_name, gateway_type, config
+                )
 
                 if result.get("success"):
                     # 创建成功后添加到列表
@@ -1099,13 +1125,17 @@ class TradingGateway(BaseWidget):
         strategies_result = strategy_service.get_available_strategies()
 
         if not strategies_result.get("success"):
-            self.show_error(f"获取策略列表失败: {strategies_result.get('message', '未知错误')}")
+            self.show_error(
+                f"获取策略列表失败: {strategies_result.get('message', '未知错误')}"
+            )
             return
 
         all_strategies = strategies_result.get("strategies", [])
         available_folders = strategies_result.get("folders", [])
 
-        self.logger.info(f"获取到 {len(all_strategies)} 个策略，{len(available_folders)} 个文件夹")
+        self.logger.info(
+            f"获取到 {len(all_strategies)} 个策略，{len(available_folders)} 个文件夹"
+        )
 
         # 策略文件夹选择（下拉框）
         folder_combo = QComboBox()
@@ -1141,7 +1171,9 @@ class TradingGateway(BaseWidget):
             strategy_file_combo.addItem("-- 请选择策略文件 --")
 
             # 筛选该文件夹下的策略
-            folder_strategies = [s for s in all_strategies if s["folder"] == folder_text]
+            folder_strategies = [
+                s for s in all_strategies if s["folder"] == folder_text
+            ]
 
             if not folder_strategies:
                 strategy_file_combo.addItem("(该文件夹无策略文件)")
@@ -1153,7 +1185,9 @@ class TradingGateway(BaseWidget):
                 strategy_file_combo.addItem(display_text)
                 strategy_class_map[display_text] = strategy
 
-            self.logger.info(f"文件夹 '{folder_text}' 有 {len(folder_strategies)} 个策略")
+            self.logger.info(
+                f"文件夹 '{folder_text}' 有 {len(folder_strategies)} 个策略"
+            )
 
         folder_combo.currentTextChanged.connect(on_folder_selected)
         form_layout.addRow("策略文件:", strategy_file_combo)
@@ -1267,8 +1301,12 @@ class TradingGateway(BaseWidget):
             if "spread" in folder_lower:
                 # 价差交易策略：需要 spread_name
                 spread_name_input = QLineEdit()
-                spread_name_input.setPlaceholderText("例如: rb2501-rb2505 (价差组合名称)")
-                engine_params_layout.addRow("价差名称 (spread_name):", spread_name_input)
+                spread_name_input.setPlaceholderText(
+                    "例如: rb2501-rb2505 (价差组合名称)"
+                )
+                engine_params_layout.addRow(
+                    "价差名称 (spread_name):", spread_name_input
+                )
                 engine_param_widgets["spread_name"] = spread_name_input
 
                 hint = QLabel("💡 价差名称用于标识价差组合，如：rb2501-rb2505")
@@ -1380,7 +1418,9 @@ class TradingGateway(BaseWidget):
                 result_list.clear()
                 if keyword:
                     matches = [s for s in available_symbols if keyword in s.lower()]
-                    result_count_label.setText(f"找到 {len(matches)} 个匹配品种，显示前50个")
+                    result_count_label.setText(
+                        f"找到 {len(matches)} 个匹配品种，显示前50个"
+                    )
                     for match in matches[:50]:  # 显示前50个结果
                         result_list.addItem(match)
                 else:
@@ -1391,7 +1431,8 @@ class TradingGateway(BaseWidget):
 
             # 按钮
             btn_box = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                QDialogButtonBox.StandardButton.Ok
+                | QDialogButtonBox.StandardButton.Cancel
             )
             btn_box.accepted.connect(search_dialog.accept)
             btn_box.rejected.connect(search_dialog.reject)
@@ -1405,20 +1446,28 @@ class TradingGateway(BaseWidget):
                     # 验证品种在样本空间中
                     if symbol not in available_symbols:
                         QMessageBox.warning(
-                            dialog, "品种无效", f"品种 '{symbol}' 不在可用列表中，无法添加"
+                            dialog,
+                            "品种无效",
+                            f"品种 '{symbol}' 不在可用列表中，无法添加",
                         )
                         return
 
                     # 检查是否已存在
-                    existing = [symbols_list.item(i).text() for i in range(symbols_list.count())]
+                    existing = [
+                        symbols_list.item(i).text() for i in range(symbols_list.count())
+                    ]
                     if symbol not in existing:
                         symbols_list.addItem(symbol)
                         update_count()
                     else:
-                        QMessageBox.information(dialog, "提示", f"品种 '{symbol}' 已在列表中")
+                        QMessageBox.information(
+                            dialog, "提示", f"品种 '{symbol}' 已在列表中"
+                        )
                 else:
                     # 没有选中搜索结果，提示用户
-                    QMessageBox.warning(dialog, "未选择品种", "请从搜索结果中选择一个品种")
+                    QMessageBox.warning(
+                        dialog, "未选择品种", "请从搜索结果中选择一个品种"
+                    )
 
         # 批量添加品种对话框
         def batch_add_symbols():
@@ -1443,7 +1492,8 @@ class TradingGateway(BaseWidget):
             batch_layout.addWidget(text_edit)
 
             btn_box = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                QDialogButtonBox.StandardButton.Ok
+                | QDialogButtonBox.StandardButton.Cancel
             )
             btn_box.accepted.connect(batch_dialog.accept)
             btn_box.rejected.connect(batch_dialog.reject)
@@ -1458,7 +1508,9 @@ class TradingGateway(BaseWidget):
                 symbols_input = [s.strip() for s in symbols_input if s.strip()]
 
                 # 添加品种（只添加在样本空间中的品种）
-                existing = [symbols_list.item(i).text() for i in range(symbols_list.count())]
+                existing = [
+                    symbols_list.item(i).text() for i in range(symbols_list.count())
+                ]
                 added_count = 0
                 duplicate_count = 0
                 invalid_count = 0
@@ -1556,7 +1608,10 @@ class TradingGateway(BaseWidget):
                             ]
                             count = len(existing_names) + 1
                         except Exception as e:
-                            self.logger.debug(f"加载已有策略名称失败: {e}", extra={"log_type": "SYSTEM"})
+                            self.logger.debug(
+                                f"加载已有策略名称失败: {e}",
+                                extra={"log_type": "SYSTEM"},
+                            )
                     strategy_name_combo.setCurrentText(f"{class_name}_{count}")
 
         strategy_file_combo.currentTextChanged.connect(on_file_selected)
@@ -1593,7 +1648,9 @@ class TradingGateway(BaseWidget):
             strategy_name = strategy_name_combo.currentText().strip()
 
             # 获取品种池中的所有品种
-            selected_symbols = [symbols_list.item(i).text() for i in range(symbols_list.count())]
+            selected_symbols = [
+                symbols_list.item(i).text() for i in range(symbols_list.count())
+            ]
 
             # 验证必填项
             if not gateway_name:
@@ -1669,7 +1726,9 @@ class TradingGateway(BaseWidget):
             )
 
             if result.get("success"):
-                self.logger.info(f"✓ 策略 '{strategy_name}' 部署到网关 '{gateway_name}' 成功")
+                self.logger.info(
+                    f"✓ 策略 '{strategy_name}' 部署到网关 '{gateway_name}' 成功"
+                )
                 self.show_info(f"策略 '{strategy_name}' 部署成功")
                 self.refresh_data()
             else:
@@ -1683,11 +1742,13 @@ class TradingGateway(BaseWidget):
 
         try:
             # 从品种列表缓存文件读取
-            from pathlib import Path
             import json
 
             # 🔧 修复：使用ConfigManager获取缓存目录，确保统一使用data/cache目录
-            from backend.infrastructure.data_module_vnpy.core_engine import ConfigManager
+            from backend.infrastructure.data_module_vnpy.core_engine import (
+                ConfigManager,
+            )
+
             config_manager = ConfigManager.get_instance()
             cache_dir = config_manager.get_cache_dir()
             cache_file = cache_dir / "stock_list_classified.json"
@@ -1902,7 +1963,9 @@ class TradingGateway(BaseWidget):
             elif len(gateways) > 0:
                 # 如果之前没有选中的网关，但有网关存在，自动选中第一个
                 first_gateway_name = gateways[0]["name"]
-                self.logger.info(f"之前没有选中的网关，自动选中第一个: '{first_gateway_name}'")
+                self.logger.info(
+                    f"之前没有选中的网关，自动选中第一个: '{first_gateway_name}'"
+                )
                 self._select_gateway_by_name(first_gateway_name)
             else:
                 self.logger.info("没有可用的网关")
@@ -1959,7 +2022,9 @@ class TradingGateway(BaseWidget):
             self.gateways_table.selectRow(0)
             first_gateway = self.gateways_table.item(0, 0)
             first_gateway_name = first_gateway.text() if first_gateway else "未知"
-            self.logger.info(f"未找到网关 '{gateway_name}'，已选中第一个网关: {first_gateway_name}")
+            self.logger.info(
+                f"未找到网关 '{gateway_name}'，已选中第一个网关: {first_gateway_name}"
+            )
             # 手动触发策略加载
             self._load_strategies()
 
@@ -1993,10 +2058,14 @@ class TradingGateway(BaseWidget):
                     self.logger.debug(f"添加策略到表格: {strategy}")
                     self._add_strategy_to_table(gateway_name, strategy)
 
-                self.logger.info(f"✓ 已加载网关 '{gateway_name}' 的 {len(strategies)} 个策略到表格")
+                self.logger.info(
+                    f"✓ 已加载网关 '{gateway_name}' 的 {len(strategies)} 个策略到表格"
+                )
 
             except Exception as e:
-                self.logger.error(f"获取网关 {gateway_name} 的策略列表失败: {e}", exc_info=True)
+                self.logger.error(
+                    f"获取网关 {gateway_name} 的策略列表失败: {e}", exc_info=True
+                )
 
         except Exception as e:
             self.logger.error(f"加载策略列表失败: {e}", exc_info=True)
@@ -2045,19 +2114,25 @@ class TradingGateway(BaseWidget):
         if status == "running":
             control_btn = QPushButton("停止")
             control_btn.clicked.connect(
-                lambda checked, gw=gateway_name, st=strategy_name: self._stop_strategy(gw, st)
+                lambda checked, gw=gateway_name, st=strategy_name: self._stop_strategy(
+                    gw, st
+                )
             )
         else:
             control_btn = QPushButton("启动")
             control_btn.clicked.connect(
-                lambda checked, gw=gateway_name, st=strategy_name: self._start_strategy(gw, st)
+                lambda checked, gw=gateway_name, st=strategy_name: self._start_strategy(
+                    gw, st
+                )
             )
         op_layout.addWidget(control_btn)
 
         # 删除按钮
         delete_btn = QPushButton("删除")
         delete_btn.clicked.connect(
-            lambda checked, gw=gateway_name, st=strategy_name: self._remove_strategy(gw, st)
+            lambda checked, gw=gateway_name, st=strategy_name: self._remove_strategy(
+                gw, st
+            )
         )
         op_layout.addWidget(delete_btn)
 
@@ -2113,12 +2188,16 @@ class TradingGateway(BaseWidget):
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                result = self.trading_service.remove_strategy(gateway_name, strategy_name)
+                result = self.trading_service.remove_strategy(
+                    gateway_name, strategy_name
+                )
                 if result.get("success"):
                     self.show_info(f"策略 '{strategy_name}' 已删除")
                     self.refresh_data()
                 else:
-                    self.show_error(f"删除策略失败: {result.get('message', '未知错误')}")
+                    self.show_error(
+                        f"删除策略失败: {result.get('message', '未知错误')}"
+                    )
             except Exception as e:
                 self.show_error(f"删除策略时发生错误: {str(e)}")
                 self.logger.error(f"删除策略失败: {e}", exc_info=True)
@@ -2140,7 +2219,9 @@ class TradingGateway(BaseWidget):
                 return
 
             # 注册事件处理器
-            event_engine.register(EVENT_STRATEGY_STATUS_CHANGED, self._on_strategy_status_changed)
+            event_engine.register(
+                EVENT_STRATEGY_STATUS_CHANGED, self._on_strategy_status_changed
+            )
 
             self.logger.info("✅ 已注册策略状态变化事件监听器")
 
@@ -2239,7 +2320,9 @@ class TradingGateway(BaseWidget):
             strategies = self.trading_service.strategy_instances[gateway_name]
 
             # 检查激活策略数量
-            active_strategies = [s for s in strategies.values() if s.get("status") == "running"]
+            active_strategies = [
+                s for s in strategies.values() if s.get("status") == "running"
+            ]
 
             # 如果恰好只有1个激活策略，更新监控界面显示
             if len(active_strategies) == 1:
@@ -2248,7 +2331,9 @@ class TradingGateway(BaseWidget):
                 # 获取策略引擎类型（使用部署时保存的engine_name）
                 engine_name = strategy.get("engine_name", "CtaStrategy")
                 strategy_type = (
-                    engine_name.lower() if isinstance(engine_name, str) else "ctastrategy"
+                    engine_name.lower()
+                    if isinstance(engine_name, str)
+                    else "ctastrategy"
                 )
 
                 # 根据策略类型更新监控界面
@@ -2267,7 +2352,9 @@ class TradingGateway(BaseWidget):
 
                     if current_type != display_type:
                         self.template_combo.setCurrentText(display_type)
-                        self.logger.info(f"更新监控界面显示为{display_type}（单策略运行）")
+                        self.logger.info(
+                            f"更新监控界面显示为{display_type}（单策略运行）"
+                        )
 
         except Exception as e:
             self.logger.error(f"更新监控界面显示失败: {e}")
@@ -2284,7 +2371,9 @@ class TradingGateway(BaseWidget):
 class PortfolioMonitorWidget(QWidget):
     """组合策略监控组件."""
 
-    def __init__(self, gateway_name: str, trading_service: Any, parent: Optional[QWidget] = None):
+    def __init__(
+        self, gateway_name: str, trading_service: Any, parent: Optional[QWidget] = None
+    ):
         """初始化组合策略监控组件.
 
         Args:
@@ -2380,22 +2469,34 @@ class PortfolioMonitorWidget(QWidget):
 
             # 更新持仓概览
             overview = portfolio_data.get("overview", {})
-            self.total_symbols_label.setText(f"品种数量: {overview.get('symbol_count', 0)}")
-            self.total_value_label.setText(f"总市值: {overview.get('total_value', 0):,.2f}")
+            self.total_symbols_label.setText(
+                f"品种数量: {overview.get('symbol_count', 0)}"
+            )
+            self.total_value_label.setText(
+                f"总市值: {overview.get('total_value', 0):,.2f}"
+            )
 
             total_pnl = overview.get("total_pnl", 0)
             pnl_color = "#4ECDC4" if total_pnl >= 0 else "#FF6B6B"
             self.total_pnl_label.setText(f"总盈亏: {total_pnl:+,.2f}")
-            self.total_pnl_label.setStyleSheet(f"color: {pnl_color}; font-weight: bold;")
+            self.total_pnl_label.setStyleSheet(
+                f"color: {pnl_color}; font-weight: bold;"
+            )
 
             # 更新品种持仓表
             positions = portfolio_data.get("positions", [])
             self.position_table.setRowCount(len(positions))
 
             for i, pos in enumerate(positions):
-                self.position_table.setItem(i, 0, QTableWidgetItem(pos.get("symbol", "")))
-                self.position_table.setItem(i, 1, QTableWidgetItem(pos.get("direction", "")))
-                self.position_table.setItem(i, 2, QTableWidgetItem(str(pos.get("volume", 0))))
+                self.position_table.setItem(
+                    i, 0, QTableWidgetItem(pos.get("symbol", ""))
+                )
+                self.position_table.setItem(
+                    i, 1, QTableWidgetItem(pos.get("direction", ""))
+                )
+                self.position_table.setItem(
+                    i, 2, QTableWidgetItem(str(pos.get("volume", 0)))
+                )
                 self.position_table.setItem(
                     i, 3, QTableWidgetItem(f"{pos.get('avg_price', 0):.2f}")
                 )
@@ -2405,16 +2506,24 @@ class PortfolioMonitorWidget(QWidget):
                 self.position_table.setItem(
                     i, 5, QTableWidgetItem(f"{pos.get('market_value', 0):,.2f}")
                 )
-                self.position_table.setItem(i, 6, QTableWidgetItem(f"{pos.get('pnl', 0):+,.2f}"))
-                self.position_table.setItem(i, 7, QTableWidgetItem(f"{pos.get('weight', 0):.2%}"))
+                self.position_table.setItem(
+                    i, 6, QTableWidgetItem(f"{pos.get('pnl', 0):+,.2f}")
+                )
+                self.position_table.setItem(
+                    i, 7, QTableWidgetItem(f"{pos.get('weight', 0):.2%}")
+                )
 
             # 更新盈亏贡献表
             contributions = portfolio_data.get("contributions", [])
             self.contrib_table.setRowCount(len(contributions))
 
             for i, contrib in enumerate(contributions):
-                self.contrib_table.setItem(i, 0, QTableWidgetItem(contrib.get("symbol", "")))
-                self.contrib_table.setItem(i, 1, QTableWidgetItem(f"{contrib.get('pnl', 0):+,.2f}"))
+                self.contrib_table.setItem(
+                    i, 0, QTableWidgetItem(contrib.get("symbol", ""))
+                )
+                self.contrib_table.setItem(
+                    i, 1, QTableWidgetItem(f"{contrib.get('pnl', 0):+,.2f}")
+                )
                 self.contrib_table.setItem(
                     i, 2, QTableWidgetItem(f"{contrib.get('contribution', 0):.2%}")
                 )
@@ -2439,13 +2548,19 @@ class PortfolioMonitorWidget(QWidget):
                         item.setText(value)
 
         except Exception as e:
-            self.logger.error(f"更新组合策略监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                f"更新组合策略监控数据失败: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
 
 
 class AlgoMonitorWidget(QWidget):
     """算法交易监控组件."""
 
-    def __init__(self, gateway_name: str, trading_service: Any, parent: Optional[QWidget] = None):
+    def __init__(
+        self, gateway_name: str, trading_service: Any, parent: Optional[QWidget] = None
+    ):
         """初始化算法交易监控组件.
 
         Args:
@@ -2586,13 +2701,19 @@ class AlgoMonitorWidget(QWidget):
                         item.setText(value)
 
         except Exception as e:
-            self.logger.error(f"更新算法交易监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                f"更新算法交易监控数据失败: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
 
 
 class OptionMonitorWidget(QWidget):
     """期权策略监控组件."""
 
-    def __init__(self, gateway_name: str, trading_service: Any, parent: Optional[QWidget] = None):
+    def __init__(
+        self, gateway_name: str, trading_service: Any, parent: Optional[QWidget] = None
+    ):
         """初始化期权策略监控组件.
 
         Args:
@@ -2619,7 +2740,9 @@ class OptionMonitorWidget(QWidget):
         delta_layout = QVBoxLayout()
         delta_layout.addWidget(QLabel("Delta"))
         self.delta_label = QLabel("--")
-        self.delta_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #4ECDC4;")
+        self.delta_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #4ECDC4;"
+        )
         delta_layout.addWidget(self.delta_label, alignment=Qt.AlignmentFlag.AlignCenter)
         greeks_layout.addLayout(delta_layout)
 
@@ -2627,7 +2750,9 @@ class OptionMonitorWidget(QWidget):
         gamma_layout = QVBoxLayout()
         gamma_layout.addWidget(QLabel("Gamma"))
         self.gamma_label = QLabel("--")
-        self.gamma_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #FF6B6B;")
+        self.gamma_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #FF6B6B;"
+        )
         gamma_layout.addWidget(self.gamma_label, alignment=Qt.AlignmentFlag.AlignCenter)
         greeks_layout.addLayout(gamma_layout)
 
@@ -2635,7 +2760,9 @@ class OptionMonitorWidget(QWidget):
         vega_layout = QVBoxLayout()
         vega_layout.addWidget(QLabel("Vega"))
         self.vega_label = QLabel("--")
-        self.vega_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #FFD93D;")
+        self.vega_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #FFD93D;"
+        )
         vega_layout.addWidget(self.vega_label, alignment=Qt.AlignmentFlag.AlignCenter)
         greeks_layout.addLayout(vega_layout)
 
@@ -2643,7 +2770,9 @@ class OptionMonitorWidget(QWidget):
         theta_layout = QVBoxLayout()
         theta_layout.addWidget(QLabel("Theta"))
         self.theta_label = QLabel("--")
-        self.theta_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #A8E6CF;")
+        self.theta_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #A8E6CF;"
+        )
         theta_layout.addWidget(self.theta_label, alignment=Qt.AlignmentFlag.AlignCenter)
         greeks_layout.addLayout(theta_layout)
 
@@ -2733,17 +2862,27 @@ class OptionMonitorWidget(QWidget):
             self.position_table.setRowCount(len(positions))
 
             for i, pos in enumerate(positions):
-                self.position_table.setItem(i, 0, QTableWidgetItem(pos.get("symbol", "")))
-                self.position_table.setItem(i, 1, QTableWidgetItem(pos.get("direction", "")))
-                self.position_table.setItem(i, 2, QTableWidgetItem(str(pos.get("volume", 0))))
+                self.position_table.setItem(
+                    i, 0, QTableWidgetItem(pos.get("symbol", ""))
+                )
+                self.position_table.setItem(
+                    i, 1, QTableWidgetItem(pos.get("direction", ""))
+                )
+                self.position_table.setItem(
+                    i, 2, QTableWidgetItem(str(pos.get("volume", 0)))
+                )
                 self.position_table.setItem(
                     i, 3, QTableWidgetItem(f"{pos.get('avg_price', 0):.2f}")
                 )
                 self.position_table.setItem(
                     i, 4, QTableWidgetItem(f"{pos.get('last_price', 0):.2f}")
                 )
-                self.position_table.setItem(i, 5, QTableWidgetItem(f"{pos.get('pnl', 0):+.2f}"))
-                self.position_table.setItem(i, 6, QTableWidgetItem(f"{pos.get('delta', 0):.4f}"))
+                self.position_table.setItem(
+                    i, 5, QTableWidgetItem(f"{pos.get('pnl', 0):+.2f}")
+                )
+                self.position_table.setItem(
+                    i, 6, QTableWidgetItem(f"{pos.get('delta', 0):.4f}")
+                )
 
             # 更新风险指标
             risks = option_data.get("risks", {})
@@ -2762,4 +2901,8 @@ class OptionMonitorWidget(QWidget):
                         item.setText(value)
 
         except Exception as e:
-            self.logger.error(f"更新期权监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                f"更新期权监控数据失败: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )

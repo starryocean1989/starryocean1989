@@ -14,7 +14,6 @@ from threading import Timer
 import logging
 
 from backend.framework import ServiceBase
-import logging
 from backend.infrastructure.native.match_cache import create_match_cache
 
 # 专用logger - 日志埋点v4.0
@@ -913,8 +912,6 @@ class PortfolioService(ServiceBase):
             Dict: 周期统计数据
         """
         try:
-            import pandas as pd
-            import numpy as np
             from datetime import datetime
 
             # 1. 获取成交记录
@@ -1593,7 +1590,7 @@ class PortfolioService(ServiceBase):
                 elif dd >= 0 and in_drawdown:  # 回撤结束
                     in_drawdown = False
                     # 找出这段期间的最大回撤
-                    period_drawdowns = drawdowns[start_idx : i + 1]
+                    period_drawdowns = drawdowns[start_idx: i + 1]
                     max_dd_idx = start_idx + np.argmin(period_drawdowns)
 
                     drawdown_periods.append(

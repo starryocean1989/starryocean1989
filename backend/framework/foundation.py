@@ -212,13 +212,13 @@ class UnifiedMarketData:
             # 价格字段
             last_price=bar_data.close_price,  # Bar用close_price作为last_price
             open_price=bar_data.open_price,
-            high_price=bar.high_price,
-            low_price=bar.low_price,
-            close_price=bar.close_price,
+            high_price=bar_data.high_price,
+            low_price=bar_data.low_price,
+            close_price=bar_data.close_price,
             # 成交量
-            volume=bar.volume,
-            turnover=getattr(bar, "turnover", 0.0),
-            open_interest=getattr(bar, "open_interest", 0.0),
+            volume=bar_data.volume,
+            turnover=getattr(bar_data, "turnover", 0.0),
+            open_interest=getattr(bar_data, "open_interest", 0.0),
             # 元数据
             source=DataSource.VNPY_CTP,
         )
@@ -753,23 +753,23 @@ class ServiceBase(ABC):
 
     def log_operation_start(self, operation: str, **kwargs) -> None:
         """记录操作开始日志（兼容性方法）"""
-        params_str = ", ".join(["%s=%s" % (k, v) for k, v in kwargs.items()])
+        params_str = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
         if params_str:
-            self.logger.info("[开始] %s (%s)", operation, params_str)
+            self.logger.info(f"[开始] {operation} ({params_str})")
         else:
-            self.logger.info("[开始] %s", operation)
+            self.logger.info(f"[开始] {operation}")
 
     def log_operation_success(self, operation: str, **kwargs) -> None:
         """记录操作成功日志（兼容性方法）"""
-        result_str = ", ".join(["%s=%s" % (k, v) for k, v in kwargs.items()])
+        result_str = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
         if result_str:
-            self.logger.info("[成功] %s (%s)", operation, result_str)
+            self.logger.info(f"[成功] {operation} ({result_str})")
         else:
-            self.logger.info("[成功] %s", operation)
+            self.logger.info(f"[成功] {operation}")
 
     def log_operation_failure(self, operation: str, error: Exception, **kwargs) -> None:
         """记录操作失败日志（兼容性方法）"""
-        context_str = ", ".join(["%s=%s" % (k, v) for k, v in kwargs.items()])
+        context_str = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
         if context_str:
             self.logger.error(
                 "❌ [失败] %s: %s (%s)",
@@ -2001,6 +2001,8 @@ class DependencyResolver:
 
 @dataclass
 class CronPattern:
+    """Cron模式配置类"""
+
     minutes: Set[int]
     hours: Set[int]
     days: Set[int]
@@ -2019,6 +2021,8 @@ class CronPattern:
 
 @dataclass
 class ScheduledTask:
+    """定时任务配置类"""
+
     name: str
     cron: CronPattern
     func: Callable[..., Any]

@@ -61,10 +61,9 @@ from PySide6.QtWidgets import (
 import psutil
 import pyqtgraph as pg
 
-from backend.framework import get_service_registry, get_event_engine
+from backend.framework import get_service_registry
 from backend.core.base import get_service_manager
 from backend.services.system_manager_service import SystemManagerService
-import logging
 from ui.components.widgets import (
     BaseWidget,
     GaugeWidget,
@@ -202,7 +201,10 @@ class LogTableModel(QAbstractTableModel):
         return len(self.HEADERS)
 
     def headerData(
-        self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole
+        self,
+        section: int,
+        orientation: Qt.Orientation,
+        role: int = Qt.ItemDataRole.DisplayRole,
     ) -> Any:
         """返回表头数据。"""
         if orientation == Qt.Orientation.Horizontal:
@@ -262,7 +264,9 @@ class LogTableModel(QAbstractTableModel):
             )
         return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
 
-    def setData(self, index: QModelIndex, value: Any, role: int = Qt.ItemDataRole.EditRole) -> bool:
+    def setData(
+        self, index: QModelIndex, value: Any, role: int = Qt.ItemDataRole.EditRole
+    ) -> bool:
         """设置单元格数据（处理复选框点击）。"""
         if index.column() == 0 and role == Qt.ItemDataRole.CheckStateRole:
             row = index.row()
@@ -296,7 +300,9 @@ class LogTableModel(QAbstractTableModel):
         if col == 0:
             if role == Qt.ItemDataRole.CheckStateRole:
                 return (
-                    Qt.CheckState.Checked if row in self._selected_rows else Qt.CheckState.Unchecked
+                    Qt.CheckState.Checked
+                    if row in self._selected_rows
+                    else Qt.CheckState.Unchecked
                 )
             if role == Qt.ItemDataRole.TextAlignmentRole:
                 # 居中显示复选状态
@@ -400,7 +406,9 @@ class LogTableModel(QAbstractTableModel):
 
     def get_selected_records(self) -> List[Dict[str, Any]]:
         """获取选中的记录."""
-        return [self._data[i] for i in sorted(self._selected_rows) if i < len(self._data)]
+        return [
+            self._data[i] for i in sorted(self._selected_rows) if i < len(self._data)
+        ]
 
     def get_selected_count(self) -> int:
         """获取选中数量."""
@@ -579,7 +587,9 @@ class AlertCard(QWidget):
         if ok:
             # 记录用户操作
             logger_user.info(
-                "用户确认告警: ID=%s, 类型=%s", self.alert_id, self.alert_data.get("severity")
+                "用户确认告警: ID=%s, 类型=%s",
+                self.alert_id,
+                self.alert_data.get("severity"),
             )
             self._call_alert_action("acknowledge", note if note else "")
 
@@ -599,7 +609,9 @@ class AlertCard(QWidget):
                 return
 
             service_manager = get_service_registry()
-            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
+            system_service = cast(
+                SystemManagerService, service_manager.get("system_manager_service")
+            )
 
             if system_service:
                 if action == "acknowledge":
@@ -625,7 +637,9 @@ class AlertCard(QWidget):
                         if isinstance(parent, AlertManagerWidget):
                             parent.refresh_alerts()
                 else:
-                    QMessageBox.warning(self, "错误", f"操作失败: {result.get('message')}")
+                    QMessageBox.warning(
+                        self, "错误", f"操作失败: {result.get('message')}"
+                    )
             else:
                 QMessageBox.warning(self, "错误", "系统管理服务不可用")
 
@@ -690,7 +704,9 @@ class _UnifiedHeatmapCanvas(QWidget):
             painter.drawRoundedRect(bar_rect, 3, 3)
 
             # 计算填充高度（从下到上）
-            fill_percent = min((current_value / max_value) * 100, 100) if max_value > 0 else 0
+            fill_percent = (
+                min((current_value / max_value) * 100, 100) if max_value > 0 else 0
+            )
             fill_height = int((fill_percent / 100.0) * bar_rect.height())
 
             if fill_height > 0:
@@ -721,6 +737,8 @@ class _UnifiedHeatmapCanvas(QWidget):
                 sep_x = x_pos + bar_width + bar_spacing // 2
                 painter.setPen(QPen(QColor("#666"), 2))
                 painter.drawLine(sep_x, 5, sep_x, rect.height() - 5)
+
+
 class UnifiedMonitorCard(QWidget):
     """整合的系统监控卡片 - CPU/网络/内存的9个热力图."""
 
@@ -943,13 +961,17 @@ class UnifiedMonitorCard(QWidget):
             if key in self.metric_values:
                 self.metric_values[key] = value
                 if key in self.value_labels:
-                    metric_config = next((m for m in self.all_metrics if m["key"] == key), None)
+                    metric_config = next(
+                        (m for m in self.all_metrics if m["key"] == key), None
+                    )
                     if metric_config:
                         unit = metric_config["unit"]
                         self.value_labels[key].setText(f"{value:.1f}{unit}")
         self.heatmap_area.update()
 
-    def update_bandwidth_detail(self, download_mbps: float, total_mbps: float, percent: float):
+    def update_bandwidth_detail(
+        self, download_mbps: float, total_mbps: float, percent: float
+    ):
         """更新带宽详情."""
         if total_mbps > 0:
             self.bandwidth_detail_label.setText(
@@ -999,7 +1021,7 @@ class UnifiedMonitorCard(QWidget):
                 self.socket_buffer_label.setStyleSheet(
                     "font-size: 9px; color: #666; border: none; padding: 2px;"
                 )
-        except Exception as e:
+        except Exception:
             self.socket_buffer_label.setText("Socket缓冲区: 数据错误")
 
     def update_network_status(self, disconnected: bool, retry_callback=None):
@@ -1025,7 +1047,7 @@ class UnifiedMonitorCard(QWidget):
                     # 断开之前的连接（避免重复连接）
                     try:
                         self.latency_retry_btn.clicked.disconnect()
-                    except:
+                    except Exception:
                         pass
                     self.latency_retry_btn.clicked.connect(retry_callback)
             else:
@@ -1112,7 +1134,9 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
                 self.network_disconnected_label.setStyleSheet(
                     "font-size: 11px; color: #d32f2f; font-weight: bold; border: none;"
                 )
-                self.network_disconnected_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.network_disconnected_label.setAlignment(
+                    Qt.AlignmentFlag.AlignCenter
+                )
                 self.network_disconnected_label.hide()
 
                 # 重试按钮（默认隐藏）
@@ -1128,7 +1152,9 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
 
                 container_layout.addWidget(self.network_status_container)
 
-    def update_bandwidth_detail(self, download_mbps: float, total_mbps: float, percent: float):
+    def update_bandwidth_detail(
+        self, download_mbps: float, total_mbps: float, percent: float
+    ):
         """更新带宽详情显示.
 
         Args:
@@ -1185,7 +1211,7 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
                 self.socket_buffer_label.setStyleSheet(
                     "font-size: 8px; color: #666; border: none; margin-top: 2px;"
                 )
-        except Exception as e:
+        except Exception:
             self.socket_buffer_label.setText("Socket缓冲区: 数据错误")
 
 
@@ -1385,6 +1411,8 @@ class SingleDiskCard(QWidget):
                 self.info_labels["uncorrectable_errors"].setStyleSheet(
                     "font-size: 11px; color: #FA0; border: none; font-weight: bold;"
                 )
+
+
 class DiskMonitorCard(QWidget):
     """硬盘监控卡片 - 横向排列，自适应字体."""
 
@@ -1614,7 +1642,9 @@ class AlertManagerWidget(QWidget):
         # 状态筛选
         status_label = QLabel("状态:")
         self.status_combo = QComboBox()
-        self.status_combo.addItems(["全部", "NEW", "ACKNOWLEDGED", "RESOLVED", "IGNORED"])
+        self.status_combo.addItems(
+            ["全部", "NEW", "ACKNOWLEDGED", "RESOLVED", "IGNORED"]
+        )
         layout.addWidget(status_label)
         layout.addWidget(self.status_combo)
 
@@ -1714,7 +1744,9 @@ class AlertManagerWidget(QWidget):
         """更新统计信息."""
         total = len(self.alerts)
         new_count = sum(1 for a in self.alerts if a.get("status") == "new")
-        acknowledged_count = sum(1 for a in self.alerts if a.get("status") == "acknowledged")
+        acknowledged_count = sum(
+            1 for a in self.alerts if a.get("status") == "acknowledged"
+        )
         resolved_count = sum(1 for a in self.alerts if a.get("status") == "resolved")
 
         self.stats_label.setText(
@@ -1726,7 +1758,9 @@ class AlertManagerWidget(QWidget):
         try:
             # 调用后端API获取最新告警
             service_manager = get_service_registry()
-            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
+            system_service = cast(
+                SystemManagerService, service_manager.get("system_manager_service")
+            )
 
             if system_service:
                 # 获取所有告警
@@ -1736,7 +1770,9 @@ class AlertManagerWidget(QWidget):
                     self.alerts = result.get("alerts", [])
                     self._apply_filters()
                 else:
-                    QMessageBox.warning(self, "错误", f"获取告警失败: {result.get('message')}")
+                    QMessageBox.warning(
+                        self, "错误", f"获取告警失败: {result.get('message')}"
+                    )
             else:
                 QMessageBox.warning(self, "错误", "系统管理服务不可用")
 
@@ -1747,17 +1783,23 @@ class AlertManagerWidget(QWidget):
         """清理已解决的告警."""
         try:
             service_manager = get_service_registry()
-            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
+            system_service = cast(
+                SystemManagerService, service_manager.get("system_manager_service")
+            )
 
             if system_service:
                 result = system_service.clear_resolved_alerts()
 
                 if result.get("success"):
-                    QMessageBox.information(self, "成功", result.get("message", "操作成功"))
+                    QMessageBox.information(
+                        self, "成功", result.get("message", "操作成功")
+                    )
                     # 刷新告警列表
                     self._refresh_alerts()
                 else:
-                    QMessageBox.warning(self, "错误", f"清理失败: {result.get('message', '未知错误')}")
+                    QMessageBox.warning(
+                        self, "错误", f"清理失败: {result.get('message', '未知错误')}"
+                    )
             else:
                 QMessageBox.warning(self, "错误", "系统管理服务不可用")
 
@@ -1867,6 +1909,8 @@ class AlertManagerWidget(QWidget):
             self.severity_combo.setCurrentIndex(0)
 
         self._apply_filters()
+
+
 # ==================== 日志管理组件 ====================
 class LogManagerWidget(QWidget):
     """日志管理界面组件."""
@@ -1938,7 +1982,9 @@ class LogManagerWidget(QWidget):
             # 检查backend是否已经就绪
             backend_ready = orch.is_ready("backend_ready")
             ui_ready = orch.is_ready("ui_ready")
-            logger.info(f"[LogManagerWidget] backend_ready={backend_ready}, ui_ready={ui_ready}")
+            logger.info(
+                f"[LogManagerWidget] backend_ready={backend_ready}, ui_ready={ui_ready}"
+            )
 
             if backend_ready and ui_ready:
                 # backend已就绪（懒加载场景），立即初始化
@@ -1983,7 +2029,9 @@ class LogManagerWidget(QWidget):
         # 日志级别筛选
         level_label = QLabel("级别:")
         self.level_combo = QComboBox()
-        self.level_combo.addItems(["全部", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+        self.level_combo.addItems(
+            ["全部", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        )
         layout.addWidget(level_label)
         layout.addWidget(self.level_combo)
 
@@ -2230,6 +2278,7 @@ class LogManagerWidget(QWidget):
         except Exception as e:
             # 更新模块列表失败不影响主要功能
             import logging
+
             logging.getLogger(__name__).warning(
                 "更新模块列表失败: %s",
                 e,
@@ -2249,7 +2298,9 @@ class LogManagerWidget(QWidget):
         end_time = self.end_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
 
         search_text = self.search_edit.text().strip()
-        search_terms = [term.strip() for term in search_text.split()] if search_text else []
+        search_terms = (
+            [term.strip() for term in search_text.split()] if search_text else []
+        )
 
         # 记录用户日志查询操作（审计）
         logger_user.info(
@@ -2285,7 +2336,8 @@ class LogManagerWidget(QWidget):
                 module = record.get("module", "").lower()
                 message = record.get("message", "").lower()
                 if not any(
-                    term.lower() in module or term.lower() in message for term in search_terms
+                    term.lower() in module or term.lower() in message
+                    for term in search_terms
                 ):
                     continue
 
@@ -2361,7 +2413,9 @@ class LogManagerWidget(QWidget):
         import logging
 
         logger = logging.getLogger(__name__)
-        logger.debug("[LogManagerWidget] _refresh_logs被调用")  # 🔧 改为debug级别，避免刷屏
+        logger.debug(
+            "[LogManagerWidget] _refresh_logs被调用"
+        )  # 🔧 改为debug级别，避免刷屏
 
         # 禁用刷新按钮，显示加载状态
         if hasattr(self, "refresh_btn"):
@@ -2374,7 +2428,9 @@ class LogManagerWidget(QWidget):
                 logger.debug("[LogManagerWidget] 后台线程开始查询")  # 改为debug
                 # 调用后端API获取最新日志
                 service_manager = get_service_manager()
-                system_service = service_manager.get_service("system_manager_service", silent=True)
+                system_service = service_manager.get_service(
+                    "system_manager_service", silent=True
+                )
 
                 if system_service:
                     logger.debug(
@@ -2389,7 +2445,9 @@ class LogManagerWidget(QWidget):
                     # 🔧 关键修复：使用信号传递结果到主线程（Qt推荐的跨线程通信方式）
                     self.logs_query_completed.emit(result)
                 else:
-                    logger.warning("[LogManagerWidget] SystemManagerService不可用")  # 保留warning
+                    logger.warning(
+                        "[LogManagerWidget] SystemManagerService不可用"
+                    )  # 保留warning
                     # 服务不可用，调度错误消息到主线程
                     QTimer.singleShot(0, lambda: self._handle_service_unavailable())
 
@@ -2550,7 +2608,9 @@ class LogManagerWidget(QWidget):
 
         try:
             service_manager = get_service_registry()
-            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
+            system_service = cast(
+                SystemManagerService, service_manager.get("system_manager_service")
+            )
 
             if system_service:
                 # 提取日志ID列表，确保类型正确
@@ -2561,17 +2621,23 @@ class LogManagerWidget(QWidget):
                         log_ids.append(int(record_id))
 
                 if not log_ids:
-                    QMessageBox.warning(self, "错误", "选中的日志没有有效的ID，无法删除")
+                    QMessageBox.warning(
+                        self, "错误", "选中的日志没有有效的ID，无法删除"
+                    )
                     return
 
                 result = system_service.delete_logs_by_ids(log_ids)
                 if result.get("success"):
                     QMessageBox.information(
-                        self, "删除成功", f"已删除 {result.get('deleted_count', 0)} 条日志"
+                        self,
+                        "删除成功",
+                        f"已删除 {result.get('deleted_count', 0)} 条日志",
                     )
                     self._refresh_logs()
                 else:
-                    QMessageBox.warning(self, "删除失败", result.get("message", "删除失败"))
+                    QMessageBox.warning(
+                        self, "删除失败", result.get("message", "删除失败")
+                    )
             else:
                 QMessageBox.warning(self, "错误", "系统管理服务不可用")
         except Exception as e:
@@ -2596,18 +2662,24 @@ class LogManagerWidget(QWidget):
         # 调用后端API删除所有日志
         try:
             service_manager = get_service_registry()
-            system_service = cast(SystemManagerService, service_manager.get("system_manager_service"))
+            system_service = cast(
+                SystemManagerService, service_manager.get("system_manager_service")
+            )
 
             if system_service:
                 result = system_service.delete_all_logs()
                 if result.get("success"):
                     QMessageBox.information(
-                        self, "删除成功", f"已删除 {result.get('deleted_count', 0)} 条日志记录"
+                        self,
+                        "删除成功",
+                        f"已删除 {result.get('deleted_count', 0)} 条日志记录",
                     )
                     # 刷新UI
                     self._refresh_logs()
                 else:
-                    QMessageBox.warning(self, "删除失败", result.get("message", "未知错误"))
+                    QMessageBox.warning(
+                        self, "删除失败", result.get("message", "未知错误")
+                    )
             else:
                 QMessageBox.warning(self, "错误", "系统管理服务不可用")
         except Exception as e:
@@ -2704,9 +2776,13 @@ class LogManagerWidget(QWidget):
         """
         return {
             "level": (
-                self.level_combo.currentText() if self.level_combo.currentText() != "全部" else None
+                self.level_combo.currentText()
+                if self.level_combo.currentText() != "全部"
+                else None
             ),
-            "start_time": self.start_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss"),
+            "start_time": self.start_time_edit.dateTime().toString(
+                "yyyy-MM-ddTHH:mm:ss"
+            ),
             "end_time": self.end_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss"),
             "search": self.search_edit.text().strip(),
         }
@@ -2768,7 +2844,9 @@ class SystemManager(BaseWidget):
     """系统管理主界面（重构版）."""
 
     # 定义信号用于跨线程通信
-    reader_progress_signal = Signal(int, int, str, bool)  # current, total, info, success
+    reader_progress_signal = Signal(
+        int, int, str, bool
+    )  # current, total, info, success
     reader_finished_signal = Signal(dict)  # result
 
     # 🔥 新增：用于线程安全的UI更新信号
@@ -3023,7 +3101,7 @@ class SystemManager(BaseWidget):
                 self._debug_logger.info("=" * 60)
             else:
                 self._debug_logger = self.logger
-        except:
+        except Exception:
             self._debug_logger = self.logger
 
         # 🔧 关键修复：缓存EventEngine实例，避免property动态获取导致的多线程竞态
@@ -3075,7 +3153,9 @@ class SystemManager(BaseWidget):
         )
 
         # 🔥 连接网络测速结果信号（线程安全）
-        self.bandwidth_test_success_signal.connect(self._update_bandwidth_result_success)
+        self.bandwidth_test_success_signal.connect(
+            self._update_bandwidth_result_success
+        )
         self.bandwidth_test_error_signal.connect(self._update_bandwidth_result_error)
         self.logger.info(
             "[SystemManager] ✅ 网络测速信号已连接",
@@ -3084,7 +3164,9 @@ class SystemManager(BaseWidget):
 
         # 启动数据源连通性定时更新（每10秒刷新一次）
         self.datasource_connectivity_timer = QTimer(self)
-        self.datasource_connectivity_timer.timeout.connect(self._update_datasource_connectivity)
+        self.datasource_connectivity_timer.timeout.connect(
+            self._update_datasource_connectivity
+        )
         self.datasource_connectivity_timer.start(10000)  # 10秒
         # 立即执行一次
         QTimer.singleShot(1000, self._update_datasource_connectivity)
@@ -3143,7 +3225,10 @@ class SystemManager(BaseWidget):
 
             # 使用统一事件日志流程替代独立FileHandler
             try:
-                from backend.infrastructure.system_vnpy.logging_system import start_event_process
+                from backend.infrastructure.system_vnpy.logging_system import (
+                    start_event_process,
+                )
+
                 event_file = start_event_process(
                     "ui_debug_session",
                     metadata={"view_id": id(self)},
@@ -3224,20 +3309,26 @@ class SystemManager(BaseWidget):
                     # 从配置文件覆盖默认值
                     if thresholds_config:
                         default_thresholds["cpu"] = float(
-                            thresholds_config.get("cpu_percent", default_thresholds["cpu"])
+                            thresholds_config.get(
+                                "cpu_percent", default_thresholds["cpu"]
+                            )
                         )
                         default_thresholds["memory"] = float(
-                            thresholds_config.get("memory_percent", default_thresholds["memory"])
+                            thresholds_config.get(
+                                "memory_percent", default_thresholds["memory"]
+                            )
                         )
                         # 磁盘阈值从后端自动获取，不从配置文件读取
                         default_thresholds["network_upload"] = float(
                             thresholds_config.get(
-                                "network_upload_kbps", default_thresholds["network_upload"]
+                                "network_upload_kbps",
+                                default_thresholds["network_upload"],
                             )
                         )
                         default_thresholds["network_download"] = float(
                             thresholds_config.get(
-                                "network_download_kbps", default_thresholds["network_download"]
+                                "network_download_kbps",
+                                default_thresholds["network_download"],
                             )
                         )
                         default_thresholds["bandwidth"] = float(
@@ -3247,12 +3338,14 @@ class SystemManager(BaseWidget):
                         )
                         default_thresholds["context_switches"] = int(
                             thresholds_config.get(
-                                "context_switches_per_sec", default_thresholds["context_switches"]
+                                "context_switches_per_sec",
+                                default_thresholds["context_switches"],
                             )
                         )
                         default_thresholds["cpu_interrupts"] = int(
                             thresholds_config.get(
-                                "cpu_interrupts_per_sec", default_thresholds["cpu_interrupts"]
+                                "cpu_interrupts_per_sec",
+                                default_thresholds["cpu_interrupts"],
                             )
                         )
                         default_thresholds["memory_swap"] = float(
@@ -3335,7 +3428,9 @@ class SystemManager(BaseWidget):
             service_manager = get_service_registry()
 
             # 重新获取服务（此时应该已就绪）
-            self.system_service = service_manager.get_service("system_manager_service", silent=True)
+            self.system_service = service_manager.get_service(
+                "system_manager_service", silent=True
+            )
             if self.system_service:
                 self.logger.info("✅ 系统管理服务已就绪，启用功能")
 
@@ -3433,6 +3528,7 @@ class SystemManager(BaseWidget):
                 "[UI-System] _safe_create_sub_interfaces 调用结束",
                 extra={"log_type": "STAGE_NODE"},
             )
+
     def _create_sub_interfaces(self):
         """创建8个子界面（按新顺序）."""
         self.logger.info("[SystemManager] _create_sub_interfaces 开始执行")
@@ -3523,7 +3619,10 @@ class SystemManager(BaseWidget):
         if self._register_monitoring_events():
             self._events_subscribed = True
             # 停止重试定时器
-            if hasattr(self, "_event_subscription_timer") and self._event_subscription_timer:
+            if (
+                hasattr(self, "_event_subscription_timer")
+                and self._event_subscription_timer
+            ):
                 self._event_subscription_timer.stop()
             self.logger.info("✅ EventEngine已就绪，事件订阅成功")
             return True
@@ -3552,19 +3651,27 @@ class SystemManager(BaseWidget):
         self.event_engine.register(EVENT_SYSTEM_METRICS, self._on_system_metrics_event)
 
         # 订阅硬件传感器事件
-        self.event_engine.register(EVENT_HARDWARE_SENSORS, self._on_hardware_sensors_event)
+        self.event_engine.register(
+            EVENT_HARDWARE_SENSORS, self._on_hardware_sensors_event
+        )
 
         # 订阅SMART健康状态事件
         self.event_engine.register(EVENT_SMART_DATA, self._on_smart_data_event)
 
         # 订阅瓶颈分析事件
-        self.event_engine.register(EVENT_BOTTLENECK_ANALYSIS, self._on_bottleneck_analysis_event)
+        self.event_engine.register(
+            EVENT_BOTTLENECK_ANALYSIS, self._on_bottleneck_analysis_event
+        )
 
         # 订阅进程信息事件
-        self.event_engine.register(EVENT_PROCESS_MONITORING, self._on_process_monitoring_event)
+        self.event_engine.register(
+            EVENT_PROCESS_MONITORING, self._on_process_monitoring_event
+        )
 
         # 订阅服务状态事件
-        self.event_engine.register(EVENT_SERVICE_MONITORING, self._on_service_monitoring_event)
+        self.event_engine.register(
+            EVENT_SERVICE_MONITORING, self._on_service_monitoring_event
+        )
 
         self.logger.info("✅ 已订阅监控事件（包括SMART状态，事件驱动模式）")
         return True
@@ -3622,7 +3729,9 @@ class SystemManager(BaseWidget):
 
             # DEBUG日志
             if hasattr(self, "_debug_logger") and self._event_counter % 10 == 0:
-                self._debug_logger.debug(f"[EventHandler] 已接收 {self._event_counter} 个事件")
+                self._debug_logger.debug(
+                    f"[EventHandler] 已接收 {self._event_counter} 个事件"
+                )
 
             metrics = event.data
             if not metrics:
@@ -3642,7 +3751,9 @@ class SystemManager(BaseWidget):
 
             # DEBUG日志
             if hasattr(self, "_debug_logger"):
-                self._debug_logger.debug(f"[EventHandler] 安排UI更新（事件#{self._event_counter}）")
+                self._debug_logger.debug(
+                    f"[EventHandler] 安排UI更新（事件#{self._event_counter}）"
+                )
 
             # 使用信号发射，线程安全调度到主线程
             self.ui_update_signal.emit(metrics.copy())
@@ -3824,7 +3935,9 @@ class SystemManager(BaseWidget):
                     EVENT_SERVICE_MONITORING,
                 )
 
-                self.event_engine.unregister(EVENT_SYSTEM_METRICS, self._on_system_metrics_event)
+                self.event_engine.unregister(
+                    EVENT_SYSTEM_METRICS, self._on_system_metrics_event
+                )
                 self.event_engine.unregister(
                     EVENT_HARDWARE_SENSORS, self._on_hardware_sensors_event
                 )
@@ -3863,7 +3976,10 @@ class SystemManager(BaseWidget):
                     if isinstance(speeds, dict):
                         read_speed = speeds.get("read_speed", 0)  # 已经是MB/s
                         write_speed = speeds.get("write_speed", 0)  # 已经是MB/s
-                        disk_io_data[disk_name] = {"read": read_speed, "write": write_speed}
+                        disk_io_data[disk_name] = {
+                            "read": read_speed,
+                            "write": write_speed,
+                        }
 
             # 🔥 FIX: 网络速度数据修复
             # 后端返回的是KB/s，需要除以1024转换为MB/s
@@ -3882,7 +3998,13 @@ class SystemManager(BaseWidget):
                     if sensors and isinstance(sensors, list) and len(sensors) > 0:
                         if any(
                             keyword in device
-                            for keyword in ["CPU", "ACPI", "processor", "Ryzen", "Intel"]
+                            for keyword in [
+                                "CPU",
+                                "ACPI",
+                                "processor",
+                                "Ryzen",
+                                "Intel",
+                            ]
                         ):
                             cpu_temp = sensors[0].get("current", 0)
                             break
@@ -3893,7 +4015,9 @@ class SystemManager(BaseWidget):
             if hasattr(self, "unified_monitor_card"):
                 # 1. CPU指标
                 cpu_detailed = metrics.get("cpu_detailed", {})
-                context_switches_per_sec = cpu_detailed.get("context_switches_per_sec", 0)
+                context_switches_per_sec = cpu_detailed.get(
+                    "context_switches_per_sec", 0
+                )
                 context_switches_k = context_switches_per_sec / 1000  # 转换为K/s
 
                 # CPU频率比率（使用psutil采集的数据）
@@ -3928,14 +4052,20 @@ class SystemManager(BaseWidget):
                 packet_loss_percent = 0.0
                 if network_speed:
                     if "packet_loss_rate_in" in network_speed:
-                        packet_loss_percent = network_speed.get("packet_loss_rate_in", 0) * 100
+                        packet_loss_percent = (
+                            network_speed.get("packet_loss_rate_in", 0) * 100
+                        )
                     else:
                         network_subsystem = metrics.get("network_subsystem", {})
-                        packet_loss_rate = network_subsystem.get("packet_loss_rate_in", 0)
+                        packet_loss_rate = network_subsystem.get(
+                            "packet_loss_rate_in", 0
+                        )
                         packet_loss_percent = packet_loss_rate * 100
 
                 # 延迟和带宽信息
-                service = self.service_manager.get_service("system_manager_service", silent=True)
+                service = self.service_manager.get_service(
+                    "system_manager_service", silent=True
+                )
                 latency_ms = 0.0
                 total_bandwidth_mbps = 0.0
                 bandwidth_percent = 0.0
@@ -3946,7 +4076,9 @@ class SystemManager(BaseWidget):
                         bandwidth_info = service.get_bandwidth_info()
                         ping_result = bandwidth_info.get("ping_test", {})
                         full_result = bandwidth_info.get("full_test", {})
-                        network_disconnected = bandwidth_info.get("network_disconnected", False)
+                        network_disconnected = bandwidth_info.get(
+                            "network_disconnected", False
+                        )
 
                         if ping_result and ping_result.get("ping_ms") is not None:
                             # 🔧 修复：检查status字段，排除错误状态
@@ -3954,7 +4086,11 @@ class SystemManager(BaseWidget):
                             if (
                                 status
                                 and isinstance(status, str)
-                                and ("错误" in status or "超时" in status or "ZMQ" in status)
+                                and (
+                                    "错误" in status
+                                    or "超时" in status
+                                    or "ZMQ" in status
+                                )
                             ):
                                 # 错误状态，不显示延迟
                                 latency_ms = 0.0
@@ -3966,7 +4102,11 @@ class SystemManager(BaseWidget):
                             if (
                                 status
                                 and isinstance(status, str)
-                                and ("错误" in status or "超时" in status or "ZMQ" in status)
+                                and (
+                                    "错误" in status
+                                    or "超时" in status
+                                    or "ZMQ" in status
+                                )
                             ):
                                 # 错误状态，不显示延迟
                                 latency_ms = 0.0
@@ -3980,7 +4120,9 @@ class SystemManager(BaseWidget):
                             total_bandwidth_mbps = 100
 
                         if total_bandwidth_mbps > 0:
-                            bandwidth_percent = (network_download_mbps / total_bandwidth_mbps) * 100
+                            bandwidth_percent = (
+                                network_download_mbps / total_bandwidth_mbps
+                            ) * 100
                             bandwidth_percent = min(bandwidth_percent, 100)
                     except Exception as e:
                         self.logger.debug(f"获取带宽信息失败: {e}", exc_info=True)
@@ -4019,8 +4161,12 @@ class SystemManager(BaseWidget):
                 # 更新Socket缓冲区信息
                 network_subsystem = metrics.get("network_subsystem", {})
                 socket_buffer_info = network_subsystem.get("socket_buffer_info", {})
-                if socket_buffer_info and hasattr(self.unified_monitor_card, "update_socket_buffer_info"):
-                    self.unified_monitor_card.update_socket_buffer_info(socket_buffer_info)
+                if socket_buffer_info and hasattr(
+                    self.unified_monitor_card, "update_socket_buffer_info"
+                ):
+                    self.unified_monitor_card.update_socket_buffer_info(
+                        socket_buffer_info
+                    )
 
             # 4. 硬盘监控卡片
             # SMART数据现在通过EVENT_SMART_STATUS事件更新
@@ -4048,9 +4194,15 @@ class SystemManager(BaseWidget):
                 row = self.process_table.rowCount()
                 self.process_table.insertRow(row)
 
-                self.process_table.setItem(row, 0, QTableWidgetItem(str(proc.get("id", ""))))
-                self.process_table.setItem(row, 1, QTableWidgetItem(proc.get("name", "")))
-                self.process_table.setItem(row, 2, QTableWidgetItem(proc.get("type", "")))
+                self.process_table.setItem(
+                    row, 0, QTableWidgetItem(str(proc.get("id", "")))
+                )
+                self.process_table.setItem(
+                    row, 1, QTableWidgetItem(proc.get("name", ""))
+                )
+                self.process_table.setItem(
+                    row, 2, QTableWidgetItem(proc.get("type", ""))
+                )
                 self.process_table.setItem(
                     row, 3, QTableWidgetItem(f"{proc.get('cpu_percent', 0):.1f}%")
                 )
@@ -4069,7 +4221,9 @@ class SystemManager(BaseWidget):
         except Exception as e:
             self.logger.error("更新进程状态显示失败: %s", e)
 
-    def _update_service_status_from_data(self, metrics: Union[Dict[str, Any], List[Any]]):
+    def _update_service_status_from_data(
+        self, metrics: Union[Dict[str, Any], List[Any]]
+    ):
         """从监控数据更新服务状态显示."""
         try:
             if not self.services_table:
@@ -4121,13 +4275,17 @@ class SystemManager(BaseWidget):
             healthy_count = sum(
                 1
                 for s in services
-                if isinstance(s, dict) and s.get("status") == "运行中" and s.get("health") == "健康"
+                if isinstance(s, dict)
+                and s.get("status") == "运行中"
+                and s.get("health") == "健康"
             )
             total_count = len(services)
 
             # 更新健康度进度条
             if self.health_progress:
-                health_percent = int((healthy_count / total_count * 100) if total_count > 0 else 0)
+                health_percent = int(
+                    (healthy_count / total_count * 100) if total_count > 0 else 0
+                )
                 self.health_progress.setValue(health_percent)
 
             # 更新服务表格
@@ -4135,13 +4293,17 @@ class SystemManager(BaseWidget):
             for service_info in services:
                 # 🔧 新增：确保 service_info 是字典
                 if not isinstance(service_info, dict):
-                    self.logger.warning("跳过非字典类型的服务信息: %s", type(service_info))
+                    self.logger.warning(
+                        "跳过非字典类型的服务信息: %s", type(service_info)
+                    )
                     continue
 
                 row = self.services_table.rowCount()
                 self.services_table.insertRow(row)
 
-                self.services_table.setItem(row, 0, QTableWidgetItem(service_info.get("name", "")))
+                self.services_table.setItem(
+                    row, 0, QTableWidgetItem(service_info.get("name", ""))
+                )
                 self.services_table.setItem(
                     row, 1, QTableWidgetItem(service_info.get("status", ""))
                 )
@@ -4166,7 +4328,9 @@ class SystemManager(BaseWidget):
             if not hasattr(self, "tdx_connectivity_label"):
                 return
 
-            service = self.service_manager.get_service("system_manager_service", silent=True)
+            service = self.service_manager.get_service(
+                "system_manager_service", silent=True
+            )
             if not service:
                 return
 
@@ -4208,6 +4372,7 @@ class SystemManager(BaseWidget):
 
         except Exception as e:
             self.logger.error("更新数据源连通性失败: %s", e)
+
     def _create_system_status_tab(self) -> QWidget:
         """创建系统状态监控子界面（重构版：深色极简，热力图+趋势图）."""
         tab = QWidget()
@@ -4450,7 +4615,9 @@ class SystemManager(BaseWidget):
         # 缩放因子
         adaptive_layout.addWidget(QLabel("缩放因子:"), 0, 0)
         self.global_scale_factor_label = QLabel("--")
-        self.global_scale_factor_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.global_scale_factor_label.setStyleSheet(
+            "font-size: 16px; font-weight: bold;"
+        )
         adaptive_layout.addWidget(self.global_scale_factor_label, 0, 1)
 
         # 建议并发数
@@ -4877,7 +5044,9 @@ class SystemManager(BaseWidget):
                         status_color = "#EF4444"
 
                     card.status_label.setText(status_text)
-                    card.status_label.setStyleSheet(f"font-size: 11px; color: {status_color};")
+                    card.status_label.setStyleSheet(
+                        f"font-size: 11px; color: {status_color};"
+                    )
 
         except Exception as e:
             self.logger.error(f"更新场景健康度卡片失败: {e}")
@@ -5004,6 +5173,7 @@ class SystemManager(BaseWidget):
 
         except Exception as e:
             self.logger.error("更新行情场景失败: %s", e)
+
     def _update_backtest_scenario(self, summary: Dict[str, Any]):
         """更新回测场景."""
         try:
@@ -5013,7 +5183,9 @@ class SystemManager(BaseWidget):
 
             # 更新指标
             if "cpu_percent" in key_metrics:
-                self.backtest_metrics_labels["cpu"].setText(f"{key_metrics['cpu_percent']:.1f}%")
+                self.backtest_metrics_labels["cpu"].setText(
+                    f"{key_metrics['cpu_percent']:.1f}%"
+                )
             if "memory_percent" in key_metrics:
                 self.backtest_metrics_labels["memory"].setText(
                     f"{key_metrics['memory_percent']:.1f}%"
@@ -5122,7 +5294,9 @@ class SystemManager(BaseWidget):
 
             # 指标值
             value_label = QLabel("--")
-            value_label.setStyleSheet("color: #FFF; font-size: 18px; font-weight: bold;")
+            value_label.setStyleSheet(
+                "color: #FFF; font-size: 18px; font-weight: bold;"
+            )
             card_layout.addWidget(value_label)
 
             # 单位
@@ -5339,7 +5513,9 @@ class SystemManager(BaseWidget):
                 self.services_table.insertRow(row)
 
                 # 列0: 服务名称
-                self.services_table.setItem(row, 0, QTableWidgetItem(service["service_name"]))
+                self.services_table.setItem(
+                    row, 0, QTableWidgetItem(service["service_name"])
+                )
 
                 # 列1: 状态
                 status_text = "🟢 在线" if service["online"] else "🔴 离线"
@@ -5356,15 +5532,21 @@ class SystemManager(BaseWidget):
 
                 # 列4: 成功率
                 success_rate = service.get("success_rate", 0.0)
-                self.services_table.setItem(row, 4, QTableWidgetItem(f"{success_rate:.1f}%"))
+                self.services_table.setItem(
+                    row, 4, QTableWidgetItem(f"{success_rate:.1f}%")
+                )
 
                 # 列5: 错误率
                 error_rate = service.get("error_rate", 0.0)
-                self.services_table.setItem(row, 5, QTableWidgetItem(f"{error_rate:.1f}%"))
+                self.services_table.setItem(
+                    row, 5, QTableWidgetItem(f"{error_rate:.1f}%")
+                )
 
                 # 列6: 内存占用
                 memory_mb = service.get("memory_mb", 0.0)
-                self.services_table.setItem(row, 6, QTableWidgetItem(f"{memory_mb:.1f}"))
+                self.services_table.setItem(
+                    row, 6, QTableWidgetItem(f"{memory_mb:.1f}")
+                )
 
                 # 列7: 线程数
                 thread_count = service.get("thread_count", 0)
@@ -5373,7 +5555,9 @@ class SystemManager(BaseWidget):
                 # 列8: 操作按钮
                 restart_btn = QPushButton("🔄 重启")
                 restart_btn.clicked.connect(
-                    lambda checked, name=service["service_name"]: self._restart_service(name)
+                    lambda checked, name=service["service_name"]: self._restart_service(
+                        name
+                    )
                 )
                 self.services_table.setCellWidget(row, 8, restart_btn)
 
@@ -5434,10 +5618,14 @@ class SystemManager(BaseWidget):
 
                 self.show_info(f"正在重启服务 '{service_name}'...")
 
-                result = self.system_service.restart_service(service_name, graceful=True)
+                result = self.system_service.restart_service(
+                    service_name, graceful=True
+                )
                 if result.get("success"):
                     elapsed_time = result.get("elapsed_time", 0)
-                    self.show_info(f"服务 '{service_name}' 重启成功（耗时: {elapsed_time:.1f}s）")
+                    self.show_info(
+                        f"服务 '{service_name}' 重启成功（耗时: {elapsed_time:.1f}s）"
+                    )
                     # 重新检查服务状态
                     self._check_all_services()
                 else:
@@ -5587,7 +5775,9 @@ class SystemManager(BaseWidget):
 
         # API URL
         self.ai_api_url_edit = QLineEdit()
-        self.ai_api_url_edit.setPlaceholderText("https://api.deepseek.com/v1/chat/completions")
+        self.ai_api_url_edit.setPlaceholderText(
+            "https://api.deepseek.com/v1/chat/completions"
+        )
         ai_config_layout.addRow("API URL:", self.ai_api_url_edit)
 
         # Model
@@ -5656,7 +5846,9 @@ class SystemManager(BaseWidget):
             ["指标名称", "P95值", "P99值", "警告阈值", "严重阈值", "样本数"]
         )
         self.thresholds_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.thresholds_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.thresholds_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
         self.thresholds_table.setAlternatingRowColors(True)
         self.thresholds_table.horizontalHeader().setStretchLastSection(True)
         thresholds_layout.addWidget(self.thresholds_table)
@@ -5799,6 +5991,7 @@ class SystemManager(BaseWidget):
         layout.addWidget(self.diagnosis_tabs)
 
         return tab
+
     def _create_process_monitor_tab(self) -> QWidget:
         """创建进程监控子界面（新设计 - 进程列表+整体设备热力图）."""
         tab = QWidget()
@@ -5849,7 +6042,9 @@ class SystemManager(BaseWidget):
 
         # 标题
         title_label = QLabel("📊 整体设备监控")
-        title_label.setStyleSheet("font-size: 14px; font-weight: bold; padding-bottom: 5px;")
+        title_label.setStyleSheet(
+            "font-size: 14px; font-weight: bold; padding-bottom: 5px;"
+        )
         heatmap_layout.addWidget(title_label)
 
         # 创建5个热力图（单行，显示百分比）
@@ -5998,7 +6193,9 @@ class SystemManager(BaseWidget):
 
                 # 列3: CPU%
                 cpu_percent = proc.get("cpu_percent", 0)
-                self.process_table.setItem(row, 3, QTableWidgetItem(f"{cpu_percent:.1f}"))
+                self.process_table.setItem(
+                    row, 3, QTableWidgetItem(f"{cpu_percent:.1f}")
+                )
 
                 # 列4: 内存(MB)
                 memory_mb = proc.get("memory_mb", 0)
@@ -6012,11 +6209,15 @@ class SystemManager(BaseWidget):
 
                 # 列6: 网络接收(MB/s)
                 network_recv = proc.get("network_recv_mbps", 0)
-                self.process_table.setItem(row, 6, QTableWidgetItem(f"{network_recv:.2f}"))
+                self.process_table.setItem(
+                    row, 6, QTableWidgetItem(f"{network_recv:.2f}")
+                )
 
                 # 列7: 网络发送(MB/s)
                 network_send = proc.get("network_send_mbps", 0)
-                self.process_table.setItem(row, 7, QTableWidgetItem(f"{network_send:.2f}"))
+                self.process_table.setItem(
+                    row, 7, QTableWidgetItem(f"{network_send:.2f}")
+                )
 
                 # 列8: 瓶颈点
                 bottleneck = proc.get("bottleneck", "balanced")
@@ -6028,7 +6229,9 @@ class SystemManager(BaseWidget):
                     "balanced": "🟢 均衡",
                 }
                 bottleneck_text = bottleneck_map.get(bottleneck, bottleneck)
-                self.process_table.setItem(row, 8, QTableWidgetItem(str(bottleneck_text)))
+                self.process_table.setItem(
+                    row, 8, QTableWidgetItem(str(bottleneck_text))
+                )
 
         except Exception as e:
             self.logger.error("更新进程表格失败: %s", e)
@@ -6048,15 +6251,23 @@ class SystemManager(BaseWidget):
         process_name_lower = process_name.lower()
 
         # 关键字匹配
-        if any(kw in process_name_lower for kw in ["download", "下载", "fetch", "data_center"]):
+        if any(
+            kw in process_name_lower
+            for kw in ["download", "下载", "fetch", "data_center"]
+        ):
             return "📥 数据下载"
-        elif any(kw in process_name_lower for kw in ["realtime", "实时", "tick", "market_board"]):
+        elif any(
+            kw in process_name_lower
+            for kw in ["realtime", "实时", "tick", "market_board"]
+        ):
             return "📊 实时行情"
         elif any(kw in process_name_lower for kw in ["backtest", "回测", "simulation"]):
             return "🔬 策略回测"
         elif any(kw in process_name_lower for kw in ["strategy", "策略", "editor"]):
             return "✏️ 策略编写"
-        elif any(kw in process_name_lower for kw in ["trading", "交易", "order", "gateway"]):
+        elif any(
+            kw in process_name_lower for kw in ["trading", "交易", "order", "gateway"]
+        ):
             return "💹 实盘交易"
         elif any(kw in process_name_lower for kw in ["monitor", "监控"]):
             return "👁️ 系统监控"
@@ -6101,7 +6312,9 @@ class SystemManager(BaseWidget):
             # 4. 网络速度（转换为百分比）
             network_speed = metrics.get("network_speed", {})
             upload_speed = network_speed.get("upload_speed_kbps", 0) / 1024  # 转MB/s
-            download_speed = network_speed.get("download_speed_kbps", 0) / 1024  # 转MB/s
+            download_speed = (
+                network_speed.get("download_speed_kbps", 0) / 1024
+            )  # 转MB/s
             max_network_speed = max(upload_speed, download_speed)
 
             # 假设千兆网络理论极限100MB/s
@@ -6193,7 +6406,9 @@ class SystemManager(BaseWidget):
                     display_value = str(value)
 
                 self.basic_network_table.setItem(row, 0, QTableWidgetItem(str(key)))
-                self.basic_network_table.setItem(row, 1, QTableWidgetItem(display_value))
+                self.basic_network_table.setItem(
+                    row, 1, QTableWidgetItem(display_value)
+                )
 
         except Exception as e:
             self.logger.error("更新网络诊断表格失败: %s", e)
@@ -6216,7 +6431,9 @@ class SystemManager(BaseWidget):
                     display_value = "✅ 存在" if value else "❌ 不存在"
                 elif key == "size":
                     # 转换字节为MB
-                    size_mb = value / (1024 * 1024) if isinstance(value, (int, float)) else 0
+                    size_mb = (
+                        value / (1024 * 1024) if isinstance(value, (int, float)) else 0
+                    )
                     display_value = f"{size_mb:.2f} MB"
                 else:
                     display_value = str(value)
@@ -6293,15 +6510,21 @@ class SystemManager(BaseWidget):
                 row = self.bottlenecks_table.rowCount()
                 self.bottlenecks_table.insertRow(row)
 
-                self.bottlenecks_table.setItem(row, 0, QTableWidgetItem(bottleneck["type"]))
-                self.bottlenecks_table.setItem(row, 1, QTableWidgetItem(bottleneck["severity"]))
+                self.bottlenecks_table.setItem(
+                    row, 0, QTableWidgetItem(bottleneck["type"])
+                )
+                self.bottlenecks_table.setItem(
+                    row, 1, QTableWidgetItem(bottleneck["severity"])
+                )
                 self.bottlenecks_table.setItem(
                     row, 2, QTableWidgetItem(str(bottleneck["current_value"]))
                 )
                 self.bottlenecks_table.setItem(
                     row, 3, QTableWidgetItem(str(bottleneck["threshold"]))
                 )
-                self.bottlenecks_table.setItem(row, 4, QTableWidgetItem(bottleneck["impact"]))
+                self.bottlenecks_table.setItem(
+                    row, 4, QTableWidgetItem(bottleneck["impact"])
+                )
 
         except Exception as e:
             self.logger.error("更新瓶颈表格失败: %s", e)
@@ -6324,7 +6547,9 @@ class SystemManager(BaseWidget):
             # 更新错误详情表格
             if hasattr(self, "error_details_table") and self.error_details_table:
                 self.error_details_table.setRowCount(0)
-                error_patterns = log_analysis.get("error_patterns", [])[:20]  # 最多显示20条
+                error_patterns = log_analysis.get("error_patterns", [])[
+                    :20
+                ]  # 最多显示20条
                 for error in error_patterns:
                     row = self.error_details_table.rowCount()
                     self.error_details_table.insertRow(row)
@@ -6364,7 +6589,9 @@ class SystemManager(BaseWidget):
                         row, 1, QTableWidgetItem(suggestion["description"])
                     )
                     self.fix_suggestions_table.setItem(
-                        row, 2, QTableWidgetItem("是" if suggestion["auto_fixable"] else "否")
+                        row,
+                        2,
+                        QTableWidgetItem("是" if suggestion["auto_fixable"] else "否"),
                     )
                     self.fix_suggestions_table.setItem(
                         row, 3, QTableWidgetItem(suggestion["risk_level"])
@@ -6372,6 +6599,7 @@ class SystemManager(BaseWidget):
 
         except Exception as e:
             self.logger.error("更新建议失败: %s", e)
+
     def _create_tools_tab(self) -> QWidget:
         """创建工具集合子界面."""
         tab = QWidget()
@@ -6400,9 +6628,7 @@ class SystemManager(BaseWidget):
         result_layout.setContentsMargins(5, 5, 5, 5)  # 减小布局边距
 
         # 设置统一样式（更小更紧凑）
-        title_style = (
-            "font-size: 10px; color: #888; padding: 0px; margin: 0px;"  # 字体缩小，去除padding
-        )
+        title_style = "font-size: 10px; color: #888; padding: 0px; margin: 0px;"  # 字体缩小，去除padding
         value_style = "font-size: 12px; color: #0F0; font-weight: bold; padding: 0px; margin: 0px;"  # 字体缩小，去除padding
 
         # 下载速度
@@ -6496,9 +6722,13 @@ class SystemManager(BaseWidget):
         # 表单布局
         form_layout = QFormLayout()
         # 🔧 设置字段增长策略，让输入框占据更多空间
-        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
         # 设置标签右对齐，视觉上更整洁
-        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form_layout.setLabelAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         # 🔧 关键修复：增加垂直间距，防止输入框放大后互相遮挡
         form_layout.setVerticalSpacing(15)  # 默认6px，增加到15px
         form_layout.setHorizontalSpacing(10)  # 标签和字段之间的间距
@@ -6562,7 +6792,9 @@ class SystemManager(BaseWidget):
         tdx_layout.setContentsMargins(0, 0, 0, 0)  # 🔧 去掉边距
 
         self.reader_tdx_path_edit = QLineEdit()
-        self.reader_tdx_path_edit.setPlaceholderText("只需填写根目录，例如: C:\\new_tdx")
+        self.reader_tdx_path_edit.setPlaceholderText(
+            "只需填写根目录，例如: C:\\new_tdx"
+        )
         # 🔧 关键修复：设置输入框最小高度，确保内部文字完整显示
         self.reader_tdx_path_edit.setMinimumHeight(32)
         self.reader_tdx_path_edit.setMinimumWidth(300)
@@ -6698,7 +6930,9 @@ class SystemManager(BaseWidget):
         if dir_path and self.reader_tdx_path_edit:
             self.reader_tdx_path_edit.setText(dir_path)
 
-    def _update_reader_progress(self, current: int, total: int, info: str, success: bool):
+    def _update_reader_progress(
+        self, current: int, total: int, info: str, success: bool
+    ):
         """更新读取器进度（槽函数，在主线程中执行）.
 
         Args:
@@ -6716,7 +6950,9 @@ class SystemManager(BaseWidget):
             # 更新详细信息
             if self.reader_detail_label:
                 status_icon = "✅" if success else "❌"
-                self.reader_detail_label.setText(f"{status_icon} {current}/{total} - {info}")
+                self.reader_detail_label.setText(
+                    f"{status_icon} {current}/{total} - {info}"
+                )
 
             # 更新状态标签
             if self.reader_status_label:
@@ -6750,7 +6986,9 @@ class SystemManager(BaseWidget):
                 if was_stopped:
                     message = f"已停止：已完成 {success_count + fail_count}/{total_tasks}，成功 {success_count}，失败 {fail_count}"
                 else:
-                    message = f"完成：成功 {success_count}/{total_tasks}，失败 {fail_count}"
+                    message = (
+                        f"完成：成功 {success_count}/{total_tasks}，失败 {fail_count}"
+                    )
 
                 if self.reader_status_label:
                     self.reader_status_label.setText(f"状态: {message}")
@@ -6947,7 +7185,10 @@ class SystemManager(BaseWidget):
                         # 阶段节点日志（输出到Terminal）
                         stage_logger.info(
                             "📍 TDX数据读取开始",
-                            extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                            extra={
+                                "log_type": "STAGE_NODE",
+                                "scenario": "tdx_data_read",
+                            },
                         )
 
                         # DEBUG日志（只写入事件日志文件）
@@ -6976,23 +7217,37 @@ class SystemManager(BaseWidget):
                             if not self.system_service:
                                 self.logger.error(
                                     "[TDX-READ] ❌ 系统管理服务不可用",
-                                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                    extra={
+                                        "log_type": "ALERT",
+                                        "scenario": "tdx_data_read",
+                                    },
                                 )
                                 stage_logger.error(
                                     "❌ 系统管理服务不可用",
-                                    extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                                    extra={
+                                        "log_type": "STAGE_NODE",
+                                        "scenario": "tdx_data_read",
+                                    },
                                 )
                                 return
 
                             self.logger.debug(
                                 "[TDX-READ] 调用系统服务read_tdx_data方法...",
-                                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "tdx_data_read",
+                                },
                             )
-                            result = self.system_service.read_tdx_data(config, progress_callback)
+                            result = self.system_service.read_tdx_data(
+                                config, progress_callback
+                            )
                             elapsed = time.time() - start_time
                             self.logger.debug(
                                 f"[TDX-READ] 系统服务read_tdx_data方法调用完成: 耗时={elapsed:.2f}s",
-                                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "tdx_data_read",
+                                },
                             )
 
                             # 记录结果
@@ -7005,35 +7260,60 @@ class SystemManager(BaseWidget):
                                 self.logger.debug(
                                     f"[TDX-READ] 读取结果详情: completed={completed}, total={total}, "
                                     f"success_count={success_count}, failed_count={failed_count}",
-                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "tdx_data_read",
+                                    },
                                 )
                                 self.logger.info(
                                     f"[TDX-READ] ✅ 读取完成: 完成={completed}/{total}, 成功={success_count}, 失败={failed_count}, 耗时={elapsed:.2f}s",
-                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "tdx_data_read",
+                                    },
                                 )
                                 if failed_count > 0:
                                     self.logger.warning(
                                         f"[TDX-READ] ⚠️ 读取过程中有{failed_count}个文件失败",
-                                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                        extra={
+                                            "log_type": "ALERT",
+                                            "scenario": "tdx_data_read",
+                                        },
                                     )
                                 stage_logger.info(
                                     f"✅ TDX数据读取完成: 完成={completed}/{total}, 成功={success_count}, 失败={failed_count}, 耗时={elapsed:.2f}s",
-                                    extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                                    extra={
+                                        "log_type": "STAGE_NODE",
+                                        "scenario": "tdx_data_read",
+                                    },
                                 )
                             else:
-                                msg = result.get("message", "读取失败") if result else "读取失败"
+                                msg = (
+                                    result.get("message", "读取失败")
+                                    if result
+                                    else "读取失败"
+                                )
                                 elapsed = time.time() - start_time
                                 self.logger.warning(
                                     f"[TDX-READ] ⚠️ 读取失败: {msg}, 耗时={elapsed:.2f}s",
-                                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                    extra={
+                                        "log_type": "ALERT",
+                                        "scenario": "tdx_data_read",
+                                    },
                                 )
                                 self.logger.debug(
                                     f"[TDX-READ] 失败结果详情: {result}",
-                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                    extra={
+                                        "log_type": "SYSTEM",
+                                        "scenario": "tdx_data_read",
+                                    },
                                 )
                                 stage_logger.warning(
                                     f"⚠️ TDX数据读取失败: {msg}",
-                                    extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                                    extra={
+                                        "log_type": "STAGE_NODE",
+                                        "scenario": "tdx_data_read",
+                                    },
                                 )
 
                             # 通过Signal发送完成状态
@@ -7043,21 +7323,33 @@ class SystemManager(BaseWidget):
                             elapsed = time.time() - start_time
                             self.logger.debug(
                                 f"[TDX-READ] 异常类型: {type(e).__name__}, 异常详情: {str(e)}, 耗时={elapsed:.2f}s",
-                                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "tdx_data_read",
+                                },
                             )
                             self.logger.error(
                                 f"[TDX-READ] ❌ 读取TDX数据失败: {e}, 耗时={elapsed:.2f}s",
                                 exc_info=True,
-                                extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                extra={
+                                    "log_type": "ALERT",
+                                    "scenario": "tdx_data_read",
+                                },
                             )
                             self.logger.critical(
                                 f"[TDX-READ] 🔥 读取TDX数据严重失败，可能影响数据质量: {e}, 耗时={elapsed:.2f}s",
                                 exc_info=True,
-                                extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                extra={
+                                    "log_type": "ALERT",
+                                    "scenario": "tdx_data_read",
+                                },
                             )
                             stage_logger.error(
                                 f"❌ TDX数据读取异常: {e}",
-                                extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                                extra={
+                                    "log_type": "STAGE_NODE",
+                                    "scenario": "tdx_data_read",
+                                },
                             )
                             # 发送错误结果
                             self.reader_finished_signal.emit(
@@ -7076,14 +7368,19 @@ class SystemManager(BaseWidget):
                         if not self.system_service:
                             self.logger.error(
                                 "[TDX-READ] ❌ 系统管理服务不可用（降级模式）",
-                                extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                extra={
+                                    "log_type": "ALERT",
+                                    "scenario": "tdx_data_read",
+                                },
                             )
                             return
                         self.logger.debug(
                             "[TDX-READ] 降级模式：调用系统服务read_tdx_data方法",
                             extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                         )
-                        result = self.system_service.read_tdx_data(config, progress_callback)
+                        result = self.system_service.read_tdx_data(
+                            config, progress_callback
+                        )
                         elapsed = time.time() - start_time
                         self.logger.info(
                             f"[TDX-READ] TDX数据读取完成（降级模式）: 耗时={elapsed:.2f}s",
@@ -7122,6 +7419,7 @@ class SystemManager(BaseWidget):
                 self.reader_status_label.setText("状态: 启动失败")
 
             self.show_error(f"启动失败: {e}")
+
     def _test_bandwidth_full(self):
         """测试服务商带宽（完整测试）."""
         try:
@@ -7159,17 +7457,26 @@ class SystemManager(BaseWidget):
                             # 阶段节点日志（输出到Terminal）
                             stage_logger.info(
                                 "📍 手动测速开始: 正在连接到服务器...",
-                                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "STAGE_NODE",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
 
                             # 详细日志（只写入事件日志文件）
                             self.logger.debug(
                                 "[MANUAL-SPEEDTEST] 开始手动测速流程: 测试类型=full_bandwidth",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
                             self.logger.info(
                                 "[MANUAL-SPEEDTEST] ℹ️ 开始手动测速流程: 测试类型=full_bandwidth",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
 
                             # 执行测速逻辑
@@ -7199,7 +7506,10 @@ class SystemManager(BaseWidget):
                     if not service:
                         self.logger.debug(
                             "[MANUAL-SPEEDTEST] 系统服务获取失败: 服务不存在",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "manual_speedtest",
+                            },
                         )
                         self.logger.error(
                             "[MANUAL-SPEEDTEST] ❌ 无法获取系统服务",
@@ -7226,7 +7536,10 @@ class SystemManager(BaseWidget):
                         if ports_file.exists():
                             self.logger.debug(
                                 f"[MANUAL-SPEEDTEST] 读取端口配置文件: {ports_file}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
                             with open(ports_file, "r", encoding="utf-8") as f:
                                 ports_data = json.load(f)
@@ -7234,17 +7547,26 @@ class SystemManager(BaseWidget):
                             port = int(ports_data.get("query_rep", port))
                             self.logger.debug(
                                 f"[MANUAL-SPEEDTEST] 端口配置读取成功: addr={addr}, port={port}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
                         else:
                             self.logger.debug(
                                 f"[MANUAL-SPEEDTEST] 端口配置文件不存在，使用默认值: addr={addr}, port={port}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
                     except Exception as e:
                         self.logger.debug(
                             f"[MANUAL-SPEEDTEST] 读取端口配置失败: {e}，使用默认值: addr={addr}, port={port}",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "manual_speedtest",
+                            },
                         )
                         pass  # 使用默认值
 
@@ -7256,7 +7578,9 @@ class SystemManager(BaseWidget):
                     context = zmq.Context()
                     socket = context.socket(zmq.REQ)
                     socket.connect(f"tcp://{addr}:{port}")
-                    socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5秒超时（启动请求应该立即返回）
+                    socket.setsockopt(
+                        zmq.RCVTIMEO, 5000
+                    )  # 5秒超时（启动请求应该立即返回）
 
                     self.logger.debug(
                         "[MANUAL-SPEEDTEST] 发送测试启动请求...",
@@ -7275,7 +7599,10 @@ class SystemManager(BaseWidget):
                     if not isinstance(response, dict):
                         self.logger.debug(
                             "[MANUAL-SPEEDTEST] 启动响应格式错误: 不是字典类型",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "manual_speedtest",
+                            },
                         )
                         self.logger.error(
                             "[MANUAL-SPEEDTEST] ❌ 返回数据格式错误",
@@ -7290,7 +7617,10 @@ class SystemManager(BaseWidget):
                         error_msg = response.get("message", "测试启动失败")
                         self.logger.debug(
                             f"[MANUAL-SPEEDTEST] 测试启动失败: status={status}, message={error_msg}",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "manual_speedtest",
+                            },
                         )
                         self.logger.error(
                             f"[MANUAL-SPEEDTEST] ❌ 测试启动失败: {error_msg}",
@@ -7321,7 +7651,10 @@ class SystemManager(BaseWidget):
                         try:
                             self.logger.debug(
                                 f"[MANUAL-SPEEDTEST] 轮询第{attempt + 1}次: 查询测试结果...",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
                             socket = context.socket(zmq.REQ)
                             socket.connect(f"tcp://{addr}:{port}")
@@ -7331,11 +7664,16 @@ class SystemManager(BaseWidget):
                             result_response = socket.recv_json()
                             # 确保result_response是dict类型
                             if not isinstance(result_response, dict):
-                                self.logger.warning(f"[MANUAL-SPEEDTEST] 收到非dict响应: {type(result_response)}")
+                                self.logger.warning(
+                                    f"[MANUAL-SPEEDTEST] 收到非dict响应: {type(result_response)}"
+                                )
                                 continue
                             self.logger.debug(
                                 f"[MANUAL-SPEEDTEST] 轮询第{attempt + 1}次响应: status={result_response.get('status', 'unknown')}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
 
                             socket.close()
@@ -7373,7 +7711,9 @@ class SystemManager(BaseWidget):
                                                     "scenario": "manual_speedtest",
                                                 },
                                             )
-                                            self.bandwidth_test_error_signal.emit(error_msg)
+                                            self.bandwidth_test_error_signal.emit(
+                                                error_msg
+                                            )
                                             return
 
                                         # download_mbps不为None表示测试完成（包括失败的情况，-1表示失败）
@@ -7392,7 +7732,9 @@ class SystemManager(BaseWidget):
                                                         "scenario": "manual_speedtest",
                                                     },
                                                 )
-                                                self.bandwidth_test_error_signal.emit(error_msg)
+                                                self.bandwidth_test_error_signal.emit(
+                                                    error_msg
+                                                )
                                             else:
                                                 self.logger.info(
                                                     f"✅ 获取到带宽测试结果：{full_test}",
@@ -7402,18 +7744,26 @@ class SystemManager(BaseWidget):
                                                     },
                                                 )
                                                 # 使用信号发送结果（线程安全）
-                                                self.bandwidth_test_success_signal.emit(full_test)
+                                                self.bandwidth_test_success_signal.emit(
+                                                    full_test
+                                                )
                                             return
                                         # 否则继续轮询（status="未测试"或download_mbps=None）
 
                         except Exception as poll_error:
                             self.logger.debug(
                                 f"[MANUAL-SPEEDTEST] 轮询第{attempt + 1}次失败: {type(poll_error).__name__}: {str(poll_error)}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "SYSTEM",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
                             self.logger.warning(
                                 f"[MANUAL-SPEEDTEST] ⚠️ 轮询第{attempt + 1}次失败: {str(poll_error)}",
-                                extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                                extra={
+                                    "log_type": "ALERT",
+                                    "scenario": "manual_speedtest",
+                                },
                             )
                             continue
 
@@ -7427,11 +7777,14 @@ class SystemManager(BaseWidget):
                         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                     )
                     context.term()
-                    self.bandwidth_test_error_signal.emit("测试超时（69秒）或网络不稳定")
+                    self.bandwidth_test_error_signal.emit(
+                        "测试超时（69秒）或网络不稳定"
+                    )
 
                 except zmq.Again:
                     self.logger.error(
-                        "连接超时", extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                        "连接超时",
+                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                     )
                     self.bandwidth_test_error_signal.emit("连接超时")
                 except Exception as e:
@@ -7448,7 +7801,10 @@ class SystemManager(BaseWidget):
                         stage_logger = logging.getLogger("task.manual_speedtest")
                         stage_logger.info(
                             "❌ 手动测速失败",
-                            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                            extra={
+                                "log_type": "STAGE_NODE",
+                                "scenario": "manual_speedtest",
+                            },
                         )
 
             test_thread = Thread(target=run_test, daemon=True)
@@ -7497,7 +7853,10 @@ class SystemManager(BaseWidget):
                     socket.close()
                     context.term()
 
-                    if isinstance(response, dict) and response.get("status") == "success":
+                    if (
+                        isinstance(response, dict)
+                        and response.get("status") == "success"
+                    ):
                         self.logger.info("延迟监控重试成功")
                     else:
                         self.logger.warning(f"延迟监控重试失败: {response}")
@@ -7629,7 +7988,8 @@ class SystemManager(BaseWidget):
 
                         # 调用扫描，传入进度回调
                         result = self.service.scan_corrupted_files(
-                            auto_delete=self.auto_delete, progress_callback=progress_callback
+                            auto_delete=self.auto_delete,
+                            progress_callback=progress_callback,
                         )
                         self.finished_signal.emit(result)
                     except Exception as e:
@@ -7703,7 +8063,9 @@ class SystemManager(BaseWidget):
                     )
 
                 if self.cleaner_detail_text:
-                    self.cleaner_detail_text.append(f"⚠️ 发现 {len(corrupted_files)} 个损坏文件：\n")
+                    self.cleaner_detail_text.append(
+                        f"⚠️ 发现 {len(corrupted_files)} 个损坏文件：\n"
+                    )
 
                     # 只显示前50个文件
                     display_count = min(len(corrupted_files), 50)
@@ -7719,7 +8081,9 @@ class SystemManager(BaseWidget):
                 if self.cleaner_clean_btn:
                     self.cleaner_clean_btn.setEnabled(True)
 
-                self.show_warning(f"发现 {len(corrupted_files)} 个损坏文件，可以点击清理按钮删除")
+                self.show_warning(
+                    f"发现 {len(corrupted_files)} 个损坏文件，可以点击清理按钮删除"
+                )
 
         except Exception as e:
             self.logger.error("扫描损坏文件失败: %s", e)
@@ -7892,7 +8256,9 @@ class SystemManager(BaseWidget):
 
             # 更新界面
             if self.cleaner_result_label:
-                self.cleaner_result_label.setText(f"状态: ✅ 已清理 {len(deleted_files)} 个文件")
+                self.cleaner_result_label.setText(
+                    f"状态: ✅ 已清理 {len(deleted_files)} 个文件"
+                )
 
             if self.cleaner_detail_text:
                 self.cleaner_detail_text.append(
@@ -7925,6 +8291,7 @@ class SystemManager(BaseWidget):
             # 恢复扫描按钮
             if self.cleaner_scan_btn:
                 self.cleaner_scan_btn.setEnabled(True)
+
     def _on_clean_progress(self, current: int, total: int, message: str):
         """清理进度回调（在主线程执行）.
 
@@ -7985,7 +8352,9 @@ class SystemManager(BaseWidget):
             result = self.system_service.get_all_configs()
 
             if not result.get("success"):
-                self.logger.warning("获取配置失败，使用默认值: %s", result.get("message"))
+                self.logger.warning(
+                    "获取配置失败，使用默认值: %s", result.get("message")
+                )
                 self._load_default_config()
                 return
 
@@ -8060,7 +8429,9 @@ class SystemManager(BaseWidget):
                 api_key = ai_config.get("api_key", "")
                 self.ai_api_key_edit.setText(api_key)
             if hasattr(self, "ai_api_url_edit") and self.ai_api_url_edit:
-                api_url = ai_config.get("api_url", "https://api.deepseek.com/v1/chat/completions")
+                api_url = ai_config.get(
+                    "api_url", "https://api.deepseek.com/v1/chat/completions"
+                )
                 self.ai_api_url_edit.setText(api_url)
             if hasattr(self, "ai_model_combo") and self.ai_model_combo:
                 model = ai_config.get("model", "deepseek-chat")
@@ -8108,7 +8479,6 @@ class SystemManager(BaseWidget):
         """加载默认配置."""
         try:
             # 数据中心默认配置
-            root_dir = get_root()
             if self.tdx_path_edit:
                 self.tdx_path_edit.setText("")
             if self.cache_dir_edit:
@@ -8134,7 +8504,9 @@ class SystemManager(BaseWidget):
             if hasattr(self, "ai_api_key_edit") and self.ai_api_key_edit:
                 self.ai_api_key_edit.setText("")
             if hasattr(self, "ai_api_url_edit") and self.ai_api_url_edit:
-                self.ai_api_url_edit.setText("https://api.deepseek.com/v1/chat/completions")
+                self.ai_api_url_edit.setText(
+                    "https://api.deepseek.com/v1/chat/completions"
+                )
             if hasattr(self, "ai_model_combo") and self.ai_model_combo:
                 self.ai_model_combo.setCurrentText("deepseek-chat")
             if hasattr(self, "ai_max_tokens_spin") and self.ai_max_tokens_spin:
@@ -8169,7 +8541,9 @@ class SystemManager(BaseWidget):
             api_key = ai_config.get("api_key", "")
 
             if api_key:
-                masked_key = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+                masked_key = (
+                    f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+                )
                 self.logger.info(f"✅ 配置文件验证: API Key = {masked_key}")
             else:
                 self.logger.warning("⚠️ 配置文件中API Key为空")
@@ -8204,8 +8578,12 @@ class SystemManager(BaseWidget):
                 msg_parts = []
                 msg_parts.append("配置诊断报告")
                 msg_parts.append("=" * 50)
-                msg_parts.append(f"\n配置文件路径:\n{diagnosis.get('config_file_path')}")
-                msg_parts.append(f"\n配置文件存在: {diagnosis.get('config_file_exists')}")
+                msg_parts.append(
+                    f"\n配置文件路径:\n{diagnosis.get('config_file_path')}"
+                )
+                msg_parts.append(
+                    f"\n配置文件存在: {diagnosis.get('config_file_exists')}"
+                )
 
                 # 文件中的AI配置
                 if diagnosis.get("config_file_content"):
@@ -8216,12 +8594,16 @@ class SystemManager(BaseWidget):
                     if api_key:
                         # 显示API Key的前后各4位
                         masked_key = (
-                            f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+                            f"{api_key[:4]}...{api_key[-4:]}"
+                            if len(api_key) > 8
+                            else "***"
                         )
                         msg_parts.append(f"  - API Key: {masked_key}")
                     else:
                         msg_parts.append("  - API Key: 未设置")
-                    msg_parts.append(f"  - API URL: {ai_config.get('api_url', '未设置')}")
+                    msg_parts.append(
+                        f"  - API URL: {ai_config.get('api_url', '未设置')}"
+                    )
                     msg_parts.append(f"  - 模型: {ai_config.get('model', '未设置')}")
                 else:
                     msg_parts.append("\n文件中的AI配置: 无（文件不存在或为空）")
@@ -8232,7 +8614,9 @@ class SystemManager(BaseWidget):
                 msg_parts.append(
                     f"  - API Key: {'已设置' if mem_config.get('ai_api_key_set') else '未设置'}"
                 )
-                msg_parts.append(f"  - API URL: {mem_config.get('ai_api_url', '未设置')}")
+                msg_parts.append(
+                    f"  - API URL: {mem_config.get('ai_api_url', '未设置')}"
+                )
                 msg_parts.append(f"  - 模型: {mem_config.get('ai_model', '未设置')}")
 
                 # AI服务状态
@@ -8241,7 +8625,9 @@ class SystemManager(BaseWidget):
                 msg_parts.append(f"  - 服务存在: {ai_status.get('exists')}")
                 if ai_status.get("exists"):
                     msg_parts.append(f"  - 已初始化: {ai_status.get('initialized')}")
-                    msg_parts.append(f"  - API Key配置: {ai_status.get('api_key_configured')}")
+                    msg_parts.append(
+                        f"  - API Key配置: {ai_status.get('api_key_configured')}"
+                    )
                 else:
                     msg_parts.append("  - 服务未注册")
 
@@ -8298,7 +8684,9 @@ class SystemManager(BaseWidget):
                     if cache_path.is_absolute():
                         try:
                             rel_path = cache_path.relative_to(root_dir)
-                            data_center_config["cache_dir"] = str(rel_path).replace("\\", "/")
+                            data_center_config["cache_dir"] = str(rel_path).replace(
+                                "\\", "/"
+                            )
                         except ValueError:
                             # 无法转换为相对路径，保存绝对路径（向后兼容）
                             data_center_config["cache_dir"] = str(cache_path.resolve())
@@ -8314,7 +8702,9 @@ class SystemManager(BaseWidget):
                     if data_path.is_absolute():
                         try:
                             rel_path = data_path.relative_to(root_dir)
-                            data_center_config["data_dir"] = str(rel_path).replace("\\", "/")
+                            data_center_config["data_dir"] = str(rel_path).replace(
+                                "\\", "/"
+                            )
                         except ValueError:
                             # 无法转换为相对路径，保存绝对路径（向后兼容）
                             data_center_config["data_dir"] = str(data_path.resolve())
@@ -8322,7 +8712,9 @@ class SystemManager(BaseWidget):
                         # 已经是相对路径，直接保存（确保使用正斜杠）
                         data_center_config["data_dir"] = data_dir.replace("\\", "/")
             if self.base_date_edit:
-                data_center_config["base_date"] = self.base_date_edit.date().toString("yyyy-MM-dd")
+                data_center_config["base_date"] = self.base_date_edit.date().toString(
+                    "yyyy-MM-dd"
+                )
             if self.max_workers_spin:
                 data_center_config["max_workers"] = self.max_workers_spin.value()
             if self.timeout_spin:
@@ -8332,7 +8724,9 @@ class SystemManager(BaseWidget):
             if self.watcher_check:
                 data_center_config["enable_watcher"] = self.watcher_check.isChecked()
             if self.watcher_interval_spin:
-                data_center_config["watcher_interval"] = self.watcher_interval_spin.value()
+                data_center_config["watcher_interval"] = (
+                    self.watcher_interval_spin.value()
+                )
 
             # 收集AI配置数据
             ai_config = {}
@@ -8373,7 +8767,9 @@ class SystemManager(BaseWidget):
 
             # 保存数据中心配置
             if data_center_config:
-                result = self.system_service.update_config("data_center", data_center_config)
+                result = self.system_service.update_config(
+                    "data_center", data_center_config
+                )
                 if result.get("success"):
                     success_count += 1
                     self.logger.info("数据中心配置保存成功")
@@ -8381,7 +8777,10 @@ class SystemManager(BaseWidget):
                     fail_messages.append(f"数据中心: {result.get('message')}")
 
             # 保存监控频率配置
-            if hasattr(self, "monitoring_interval_spin") and self.monitoring_interval_spin:
+            if (
+                hasattr(self, "monitoring_interval_spin")
+                and self.monitoring_interval_spin
+            ):
                 interval = self.monitoring_interval_spin.value()
                 try:
                     result = self.system_service.set_monitoring_interval(interval)
@@ -8405,7 +8804,9 @@ class SystemManager(BaseWidget):
                 if result.get("success"):
                     success_count += 1
                     ai_service_reloaded = result.get("ai_reloaded", False)
-                    self.logger.info(f"AI配置保存成功，服务重载状态: {ai_service_reloaded}")
+                    self.logger.info(
+                        f"AI配置保存成功，服务重载状态: {ai_service_reloaded}"
+                    )
 
                     # 验证配置文件
                     self._verify_config_file()
@@ -8467,7 +8868,9 @@ class SystemManager(BaseWidget):
         root_dir = get_root()
         # 🔧 默认从项目根目录的 data/cache 开始
         default_dir = str(root_dir / "data" / "cache")
-        dir_path = QFileDialog.getExistingDirectory(self, "选择品种缓存目录", default_dir)
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "选择品种缓存目录", default_dir
+        )
         if dir_path and self.cache_dir_edit:
             dir_path_obj = Path(dir_path)
             # 🔧 尝试转换为相对路径显示（相对于项目根目录）
@@ -8483,7 +8886,9 @@ class SystemManager(BaseWidget):
         root_dir = get_root()
         # 🔧 默认从项目根目录的 data/kline 开始
         default_dir = str(root_dir / "data" / "kline")
-        dir_path = QFileDialog.getExistingDirectory(self, "选择K线数据目录", default_dir)
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "选择K线数据目录", default_dir
+        )
         if dir_path and self.data_dir_edit:
             dir_path_obj = Path(dir_path)
             # 🔧 尝试转换为相对路径显示（相对于项目根目录）
@@ -8712,6 +9117,7 @@ class SystemManager(BaseWidget):
         """获取磁盘曲线颜色."""
         colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#98D8C8"]
         return colors[index % len(colors)]
+
     def _create_temperature_chart(self, title: str):
         """创建温度折线图（CPU/GPU/硬盘）."""
         chart_widget = pg.GraphicsLayoutWidget()
@@ -8727,13 +9133,17 @@ class SystemManager(BaseWidget):
         # 添加温度警戒线
         # 高温警戒线 (70°C) - 黄色虚线
         warning_line = pg.InfiniteLine(
-            pos=70, angle=0, pen=pg.mkPen(color="#FFA500", width=1, style=Qt.PenStyle.DashLine)
+            pos=70,
+            angle=0,
+            pen=pg.mkPen(color="#FFA500", width=1, style=Qt.PenStyle.DashLine),
         )
         plot.addItem(warning_line)
 
         # 临界温度线 (85°C) - 红色虚线
         critical_line = pg.InfiniteLine(
-            pos=85, angle=0, pen=pg.mkPen(color="#FF0000", width=1, style=Qt.PenStyle.DashLine)
+            pos=85,
+            angle=0,
+            pen=pg.mkPen(color="#FF0000", width=1, style=Qt.PenStyle.DashLine),
         )
         plot.addItem(critical_line)
 
@@ -8783,7 +9193,9 @@ class SystemManager(BaseWidget):
         dimension_layout.setSpacing(1)
 
         dim_title = QLabel("当前瓶颈")
-        dim_title.setStyleSheet(DashboardTheme.get_subtitle_style(DashboardTheme.text_secondary))
+        dim_title.setStyleSheet(
+            DashboardTheme.get_subtitle_style(DashboardTheme.text_secondary)
+        )
         dimension_layout.addWidget(dim_title)
 
         self.bottleneck_dimension_label = QLabel("均衡")
@@ -8805,7 +9217,9 @@ class SystemManager(BaseWidget):
         suggestion_layout.setSpacing(1)
 
         sugg_title = QLabel("优化建议")
-        sugg_title.setStyleSheet(DashboardTheme.get_subtitle_style(DashboardTheme.text_secondary))
+        sugg_title.setStyleSheet(
+            DashboardTheme.get_subtitle_style(DashboardTheme.text_secondary)
+        )
         suggestion_layout.addWidget(sugg_title)
 
         self.bottleneck_suggestion_label = QLabel("系统运行正常")
@@ -8827,7 +9241,9 @@ class SystemManager(BaseWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         # 第1行：CPU、内存、磁盘I/O、网络速度
-        self.metric_card_cpu = MetricCard(title="CPU使用率", unit="%", color=DashboardTheme.cpu)
+        self.metric_card_cpu = MetricCard(
+            title="CPU使用率", unit="%", color=DashboardTheme.cpu
+        )
         self.metric_card_memory = MetricCard(
             title="内存使用率", unit="%", color=DashboardTheme.memory
         )
@@ -8956,7 +9372,9 @@ class SystemManager(BaseWidget):
 
         self.bottleneck_suggestion_label = QLabel("系统运行正常")
         self.bottleneck_suggestion_label.setWordWrap(True)
-        self.bottleneck_suggestion_label.setStyleSheet("font-size: 12px; color: #E2E8F0;")
+        self.bottleneck_suggestion_label.setStyleSheet(
+            "font-size: 12px; color: #E2E8F0;"
+        )
         suggestion_layout.addWidget(self.bottleneck_suggestion_label)
 
         layout.addWidget(suggestion_container, 1)  # 建议占更多空间
@@ -9004,8 +9422,12 @@ class SystemManager(BaseWidget):
 
             # 温度值
             temp_label = QLabel("--°C")
-            temp_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #51CF66;")
-            temp_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            temp_label.setStyleSheet(
+                "font-size: 14px; font-weight: bold; color: #51CF66;"
+            )
+            temp_label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             card_layout.addWidget(temp_label)
 
             # 状态图标
@@ -9032,11 +9454,15 @@ class SystemManager(BaseWidget):
         layout.setSpacing(10)
 
         # 重映射扇区卡片
-        self.smart_reallocated_card = MetricCard(title="重映射扇区", unit="个", color="#FF4444")
+        self.smart_reallocated_card = MetricCard(
+            title="重映射扇区", unit="个", color="#FF4444"
+        )
         layout.addWidget(self.smart_reallocated_card)
 
         # 待映射扇区卡片
-        self.smart_pending_card = MetricCard(title="待映射扇区", unit="个", color="#FF8800")
+        self.smart_pending_card = MetricCard(
+            title="待映射扇区", unit="个", color="#FF8800"
+        )
         layout.addWidget(self.smart_pending_card)
 
         return widget
@@ -9262,7 +9688,11 @@ class SystemManager(BaseWidget):
 
             # 更新负载均衡卡片（CPU负载）
             if hasattr(self, "metric_card_load_avg"):
-                load_avg = metrics.get("load_average", [0])[0] if metrics.get("load_average") else 0
+                load_avg = (
+                    metrics.get("load_average", [0])[0]
+                    if metrics.get("load_average")
+                    else 0
+                )
                 self.metric_card_load_avg.update_value(load_avg)
 
         except Exception as e:
@@ -9318,14 +9748,22 @@ class SystemManager(BaseWidget):
                     self.system_status_history["disk_io"][write_key] = deque(maxlen=100)
 
                 # 更新数据
-                self.system_status_history["disk_io"][read_key].append((current_time, read_speed))
-                self.system_status_history["disk_io"][write_key].append((current_time, write_speed))
+                self.system_status_history["disk_io"][read_key].append(
+                    (current_time, read_speed)
+                )
+                self.system_status_history["disk_io"][write_key].append(
+                    (current_time, write_speed)
+                )
 
                 # 更新曲线
-                times_r, values_r = zip(*self.system_status_history["disk_io"][read_key])
+                times_r, values_r = zip(
+                    *self.system_status_history["disk_io"][read_key]
+                )
                 self.disk_io_chart.curves_ref[read_key].setData(times_r, values_r)
 
-                times_w, values_w = zip(*self.system_status_history["disk_io"][write_key])
+                times_w, values_w = zip(
+                    *self.system_status_history["disk_io"][write_key]
+                )
                 self.disk_io_chart.curves_ref[write_key].setData(times_w, values_w)
 
         except Exception as e:
@@ -9342,13 +9780,17 @@ class SystemManager(BaseWidget):
             current_time = time.time()
 
             # 更新上传曲线
-            self.system_status_history["network"]["upload"].append((current_time, upload))
+            self.system_status_history["network"]["upload"].append(
+                (current_time, upload)
+            )
             if self.system_status_history["network"]["upload"]:
                 times, values = zip(*self.system_status_history["network"]["upload"])
                 self.network_speed_chart.upload_curve.setData(times, values)
 
             # 更新下载曲线
-            self.system_status_history["network"]["download"].append((current_time, download))
+            self.system_status_history["network"]["download"].append(
+                (current_time, download)
+            )
             if self.system_status_history["network"]["download"]:
                 times, values = zip(*self.system_status_history["network"]["download"])
                 self.network_speed_chart.download_curve.setData(times, values)
@@ -9359,7 +9801,9 @@ class SystemManager(BaseWidget):
     def _update_disk_space_chart(self, disk_info: Dict[str, Any]):
         """更新磁盘空间图表."""
         try:
-            if not self.disk_space_chart or not hasattr(self.disk_space_chart, "bars_layout_ref"):
+            if not self.disk_space_chart or not hasattr(
+                self.disk_space_chart, "bars_layout_ref"
+            ):
                 return
 
             for disk, info in disk_info.items():
@@ -9444,10 +9888,13 @@ class SystemManager(BaseWidget):
 
         except Exception as e:
             self.logger.error("更新磁盘空间图表失败: %s", e)
+
     def _update_temperature_chart(self, temperature_data: Dict[str, Any]):
         """更新温度折线图."""
         try:
-            if not self.temperature_chart or not hasattr(self.temperature_chart, "cpu_curve"):
+            if not self.temperature_chart or not hasattr(
+                self.temperature_chart, "cpu_curve"
+            ):
                 return
 
             current_time = time.time()
@@ -9515,7 +9962,9 @@ class SystemManager(BaseWidget):
 
             # 更新硬盘温度曲线
             if disk_temp is not None:
-                self.system_status_history["temp_disk"].append((current_time, disk_temp))
+                self.system_status_history["temp_disk"].append(
+                    (current_time, disk_temp)
+                )
                 if self.system_status_history["temp_disk"]:
                     times, values = zip(*self.system_status_history["temp_disk"])
                     self.temperature_chart.disk_curve.setData(times, values)
@@ -9646,7 +10095,9 @@ class SystemManager(BaseWidget):
                     "warning": ("压力大", "#F59E0B"),
                     "critical": ("瓶颈", "#EF4444"),
                 }
-                severity_text, severity_color = severity_map.get(severity, ("未知", "#94A3B8"))
+                severity_text, severity_color = severity_map.get(
+                    severity, ("未知", "#94A3B8")
+                )
 
                 self.bottleneck_score_label.setStyleSheet(
                     f"font-size: 24px; font-weight: bold; color: {severity_color};"
@@ -9751,11 +10202,15 @@ class SystemManager(BaseWidget):
 
                 # 列3: 警告阈值
                 warning = data.get("warning", 0)
-                self.thresholds_table.setItem(row, 3, QTableWidgetItem(f"{warning:.2f}"))
+                self.thresholds_table.setItem(
+                    row, 3, QTableWidgetItem(f"{warning:.2f}")
+                )
 
                 # 列4: 严重阈值
                 critical = data.get("critical", 0)
-                self.thresholds_table.setItem(row, 4, QTableWidgetItem(f"{critical:.2f}"))
+                self.thresholds_table.setItem(
+                    row, 4, QTableWidgetItem(f"{critical:.2f}")
+                )
 
                 # 列5: 样本数
                 sample_count = data.get("sample_count", 0)
@@ -9776,9 +10231,15 @@ class SystemManager(BaseWidget):
             if not hasattr(self, "concurrent_download_label"):
                 return
 
-            self.concurrent_download_label.setText(f"下载任务: {tasks_data.get('download', 0)}")
-            self.concurrent_backtest_label.setText(f"回测任务: {tasks_data.get('backtest', 0)}")
-            self.concurrent_trading_label.setText(f"交易任务: {tasks_data.get('trading', 0)}")
+            self.concurrent_download_label.setText(
+                f"下载任务: {tasks_data.get('download', 0)}"
+            )
+            self.concurrent_backtest_label.setText(
+                f"回测任务: {tasks_data.get('backtest', 0)}"
+            )
+            self.concurrent_trading_label.setText(
+                f"交易任务: {tasks_data.get('trading', 0)}"
+            )
             self.concurrent_total_label.setText(f"总计: {tasks_data.get('total', 0)}")
 
         except Exception as e:
@@ -9884,7 +10345,9 @@ class SystemManager(BaseWidget):
         except Exception as e:
             self.logger.error("更新温度卡片失败: %s", e)
 
-    def _get_bottleneck_status_for_metric(self, metric_name: str, bottleneck_dimension: str) -> str:
+    def _get_bottleneck_status_for_metric(
+        self, metric_name: str, bottleneck_dimension: str
+    ) -> str:
         """获取指标的瓶颈状态标记.
 
         Args:
@@ -9917,6 +10380,7 @@ class SystemManager(BaseWidget):
                 break
 
         return "--"
+
     def _update_status_details_table(self, metrics: Dict[str, Any]):
         """更新状态详细数据表格（含瓶颈状态列）."""
         try:
@@ -10081,8 +10545,12 @@ class SystemManager(BaseWidget):
                 interrupts = cpu_detailed.get("interrupts_per_sec", 0)
 
                 # 记录历史数据
-                self.system_status_history["context_switches"].append((current_time, ctx_switches))
-                self.system_status_history["cpu_interrupts"].append((current_time, interrupts))
+                self.system_status_history["context_switches"].append(
+                    (current_time, ctx_switches)
+                )
+                self.system_status_history["cpu_interrupts"].append(
+                    (current_time, interrupts)
+                )
 
                 # 更新统计
                 self._update_stat("context_switches", ctx_switches)
@@ -10113,7 +10581,9 @@ class SystemManager(BaseWidget):
                 total_swap = swap_in + swap_out
 
                 # 记录历史数据
-                self.system_status_history["memory_swap"].append((current_time, total_swap))
+                self.system_status_history["memory_swap"].append(
+                    (current_time, total_swap)
+                )
 
                 # 更新统计
                 self._update_stat("memory_swap", total_swap)
@@ -10148,14 +10618,16 @@ class SystemManager(BaseWidget):
                         stat_key = f"disk_latency_{disk_name}"
                         if stat_key not in self.system_stats:
                             self.system_stats[stat_key] = {"current": 0, "avg": 0}
-                            if disk_name not in self.system_status_history.get("disk_latency", {}):
+                            if disk_name not in self.system_status_history.get(
+                                "disk_latency", {}
+                            ):
                                 if not isinstance(
                                     self.system_status_history.get("disk_latency"), dict
                                 ):
                                     self.system_status_history["disk_latency"] = {}
-                                self.system_status_history["disk_latency"][disk_name] = deque(
-                                    maxlen=100
-                                )
+                                self.system_status_history["disk_latency"][
+                                    disk_name
+                                ] = deque(maxlen=100)
 
                         # 记录历史数据
                         self.system_status_history["disk_latency"][disk_name].append(
@@ -10182,7 +10654,9 @@ class SystemManager(BaseWidget):
                 avg_loss = (loss_in + loss_out) / 2
 
                 # 记录历史数据
-                self.system_status_history["packet_loss"].append((current_time, avg_loss * 100))
+                self.system_status_history["packet_loss"].append(
+                    (current_time, avg_loss * 100)
+                )
 
                 # 更新统计
                 self._update_stat("packet_loss", avg_loss * 100)  # 转换为百分比
@@ -10199,12 +10673,18 @@ class SystemManager(BaseWidget):
                 # 新增：Socket缓冲区信息
                 socket_buffer_info = network_subsystem.get("socket_buffer_info", {})
                 if socket_buffer_info:
-                    recv_size_kb = socket_buffer_info.get("recv_buffer_size_avg", 0) / 1024
-                    send_size_kb = socket_buffer_info.get("send_buffer_size_avg", 0) / 1024
+                    recv_size_kb = (
+                        socket_buffer_info.get("recv_buffer_size_avg", 0) / 1024
+                    )
+                    send_size_kb = (
+                        socket_buffer_info.get("send_buffer_size_avg", 0) / 1024
+                    )
                     recv_usage = socket_buffer_info.get("recv_buffer_usage_ratio", 0.0)
                     send_usage = socket_buffer_info.get("send_buffer_usage_ratio", 0.0)
                     tcp_connections = socket_buffer_info.get("tcp_connections", 0)
-                    established_connections = socket_buffer_info.get("established_connections", 0)
+                    established_connections = socket_buffer_info.get(
+                        "established_connections", 0
+                    )
 
                     # Socket接收缓冲区
                     rows.append(
@@ -10325,9 +10805,13 @@ class SystemManager(BaseWidget):
             history_data = None
 
             if key == "network_upload":
-                history_data = self.system_status_history.get("network", {}).get("upload", [])
+                history_data = self.system_status_history.get("network", {}).get(
+                    "upload", []
+                )
             elif key == "network_download":
-                history_data = self.system_status_history.get("network", {}).get("download", [])
+                history_data = self.system_status_history.get("network", {}).get(
+                    "download", []
+                )
             elif key.startswith("disk_latency_"):
                 # 磁盘延迟特殊处理
                 disk_name = key.replace("disk_latency_", "")
@@ -10341,7 +10825,10 @@ class SystemManager(BaseWidget):
                 # 从历史数据计算平均值
                 try:
                     # 检查是否是带时间戳的数据 (time, value)
-                    if isinstance(history_data, (deque, list)) and len(history_data) > 0:
+                    if (
+                        isinstance(history_data, (deque, list))
+                        and len(history_data) > 0
+                    ):
                         first_item = next(iter(history_data))
                         if isinstance(first_item, tuple) and len(first_item) == 2:
                             # 带时间戳的数据，提取值
@@ -10496,7 +10983,9 @@ class SystemManager(BaseWidget):
             metric_layout.addWidget(name_label)
 
             value_label = QLabel("--")
-            value_label.setStyleSheet("color: #FFF; font-size: 14px; font-weight: bold;")
+            value_label.setStyleSheet(
+                "color: #FFF; font-size: 14px; font-weight: bold;"
+            )
             value_label.setObjectName(label_name)
             metric_layout.addWidget(value_label)
 
@@ -10528,17 +11017,27 @@ class SystemManager(BaseWidget):
                 self._update_metric_label(
                     "dc_connected_datafeeds", dc.get("connected_datafeeds", 0)
                 )
-                self._update_metric_label("dc_active_downloads", dc.get("active_downloads", 0))
+                self._update_metric_label(
+                    "dc_active_downloads", dc.get("active_downloads", 0)
+                )
                 recording = "启用" if dc.get("recording_enabled") else "禁用"
                 self._update_metric_label("dc_recording_enabled", recording)
 
             # 2. 更新交易网关指标
             gw = metrics.get("trading_gateway", {})
             if not gw.get("error"):
-                self._update_metric_label("gw_total_gateways", gw.get("total_gateways", 0))
-                self._update_metric_label("gw_connected_gateways", gw.get("connected_gateways", 0))
-                self._update_metric_label("gw_total_strategies", gw.get("total_strategies", 0))
-                self._update_metric_label("gw_active_strategies", gw.get("active_strategies", 0))
+                self._update_metric_label(
+                    "gw_total_gateways", gw.get("total_gateways", 0)
+                )
+                self._update_metric_label(
+                    "gw_connected_gateways", gw.get("connected_gateways", 0)
+                )
+                self._update_metric_label(
+                    "gw_total_strategies", gw.get("total_strategies", 0)
+                )
+                self._update_metric_label(
+                    "gw_active_strategies", gw.get("active_strategies", 0)
+                )
 
             # 3. 更新组合投资指标
             pf = metrics.get("portfolio_investment", {})
@@ -10559,7 +11058,9 @@ class SystemManager(BaseWidget):
                 self._update_metric_label(
                     "st_available_strategies", st.get("available_strategies", 0)
                 )
-                self._update_metric_label("st_active_backtests", st.get("active_backtests", 0))
+                self._update_metric_label(
+                    "st_active_backtests", st.get("active_backtests", 0)
+                )
 
             self.show_info("业务指标已刷新")
 

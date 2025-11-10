@@ -19,7 +19,6 @@ from enum import Enum
 import logging
 
 from backend.framework import ServiceBase
-import logging
 from backend.services.database_adapter import get_db_manager
 from backend.infrastructure.system_vnpy.logging_system import (
     start_event_process,
@@ -1554,8 +1553,6 @@ class MyPortfolioStrategy(StrategyTemplate):
                 self._backtest_tasks[task_id] = task_data
 
                 # 保存到数据库（使用统一database）
-                import json
-
                 self.db_manager.execute_update(
                     """
                     INSERT INTO backtest_tasks
@@ -1581,7 +1578,6 @@ class MyPortfolioStrategy(StrategyTemplate):
                 def run_backtest():
                     """后台线程执行回测."""
                     import time
-                    import logging
 
                     start_time = time.time()
                     # 使用统一便捷接口替代本地stage_logger
@@ -1905,8 +1901,6 @@ class MyPortfolioStrategy(StrategyTemplate):
                             )
 
                             # 保存回测结果到database
-                            import json
-
                             self.db_manager.execute_update(
                                 """
                                 INSERT INTO backtest_results

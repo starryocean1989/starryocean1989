@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 import pyqtgraph as pg
 
-from backend.framework import get_service_registry, get_event_engine
+from backend.framework import get_service_registry
 from backend.services.portfolio_service import PortfolioService
 import logging
 
